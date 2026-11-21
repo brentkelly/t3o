@@ -2613,7 +2613,10 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
       UPDATE board_ci_passes
       SET
         outcome = COALESCE(outcome, ${settle.outcome ?? null}),
-        finished_at = COALESCE(finished_at, ${settle.finishedAt ?? null}),
+        finished_at = CASE
+          WHEN ${settle.reopen === true ? 1 : 0} = 1 AND outcome IS NULL THEN NULL
+          ELSE COALESCE(finished_at, ${settle.finishedAt ?? null})
+        END,
         fix_thread_id = COALESCE(${settle.fixThreadId ?? null}, fix_thread_id)
       WHERE run_id = ${settle.runId}
     `,

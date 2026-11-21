@@ -127,6 +127,8 @@ export const remoteCiRunner = (
           steps: request.steps,
           ...(request.indexOffset === undefined ? {} : { indexOffset: request.indexOffset }),
           ...(request.stopOnFailure === false ? { stopOnFailure: false } : {}),
+          ...(request.knownFlaky === undefined ? {} : { knownFlaky: request.knownFlaky }),
+          ...(request.notFlakyTitle === undefined ? {} : { notFlakyTitle: request.notFlakyTitle }),
         })
         .pipe(
           Stream.runForEach((progress) =>

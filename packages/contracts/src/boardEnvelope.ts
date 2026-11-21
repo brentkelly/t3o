@@ -946,15 +946,38 @@ function lastLinesWithin(tail: string, budget: number): string {
  * and the completion contract. Not editable; Settings shows them after the
  * project's fix prompt.
  */
-export function boardCiFixPromptRules(failureCount: number): ReadonlyArray<string> {
+export function boardCiFixPromptRules(
+  failureCount: number,
+  options: { readonly triage?: boolean; readonly notFlakyTitle?: string } = {},
+): ReadonlyArray<string> {
+  // T3o (T3O-126): a flake never stops a card; the fix agent is the board's flake check.
+  const flakyRules = [
+    "Before fixing a failing test from a script step, re-run that test alone with the project's own test runner. Re-run its whole file instead when this card's diff touches that test file or any test setup, fixture or helper file. With more than 10 failures in one step, re-run a sample of 3; if all 3 pass, report every failure of that step as flaky. Afterwards `git status` must be clean: revert anything the re-runs wrote.",
+    'A test that passes when re-run alone is a flake: mark its issue "flaky" with its `title` (`file › name`), `file`, the `repro` command you ran, and `inDiff` (whether this card\'s diff touches it). Do not edit it, even when it is not in this card\'s diff: the board files it as its own bug card.',
+    "Agent and forge-checks steps are never flaky.",
+    ...(options.notFlakyTitle === undefined
+      ? []
+      : [
+          `This card exists to fix the flaky test \`${options.notFlakyTitle}\`: it is never flaky here. Fix it.`,
+        ]),
+  ];
+  if (options.triage === true) {
+    return [
+      "This is a flaky check, not a fix: the card's fix attempts are used up. Only re-run the failing tests and report.",
+      ...flakyRules,
+      "",
+      `Complete with outcome "succeeded" and a payload shaped ${BOARD_CI_FIX_PAYLOAD_SHAPE}, giving every issue by its id. Use "flaky" only when every issue is flaky. When any failure is real, edit nothing and use "cannot-fix" with a \`finding\` naming it.`,
+    ];
+  }
   return [
     ...(failureCount > 1
       ? ["Later failures may be caused by earlier ones. Work through them in order."]
       : []),
+    ...flakyRules,
     "Updating a test that this card's change made out of date is fine. Never delete, skip or loosen a check to hide a real failure.",
     "If a failure also happens on the base branch, still fix it, in its own commit. Neither that, nor the fix being large or needing you to choose a behaviour, is a reason for cannot-fix: choose what the tests and specs point to and say why in the commit message.",
     "",
-    `Do not run the CI steps yourself to finish: the board re-runs every step from the top after you report. Complete with outcome "succeeded" and a payload shaped ${BOARD_CI_FIX_PAYLOAD_SHAPE}, giving every issue by its id. Use "fixed" once your fixes are committed and pushed (give \`fixedSha\`), or with nothing to commit when a failure looks transient and a re-run should clear it. Use "cannot-fix", with a \`finding\` saying why, when any issue can't be fixed from this worktree, or only by hiding it: still fix and push the others, and mark each issue "resolved" or "cannot-fix".`,
+    `Do not run the CI steps yourself to finish: the board re-runs every step from the top after you report. Complete with outcome "succeeded" and a payload shaped ${BOARD_CI_FIX_PAYLOAD_SHAPE}, giving every issue by its id. Use "fixed" once your fixes are committed and pushed (give \`fixedSha\`), or with nothing to commit when a failure looks transient and a re-run should clear it. Use "flaky" only when every issue is flaky and you changed nothing: the pass carries on from where it stopped. When some are flaky and some real, fix the real ones, mark the others "flaky" and use "fixed". Use "cannot-fix", with a \`finding\` saying why, only when a human is certainly needed: an issue that can't be fixed from this worktree, or only by hiding it. Still fix and push the others, and mark each issue "resolved", "flaky" or "cannot-fix".`,
   ];
 }
 
@@ -976,8 +999,21 @@ export function composeBoardCiFixPrompt(input: {
     readonly line?: number;
     readonly detail?: string;
   }>;
+  /** A flaky-only check, run once the fixes are used up (T3O-126). */
+  readonly triage?: boolean;
+  /** A flake card's own target test, which is never flaky. */
+  readonly notFlakyTitle?: string;
 }): string {
   const { failures, issues } = input;
+  // Script-flagged flakes beside real failures: listed so the agent leaves them alone.
+  const flagged = failures.flatMap((failure) =>
+    (failure.result?.failures ?? []).flatMap((entry) => {
+      const flake = entry as { readonly title?: unknown; readonly flaky?: unknown };
+      return flake.flaky === true && typeof flake.title === "string"
+        ? [`- ${failure.stepName}: ${flake.title}`]
+        : [];
+    }),
+  );
   const tailBudget = Math.floor(BOARD_CI_FIX_TAIL_BUDGET / Math.max(1, failures.length));
   const where = (issue: { readonly file?: string; readonly line?: number }) =>
     issue.file === undefined
@@ -1012,15 +1048,27 @@ export function composeBoardCiFixPrompt(input: {
   return [
     input.prompt,
     "",
-    `${failedSteps} This is fix attempt ${input.attempt} of ${input.maxAttempts}.`,
+    input.triage === true
+      ? `${failedSteps} The card's ${input.maxAttempts} fix attempts are used up; this is a flaky check.`
+      : `${failedSteps} This is fix attempt ${input.attempt} of ${input.maxAttempts}.`,
     "",
-    `The issues to fix (${issues.length}):`,
+    `The issues to ${input.triage === true ? "check" : "fix"} (${issues.length}):`,
     ...issues.map(
       (issue, index) =>
         `${index + 1}. [${issue.id}] ${issue.stepName}: ${issue.title}${where(issue)}${issue.detail === undefined ? "" : `: ${clipIssueDetail(issue.detail)}`}`,
     ),
+    ...(flagged.length === 0
+      ? []
+      : [
+          "",
+          "Flaky, not yours: leave alone. The script saw these fail and then pass on a re-run; the board files them as bug cards:",
+          ...flagged,
+        ]),
     ...blocks,
     "",
-    ...boardCiFixPromptRules(failures.length),
+    ...boardCiFixPromptRules(failures.length, {
+      ...(input.triage === true ? { triage: true } : {}),
+      ...(input.notFlakyTitle === undefined ? {} : { notFlakyTitle: input.notFlakyTitle }),
+    }),
   ].join("\n");
 }

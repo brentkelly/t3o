@@ -28,6 +28,9 @@ export interface BoardCiPassRequest {
   readonly indexOffset?: number;
   /** False runs every step even after a failure. Absent is true. */
   readonly stopOnFailure?: boolean;
+  /** T3o (T3O-126): `BoardCiRunRequest.knownFlaky` and `notFlakyTitle`. */
+  readonly knownFlaky?: ReadonlyArray<string>;
+  readonly notFlakyTitle?: string;
   /** Where the steps run; this server's runner when absent. */
   readonly runner?: BoardCiRunnerShape;
 }
@@ -128,6 +131,10 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
           logDir: boardCiLogDir(request.worktreePath, request.runId),
           ...(request.indexOffset === undefined ? {} : { indexOffset: request.indexOffset }),
           ...(request.stopOnFailure === false ? { stopOnFailure: false } : {}),
+          ...(request.knownFlaky === undefined || request.knownFlaky.length === 0
+            ? {}
+            : { knownFlaky: request.knownFlaky }),
+          ...(request.notFlakyTitle === undefined ? {} : { notFlakyTitle: request.notFlakyTitle }),
         },
         (progress) => record(request, progress.index, progress.step),
       )

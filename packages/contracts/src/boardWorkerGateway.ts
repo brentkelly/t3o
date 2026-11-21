@@ -529,6 +529,10 @@ export const BoardWorkerRunCiInput = Schema.Struct({
   /** False runs every step even after a failure. An older worker
       ignores it and stops at the first failure. */
   stopOnFailure: Schema.optionalKey(Schema.Boolean),
+  /** T3o (T3O-126): tests already ruled flaky this CI entry, and a flake card's own test,
+      which never is. An older worker ignores both and fails the step as before. */
+  knownFlaky: Schema.optionalKey(Schema.Array(Schema.String)),
+  notFlakyTitle: Schema.optionalKey(Schema.String),
 });
 export type BoardWorkerRunCiInput = typeof BoardWorkerRunCiInput.Type;
 
@@ -542,6 +546,8 @@ const WireCiStepResult = Schema.Struct({
       file: Schema.optionalKey(TrimmedNonEmptyString),
       line: Schema.optionalKey(PositiveInt),
       machine: Schema.optionalKey(Schema.Boolean),
+      flaky: Schema.optionalKey(Schema.Boolean),
+      repro: Schema.optionalKey(TrimmedNonEmptyString),
     }),
   ),
 });
@@ -584,6 +590,15 @@ export const BoardWorkerCiProgress = Schema.Union([
       ),
       silentSince: Schema.optionalKey(Schema.String),
       headline: Schema.optionalKey(WireCiHeadline),
+      /** `BoardCiPassStep.flaky`: the step passed over these flaky tests. */
+      flaky: Schema.optionalKey(
+        Schema.Array(
+          Schema.Struct({
+            title: TrimmedNonEmptyString,
+            file: Schema.optionalKey(TrimmedNonEmptyString),
+          }),
+        ),
+      ),
     }),
   }),
   Schema.TaggedStruct("done", {

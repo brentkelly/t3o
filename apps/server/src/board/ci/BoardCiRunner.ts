@@ -14,6 +14,7 @@ import * as NodePath from "node:path";
 import {
   BOARD_CI_TAIL_LINES,
   boardCiStepGroups,
+  isBoardCiFailureFlaky,
   parseBoardCiResultFile,
   type BoardCiHeadline,
   type BoardCiPassStep,
@@ -54,6 +55,11 @@ export interface BoardCiRunRequest {
   readonly indexOffset?: number;
   /** False runs every group even after a failure. Absent is true. */
   readonly stopOnFailure?: boolean;
+  /** T3o (T3O-126): `boardCiFlakeKey`s already ruled flaky this CI entry: a reported
+      failure matching one counts as flaky without a script flag. */
+  readonly knownFlaky?: ReadonlyArray<string>;
+  /** A flake card's own test, which never counts as flaky on that card. */
+  readonly notFlakyTitle?: string;
   /** Each complete output line of a step, by its pass index, in
       order, delivered before the step settles. */
   readonly onLine?: (index: number, line: BoardCiLine) => Effect.Effect<void>;
@@ -524,6 +530,47 @@ const readStepResult = (
   return { result: parsed.result, empty: false };
 };
 
+/**
+ * T3o (T3O-126): the step's failures with each flake marked by the request's rules, and
+ * whether the step failed only on flakes. A step with no reported failures is all-flaky
+ * only when its `::t3o-failure::` line says so; a timeout never is.
+ */
+export function boardCiStepFlakes(
+  result: BoardCiStepResult | null,
+  failureLine: { readonly step: string | null; readonly flaky: boolean | null } | null,
+  stepName: string,
+  options: Pick<BoardCiRunRequest, "knownFlaky" | "notFlakyTitle">,
+): {
+  readonly result: BoardCiStepResult | null;
+  readonly flaky: ReadonlyArray<{ readonly title: string; readonly file?: string }>;
+  readonly allFlaky: boolean;
+} {
+  const rules = {
+    ...(options.knownFlaky === undefined ? {} : { knownFlaky: options.knownFlaky }),
+    ...(options.notFlakyTitle === undefined ? {} : { notFlakyTitle: options.notFlakyTitle }),
+  };
+  const failures = (result?.failures ?? []).map((failure) => {
+    const flaky = isBoardCiFailureFlaky(failure, rules);
+    if (flaky === (failure.flaky === true)) return failure;
+    const { flaky: _dropped, ...rest } = failure;
+    return flaky ? { ...rest, flaky: true } : rest;
+  });
+  const flaky = failures.flatMap((failure) =>
+    failure.flaky === true
+      ? [{ title: failure.title, ...(failure.file === undefined ? {} : { file: failure.file }) }]
+      : [],
+  );
+  const marked = result === null ? null : { ...result, failures };
+  if (failures.length > 0) {
+    return { result: marked, flaky, allFlaky: flaky.length === failures.length };
+  }
+  const title = failureLine?.step ?? stepName;
+  const lineFlaky =
+    failureLine?.flaky === true &&
+    !(options.notFlakyTitle !== undefined && options.notFlakyTitle === title);
+  return { result: marked, flaky: lineFlaky ? [{ title }] : [], allFlaky: lineFlaky };
+}
+
 const changedLines = (status: string | null): ReadonlyArray<string> =>
   status === null ? [] : status.split("\n").filter((line) => line.trim().length > 0);
 
@@ -658,11 +705,20 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
                 return { exit, progress: reporter.progress() };
               }),
             );
-            const { result, empty } = readStepResult(resultPath, tail);
+            const read = readStepResult(resultPath, tail);
+            const flakes = boardCiStepFlakes(
+              read.result,
+              facts.failureLine,
+              definition.name,
+              request,
+            );
+            const result = flakes.result;
+            // T3o (T3O-126): a step that failed only on flakes passes; a timeout never does.
+            const allFlaky = exit.status !== "timed-out" && flakes.allFlaky;
             // A failed step says what failed and why, read here, on
-            // the machine it ran on.
+            // the machine it ran on. Flakes beside a real failure don't head it.
             const headline =
-              exit.status === "passed"
+              exit.status === "passed" || allFlaky
                 ? null
                 : boardCiFailureHeadline(facts, {
                     stepName: definition.name,
@@ -670,12 +726,29 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
                     exitCode: exit.exitCode,
                     signal: exit.signal ?? null,
                     timeoutMinutes: definition.timeoutMinutes,
-                    result,
-                    resultEmpty: empty,
+                    result:
+                      result === null
+                        ? null
+                        : {
+                            ...result,
+                            failures: result.failures.filter((failure) => failure.flaky !== true),
+                          },
+                    resultEmpty: read.empty,
                     host: NodeOS.hostname(),
                     freeBytes: yield* freeBytesNow(request.cwd),
                   });
-            return { index, base, startedAt, exit, tail, result, progress, headline };
+            const settledAs: StepExit = allFlaky ? { ...exit, status: "passed" } : exit;
+            return {
+              index,
+              base,
+              startedAt,
+              exit: settledAs,
+              tail,
+              result,
+              progress,
+              headline,
+              flaky: settledAs.status === "passed" ? flakes.flaky : [],
+            };
           }),
         { concurrency: "unbounded" },
       );
@@ -713,6 +786,7 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
             // A settled step keeps where its progress got to.
             ...(step.progress === undefined ? {} : { progress: step.progress }),
             ...(headline === null ? {} : { headline }),
+            ...(status === "passed" && step.flaky.length > 0 ? { flaky: step.flaky } : {}),
           },
         });
         // A machine problem in the group outranks a code failure beside it,
