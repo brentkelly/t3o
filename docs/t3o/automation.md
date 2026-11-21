@@ -42,6 +42,20 @@ included.
 - **Never stall silently.** When a toggle cannot act (dependencies not met, no capacity, a refused
   move, a merge it cannot resolve), the card shows why, in the status colour for that state
   (`docs/t3o/status-colours.md`), and the gate acts by itself once the obstacle clears.
+- **A flaky test never stops a card in CI.** CI stops a card only when a human is certainly needed.
+  A failure is a flake when a script marks it `flaky` (the step passes then and there), or when the
+  CI fix agent re-runs it alone and it passes. The agent's check uses no fix attempt, and the same
+  pass carries on from its next unrun step rather than re-running. It also runs once the fix
+  attempts are used up, so a flake on the last pass doesn't stop the card. A test ruled flaky once
+  in a CI entry passes with no agent after that. A verdict whose branch moved counts as a fix. The
+  only stop is the loop guard: 10 flaky checks in one entry stops the card as a flake storm.
+- **Flake cards are the one place the board turns automation on by itself.** Each flaky test files
+  a bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
+  sign-off and Auto-build on, Auto-merge explicitly off, and an unattended plan review. It is
+  matched by its `file › title`, so a repeat flake notes the open card instead of filing a second.
+  It's bounded: at most 3 new cards per pass, none once 10 are open in the project, a flake card
+  files no cards of its own, and a flake card's own test is never flaky on it. Flakes over a limit
+  are only listed on the tested card (`ciFlakeCards.ts`).
 - **Only a person turns a toggle off.** Dragging a card backwards turns off the toggle for the stage
   it left (see `board-auto-plan.md`), and so does an agent moving it back with `board_move_card`,
   which acts for a person. Nothing else turns a toggle off, and a failure never does.

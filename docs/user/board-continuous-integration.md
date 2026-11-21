@@ -50,11 +50,12 @@ Only the exit code is required. A script can also:
   the latest message, count and bar, and the card shows the count instead of a timer. Any field can
   be left out.
 - print a failure line saying what failed and why, which becomes the step's headline:
-  `echo '::t3o-failure::{"step":"lint","reason":"No files matched src/**"}'`. `step` (the sub-step)
-  and `machine` are optional; the first failure line a step prints is the one used.
+  `echo '::t3o-failure::{"step":"lint","reason":"No files matched src/**"}'`. `step` (the sub-step),
+  `machine` and `flaky` are optional; the first failure line a step prints is the one used.
 - write a result file at `$T3O_CI_RESULT` before it exits, with a summary and failures the CI tab
   and the fix agent show. Mark a failure `"machine": true` when the machine, not the code, is to
-  blame (a missing browser library, say):
+  blame (a missing browser library, say). Mark it `"flaky": true` when the script re-ran it on its
+  own and it passed, with the command that re-runs it in `"repro"`:
 
 ```sh
 cat > "$T3O_CI_RESULT" <<'JSON'
@@ -64,7 +65,8 @@ cat > "$T3O_CI_RESULT" <<'JSON'
 JSON
 ```
 
-The result file adds detail only; it never turns a failing exit code into a pass, or the reverse.
+The result file adds detail only, with one exception: a step whose every reported failure is marked
+`flaky` passes (see **Flaky tests**). It never turns a passing exit code into a failure.
 
 ## When a step fails
 
@@ -88,12 +90,33 @@ Any other failure goes to a fix agent. It gets every failure the pass reported, 
 and why first, as a numbered list of issues, and fixes them on the card's branch. Then every step
 runs again from the top. CI never sends a card back to Code review by itself.
 
-**Fix attempts** caps the fix agents one visit to CI may start (3 by default). When they run out, or
+**Fix attempts** caps the fix agents one visit to CI may start (5 by default). When they run out, or
 the fix agent reports something it can't fix, CI stops and the card waits for you, marked **Needs
 you** with the reason: **Retry CI** starts over with fresh attempts, **Send back to review anyway**
 sends the card to Code review with every failure as a must-fix finding, and **Skip CI…** moves it
 on. Defaults are in **Settings** → **Board** → **Pipeline** → **Continuous integration**; each
 project can override them on its **CI** tab, under **Fix agent**.
+
+## Flaky tests
+
+A flaky test never stops a card. A failure counts as flaky when:
+
+- the script marks it `"flaky": true` (or its `::t3o-failure::` line says `"flaky": true`). If every
+  failure of a step is flaky, the step passes then and there, with an amber **flaky** marker in the
+  CI tab. A step with flaky failures beside real ones fails as before, and the fix agent is told the
+  flaky ones aren't its to touch.
+- the fix agent re-runs the failing test on its own and it passes. If every failure was a flake,
+  the same pass carries on from the step after it, and no fix attempt is used. This check also runs
+  once the fix attempts are used up, before CI stops for you.
+
+A test that flaked once in a visit to CI passes with no agent if it flakes again in that visit.
+
+Each flaky test becomes a **bug card** in the same project, labelled `bug`, with Auto-plan, Auto
+sign-off and Auto-build on but not Auto-merge: you come back to a fix ready to merge. Its brief names
+the test, how to re-run it, the error and the card it flaked on. Tests are matched by their exact
+`file › title`, so a test that flakes again adds a note to its open bug card instead of making a
+second. At most 3 new bug cards are filed per pass and none once a project has 10 open; the rest are
+listed on the card that flaked. A bug card's own test is never treated as flaky on that card.
 
 ## Following a run
 
