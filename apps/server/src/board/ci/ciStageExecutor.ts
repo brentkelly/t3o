@@ -183,6 +183,7 @@ export const CiStageExecutor: BoardStageExecutor = {
     // the last pass never stops the card; agent and forge steps can't be flaky.
     const triage =
       ci !== null &&
+      maxFixAttempts > 0 &&
       used >= maxFixAttempts &&
       flakyChecks < BOARD_CI_MAX_FLAKY_CHECKS &&
       failures.some(

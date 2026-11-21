@@ -4,6 +4,7 @@
  * card and its pass rows.
  */
 import {
+  BOARD_CI_MAX_FLAKY_CHECKS,
   BOARD_CI_SHELL_FINDING_MAX,
   BoardCardId,
   BoardStageId,
@@ -150,18 +151,20 @@ describe("CiStageExecutor", () => {
     expect(next.prompt).toContain("Later failures may be caused by earlier ones.");
   });
 
-  it("stops for a human once the entry's fixes are used", () => {
+  it("stops for a human once the entry's fixes and flaky checks are used", () => {
+    const storm = ci({ fixAttempts: 2, flakyChecks: BOARD_CI_MAX_FLAKY_CHECKS });
     const next = plan({
-      card: cardInCi(ci({ fixAttempts: 2 })),
+      card: cardInCi(storm),
       ciFailures: [failure, { ...failure, stepName: "Build" }],
     });
-    expect(next).toEqual({
-      kind: "ci-stop",
-      stepName: "Test",
-      reason: "CI still failing after 2 fixes: Test, Build.",
-    });
+    expect(next).toMatchObject({ kind: "ci-stop", stepName: "Test" });
+    expect(next.kind === "ci-stop" && next.reason).toContain("Flake storm");
+    // Only agent and forge steps failed: nothing can be flaky, so the card stops.
     expect(
-      plan({ card: cardInCi(ci({ fixAttempts: 1, maxFixAttempts: 1 })), ciFailures: [failure] }),
+      plan({
+        card: cardInCi(ci({ fixAttempts: 1, maxFixAttempts: 1 })),
+        ciFailures: [{ ...failure, command: "agent step" }],
+      }),
     ).toMatchObject({
       reason: "CI still failing after 1 fix: Test.",
     });
@@ -226,6 +229,130 @@ describe("CiStageExecutor", () => {
       stepName: null,
       reason: "The fix agent couldn't fix something: Too big.",
     });
+  });
+
+  it("past the fix limit runs one uncounted flaky check, never a fix", () => {
+    const next = plan({
+      card: cardInCi(ci({ fixAttempts: 2, flakyChecks: 1 })),
+      ciFailures: [failure],
+    });
+    if (next.kind !== "run") throw new Error(`expected a flaky check, got ${next.kind}`);
+    expect(next.ciTriage).toBe(true);
+    expect(next.stepLabel).toBe("CI flaky check");
+    // Fixes and flaky checks share one numbering, so a refunded attempt never reuses an id.
+    expect(next.stepId).toBe(boardCiFixStepId(2, 4));
+    expect(next.prompt).toContain("This is a flaky check, not a fix");
+    const counted = plan({
+      card: cardInCi(ci({ fixAttempts: 1, flakyChecks: 2 })),
+      ciFailures: [failure],
+    });
+    expect(counted).toMatchObject({
+      kind: "run",
+      stepId: boardCiFixStepId(2, 4),
+      stepLabel: "CI fix 2 of 2",
+    });
+    expect(counted.kind === "run" && counted.ciTriage).toBeUndefined();
+  });
+
+  it("a flake card's fix is told its own test is never flaky", () => {
+    const flakeCard = {
+      ...cardInCi(ci()),
+      externalRef: { system: "t3o-flaky", id: "project-1:a.test.ts › adds", url: null },
+    };
+    const next = plan({ card: flakeCard, ciFailures: [failure] });
+    expect(next.kind === "run" && next.prompt).toContain(
+      "This card exists to fix the flaky test `a.test.ts › adds`",
+    );
+  });
+
+  it("lists script-flagged flakes as not the fix's, and leaves them out of its issues", () => {
+    const mixed: BoardCiFailure = {
+      ...failure,
+      result: {
+        summary: null,
+        failures: [
+          { title: "real", file: "a.test.ts" },
+          { title: "flaky one", file: "b.test.ts", flaky: true },
+        ],
+      },
+    };
+    const next = plan({ card: cardInCi(ci()), ciFailures: [mixed] });
+    if (next.kind !== "run") throw new Error(`expected a fix, got ${next.kind}`);
+    expect(next.prompt).toContain("[s0-1] Test: real (a.test.ts)");
+    expect(next.prompt).not.toContain("[s0-2]");
+    expect(next.prompt).toContain("Flaky, not yours: leave alone.");
+    expect(next.prompt).toContain("- Test: flaky one");
+  });
+
+  it("a flaky verdict carries the pass on only when every issue is a flaky script failure", () => {
+    const step = boardCiFixStepId(2, 1);
+    const fixing = cardInCi(ci({ phase: "fixing", fixAttempts: 1 }));
+    const flaky = { id: "s1", status: "flaky", title: "a.test.ts › adds", repro: "vp test a" };
+    expect(
+      plan({
+        card: fixing,
+        settledStepId: step,
+        completions: [completion(step, { verdict: "flaky", issues: [flaky] })],
+      }),
+    ).toEqual({ kind: "ci-pass", flaky: true, flakyIssues: [flaky] });
+    // A mix is a counted fix that still carries its flakes to their bug cards.
+    const mixed = {
+      verdict: "flaky",
+      issues: [flaky, { id: "s0", status: "resolved" }],
+    };
+    expect(
+      plan({ card: fixing, settledStepId: step, completions: [completion(step, mixed)] }),
+    ).toEqual({ kind: "ci-pass", flakyIssues: [flaky] });
+    // An agent step is never flaky.
+    const agentFailed = cardInCi(
+      ci({
+        phase: "fixing",
+        fixAttempts: 1,
+        steps: [
+          { name: "Lint", status: "passed", startedAt: NOW, finishedAt: NOW },
+          { name: "Review", kind: "agent", status: "failed", startedAt: NOW, finishedAt: NOW },
+        ],
+      }),
+    );
+    expect(
+      plan({
+        card: agentFailed,
+        settledStepId: step,
+        completions: [completion(step, { verdict: "flaky", issues: [flaky] })],
+      }),
+    ).toEqual({ kind: "ci-pass", flakyIssues: [flaky] });
+    // A flaky check can only call flakes: anything else needs a human.
+    const triage = cardInCi(ci({ phase: "fixing", fixAttempts: 2, fixTriage: true }));
+    expect(
+      plan({
+        card: triage,
+        settledStepId: step,
+        completions: [completion(step, { verdict: "fixed" })],
+      }),
+    ).toMatchObject({ kind: "ci-stop" });
+    expect(
+      plan({
+        card: triage,
+        settledStepId: step,
+        completions: [completion(step, { verdict: "flaky", issues: [flaky] })],
+      }),
+    ).toMatchObject({ kind: "ci-pass", flaky: true });
+    // Past the loop guard, even an all-flaky verdict stops.
+    expect(
+      plan({
+        card: cardInCi(
+          ci({ phase: "fixing", fixAttempts: 1, flakyChecks: BOARD_CI_MAX_FLAKY_CHECKS }),
+        ),
+        settledStepId: step,
+        completions: [completion(step, { verdict: "flaky", issues: [flaky] })],
+      }),
+    ).toMatchObject({ kind: "ci-stop" });
+    expect(
+      boardStepPayloadDefect({
+        stepId: step,
+        payload: JSON.stringify({ verdict: "flaky", issues: [flaky] }),
+      }),
+    ).toBeNull();
   });
 
   it("stops on a fix with no readable verdict", () => {
@@ -413,6 +540,67 @@ describe("decideBoardCiRecord", () => {
     expect(stopped.ok && stopped.payload.settled).toEqual([
       { runId: "run-1", outcome: "stopped", finishedAt: NOW, fixThreadId: "thread-fix" },
     ]);
+  });
+
+  it("a flaky verdict resumes the pass, refunding the fix and reopening its row", () => {
+    const fixing = cardInCi(ci({ phase: "fixing", fixAttempts: 2, headline: undefined }));
+    const resumed = record(fixing, { kind: "flaky-resume", runId: "run-1", titles: ["a › b"] });
+    expect(resumed.ok && resumed.payload.card.ci).toMatchObject({
+      phase: "running",
+      fixAttempts: 1,
+      flakyChecks: 1,
+      flakyTitles: ["a › b"],
+    });
+    expect(resumed.ok && resumed.payload.settled).toEqual([{ runId: "run-1", reopen: true }]);
+    // A human's Stop or Retry that landed first wins.
+    expect(record(cardInCi(ci()), { kind: "flaky-resume", runId: "run-1", titles: [] }).ok).toBe(
+      false,
+    );
+    expect(
+      record(cardInCi(ci({ phase: "fixing", runId: "run-9" })), {
+        kind: "flaky-resume",
+        runId: "run-1",
+        titles: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("a flaky check runs past the fix limit uncounted, and refunds nothing", () => {
+    const spent = cardInCi(ci({ fixAttempts: 2 }));
+    const began = record(spent, { kind: "begin-fix", runId: "run-1", triage: true });
+    expect(began.ok && began.payload.card.ci).toMatchObject({
+      phase: "fixing",
+      fixAttempts: 2,
+      fixTriage: true,
+    });
+    const resumed = record(began.ok ? began.payload.card : spent, {
+      kind: "flaky-resume",
+      runId: "run-1",
+      titles: ["x"],
+    });
+    expect(resumed.ok && resumed.payload.card.ci).toMatchObject({ fixAttempts: 2, flakyChecks: 1 });
+    expect(resumed.ok && resumed.payload.card.ci?.fixTriage).toBeUndefined();
+  });
+
+  it("carries flaky checks and titles across an entry's passes, and resets them on a fresh entry", () => {
+    const card = cardInCi(
+      ci({ phase: "fixing", fixAttempts: 1, flakyChecks: 2, flakyTitles: ["a"] }),
+    );
+    const next = record(card, {
+      ...start("thread-fix"),
+      flakyTitles: ["b", "a"],
+    } as BoardCardRecordCiCommand["action"]);
+    expect(next.ok && next.payload.card.ci).toMatchObject({
+      flakyChecks: 2,
+      flakyTitles: ["a", "b"],
+    });
+    const fresh = record(card, {
+      ...start(),
+      fresh: true,
+      entry: 3,
+    } as BoardCardRecordCiCommand["action"]);
+    expect(fresh.ok && fresh.payload.card.ci?.flakyChecks).toBeUndefined();
+    expect(fresh.ok && fresh.payload.card.ci?.flakyTitles).toBeUndefined();
   });
 
   it("refuses a pass for a card outside CI, and a fix past the cap", () => {

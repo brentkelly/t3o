@@ -305,13 +305,11 @@ import { makeBoardCiPasses, type BoardCiPasses, type BoardCiPassFinished } from 
 import type { BoardCiFailure, BoardStagePlan } from "./stageExecutor.ts";
 import { boardCiSendBackFinding } from "./ci/ciStageExecutor.ts";
 import {
-  BOARD_CI_FLAKE_ACTOR,
   boardCiFlakeCardTarget,
   boardCiPassFlakes,
   fileBoardCiFlakes,
   type BoardCiFlake,
 } from "./ci/ciFlakeCards.ts";
-import { createBoardCard } from "./createCard.ts";
 import { BoardWorkspaces, type BoardCardWorkspace } from "./workspace/BoardWorkspace.ts";
 import { formatBoardBytes } from "./worktreeAtDone.ts";
 import {
@@ -5809,39 +5807,8 @@ const make = Effect.gen(function* () {
     });
   });
 
-  /** T3o (T3O-126): the deps a flake filing writes through, as the system's CI actor. */
-  const ciFlakeDeps = {
-    readBoard,
-    settings: boardSettings,
-    dispatch: dispatchRefusal,
-    nowIso,
-    create: Effect.fn("board-supervisor-createCiFlakeCard")(
-      function* (create: Parameters<typeof createBoardCard>[0]["create"]) {
-        const projects = yield* threads.projects();
-        const project = projects.find((candidate) => candidate.id === create.projectId);
-        yield* createBoardCard({
-          engine: boardEngine,
-          actor: BOARD_CI_FLAKE_ACTOR,
-          projectTitle: project?.title ?? "",
-          create,
-        }).pipe(Effect.provideService(ServerSettingsService, serverSettings));
-        return null as string | null;
-      },
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
-        const error = Cause.findErrorOption(cause).pipe(Option.getOrUndefined) as
-          | { readonly detail?: unknown; readonly message?: unknown }
-          | undefined;
-        const detail =
-          typeof error?.detail === "string"
-            ? error.detail
-            : typeof error?.message === "string"
-              ? error.message
-              : "the card could not be created";
-        return Effect.succeed<string | null>(detail);
-      }),
-    ),
-  };
+  /** T3o (T3O-126): the deps a flake filing writes through. */
+  const ciFlakeDeps = { readBoard, settings: boardSettings, dispatch: dispatchRefusal, nowIso };
 
   /** File a pass's flakes as bug cards; a fault is logged and never touches the card. */
   const fileCiFlakes = Effect.fn("board-supervisor-fileCiFlakes")(

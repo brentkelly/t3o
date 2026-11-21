@@ -30,7 +30,6 @@ import {
 import * as Effect from "effect/Effect";
 
 import { stampBoardActivityActor } from "../activityActors.ts";
-import type { BoardCardCreateInput } from "../createCard.ts";
 
 export const BOARD_CI_FLAKE_REF_SYSTEM = "t3o-flaky";
 /** New flake cards one pass may file. */
@@ -68,8 +67,6 @@ export interface BoardCiFlakeFilingDeps {
   readonly settings: Effect.Effect<BoardSettings>;
   /** Dispatch; the decider's refusal sentence, or null when it landed. */
   readonly dispatch: (command: BoardCommand) => Effect.Effect<string | null>;
-  /** Create a card through `createBoardCard`, as `BOARD_CI_FLAKE_ACTOR`. */
-  readonly create: (create: BoardCardCreateInput) => Effect.Effect<string | null>;
   readonly nowIso: Effect.Effect<string>;
 }
 
@@ -253,7 +250,10 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     const bugLabelLive = boardLabelCatalogue(board).some(
       (label) => label.labelId === BOARD_SEED_LABEL_IDS.bug && label.deletedAt === null,
     );
-    const refused = yield* deps.create({
+    // Same project as the tested card, so the same key prefix: no prefix to assign.
+    const refused = yield* dispatchAs({
+      type: "board.card.create",
+      keyPrefix: card.key.replace(/-\d+$/, ""),
       commandId: commandIdFor(seed, "create"),
       cardId,
       projectId: card.projectId,

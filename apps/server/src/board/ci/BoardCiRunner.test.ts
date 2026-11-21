@@ -389,7 +389,7 @@ it.live("reads the step's result file, which adds detail and never overrides the
       summary: "1 of 3 failed",
       failures: [{ title: "boom", file: "src/a.ts", line: 4 }],
     });
-    assert.include(final.tail, "weren't { title, detail?, file?, line?, machine? }");
+    assert.include(final.tail, "weren't { title, detail?, file?, line?, machine?, flaky?, repro? }");
   }),
 );
 
