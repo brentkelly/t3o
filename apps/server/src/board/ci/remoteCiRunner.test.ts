@@ -313,3 +313,49 @@ it.effect("a failed result's headline crosses the wire", () =>
     });
   }),
 );
+
+it.effect(
+  "T3O-126: a worker hears the entry's flaky rules and its flaky steps reach the board",
+  () =>
+    Effect.gen(function* () {
+      const inputs: unknown[] = [];
+      const flakyStep = {
+        ...step,
+        status: "passed" as const,
+        exitCode: 1,
+        result: {
+          summary: null,
+          failures: [{ title: "adds", file: "a.test.ts", flaky: true, repro: "vp test a" }],
+        },
+        flaky: [{ title: "adds", file: "a.test.ts", repro: "vp test a" }],
+      };
+      // Through the wire schema both ways, as the gateway decodes them.
+      const wire = yield* decodeCiProgress({ _tag: "step", index: 0, step: flakyStep });
+      const seen: BoardCiStepProgress[] = [];
+      yield* remoteCiRunner(
+        {
+          get: () =>
+            Effect.succeed({
+              gateway: {
+                runCi: (input: unknown) => {
+                  inputs.push(input);
+                  return Stream.fromIterable([
+                    wire,
+                    { _tag: "done", result: "passed", failedIndex: null },
+                  ]);
+                },
+              },
+            } as unknown as WorkerRpc),
+        },
+        worker,
+      ).run(
+        { ...request, knownFlaky: ["b.test.ts › subtracts"], notFlakyTitle: "c.test.ts › own" },
+        (progress) => Effect.sync(() => seen.push(progress)),
+      );
+      const sent = decodeRunCiInputUnknown(inputs[0]);
+      assert.deepStrictEqual(sent.knownFlaky, ["b.test.ts › subtracts"]);
+      assert.strictEqual(sent.notFlakyTitle, "c.test.ts › own");
+      assert.deepStrictEqual(seen[0]?.step.flaky, flakyStep.flaky);
+      assert.deepStrictEqual(seen[0]?.step.result, flakyStep.result);
+    }),
+);

@@ -6,6 +6,7 @@
 import {
   BOARD_SEED_STAGE_IDS,
   boardCardCiSteps,
+  boardCiMergeFlakyTitles,
   boardCiPassStepsFromSnapshot,
   boardCiShellFinding,
   isBoardCiStepFailure,
@@ -81,6 +82,17 @@ export function decideBoardCiRecord(
       // Round trips survive a send-back on the last outcome, and a human's
       // Retry CI starts them again.
       const roundTrips = action.fresh === true ? 0 : card.ciRoundTrips;
+      // T3o (T3O-126): an entry's flaky checks and flaky tests carry across its passes.
+      const carry = sameEntry && action.fresh !== true;
+      const flakyChecks = carry ? (current.flakyChecks ?? 0) : 0;
+      // A ruling holds only while the code it was ruled on is unchanged.
+      const flakyTitles =
+        action.flakyRulingsStale === true
+          ? []
+          : boardCiMergeFlakyTitles(
+              carry ? current.flakyTitles : undefined,
+              action.flakyTitles ?? [],
+            );
       const ci: BoardCardCi = {
         runId: action.runId,
         entry: action.entry,
@@ -90,6 +102,8 @@ export function decideBoardCiRecord(
         steps: boardCardCiSteps(steps),
         ...(roundTrips === 0 ? {} : { roundTrips }),
         ...(action.continueOnFailure === true ? { continueOnFailure: true } : {}),
+        ...(flakyChecks === 0 ? {} : { flakyChecks }),
+        ...(flakyTitles.length === 0 ? {} : { flakyTitles }),
       };
       return done(
         { ci, ciLastOutcome: null, ciRoundTrips: roundTrips },
@@ -215,18 +229,59 @@ export function decideBoardCiRecord(
       if (current.phase !== "running") {
         return refuse(`Pass ${action.runId} is ${current.phase}, so no fix can start on it.`);
       }
+      // T3o (T3O-126): a flaky-only check is uncounted, so it may run past the limit.
+      if (action.triage === true) {
+        return done({
+          ci: {
+            ...current,
+            phase: "fixing",
+            fixTriage: true,
+            ...(action.fixIssues === undefined ? {} : { fixIssues: action.fixIssues }),
+          },
+          ciLastOutcome: card.ciLastOutcome,
+        });
+      }
       if (current.fixAttempts >= current.maxFixAttempts) {
         return refuse(`Card '${card.key}' has used all ${current.maxFixAttempts} CI fixes.`);
       }
+      const { fixTriage: _counted, ...rest } = current;
       return done({
         ci: {
-          ...current,
+          ...rest,
           phase: "fixing",
           fixAttempts: current.fixAttempts + 1,
           ...(action.fixIssues === undefined ? {} : { fixIssues: action.fixIssues }),
         },
         ciLastOutcome: card.ciLastOutcome,
       });
+    }
+
+    case "flaky-resume": {
+      // A human's Stop or Retry that landed first wins.
+      if (current === null || current.runId !== action.runId || current.phase !== "fixing") {
+        return refuse(`Pass ${action.runId} is not being fixed, so it can't carry on.`);
+      }
+      const {
+        fixTriage,
+        headline: _headline,
+        fixIssues: _fixIssues,
+        stopReason: _stopReason,
+        ...rest
+      } = current;
+      return done(
+        {
+          ci: {
+            ...rest,
+            phase: "running",
+            fixAttempts:
+              fixTriage === true ? current.fixAttempts : Math.max(0, current.fixAttempts - 1),
+            flakyChecks: (current.flakyChecks ?? 0) + 1,
+            flakyTitles: boardCiMergeFlakyTitles(current.flakyTitles, action.titles),
+          },
+          ciLastOutcome: card.ciLastOutcome,
+        },
+        { settled: [{ runId: action.runId, reopen: true }] },
+      );
     }
 
     case "send-back": {
@@ -273,9 +328,10 @@ export function decideBoardCiRecord(
       if (current === null || card.stage !== BOARD_SEED_STAGE_IDS.ci) {
         return refuse(`Card '${card.key}' has no CI pass to stop.`);
       }
+      const { fixTriage: _triage, ...stopped } = current;
       return done(
         {
-          ci: { ...current, phase: "stopped", stopReason: boardCiShellFinding(action.reason) },
+          ci: { ...stopped, phase: "stopped", stopReason: boardCiShellFinding(action.reason) },
           ciLastOutcome: card.ciLastOutcome,
         },
         {

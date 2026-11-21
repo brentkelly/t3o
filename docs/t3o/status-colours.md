@@ -14,7 +14,10 @@ the sidebar teaches the user nothing.
 Amber (`--warning-foreground`) is the fourth, and it is not a work state: it marks something
 **blocked or held** — an unmet dependency gate, a review loop that stopped without converging, a
 review phase whose result the board could not read, and a stale merge base. It predates this
-convention and keeps its own meaning.
+convention and keeps its own meaning. One carve-out: a CI step that passed only over flaky tests
+carries an amber "flaky" marker — a pale amber segment on the card face's CI row, an amber tick in
+the CI tab — a warning rather than a hold, and never green. It is never on the card shell, where
+amber would read as blocked.
 
 The Tailwind utilities are `bg-*`, `text-*-foreground`, `border-*`, and they take opacity modifiers
 (`bg-info/12`, `border-attention/55`). All three are defined in `apps/web/src/index.css`; `--attention`

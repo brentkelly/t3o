@@ -205,6 +205,18 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-"))("a CI pass", (it) => {
       });
       yield* record({ kind: "finish-pass", runId: "run-b", result: "failed" });
       yield* record({ kind: "begin-fix", runId: "run-b", fixIssues: 2 });
+      // T3O-126: a flaky verdict reopens the failed pass's row and carries it on.
+      yield* record({ kind: "flaky-resume", runId: "run-b", titles: ["a.test.ts › adds"] });
+      const resumed = yield* (yield* BoardQueries).boardCardDetail(cardId);
+      const reopened = resumed!.ciPasses.find((entry) => entry.runId === "run-b");
+      assert.isNull(reopened?.finishedAt);
+      assert.isNull(reopened?.outcome);
+      assert.deepInclude(resumed!.card.ci, {
+        phase: "running",
+        flakyChecks: 1,
+        flakyTitles: ["a.test.ts › adds"],
+      });
+      yield* record({ kind: "begin-fix", runId: "run-b", fixIssues: 2 });
       yield* record({
         kind: "stop",
         runId: "run-b",

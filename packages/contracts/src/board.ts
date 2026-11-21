@@ -1540,8 +1540,32 @@ export const BoardCiFailureDetail = Schema.Struct({
   /** The script says this failure is the machine's, not the code's:
       true holds the card with no fix agent, false rules a machine hold out. */
   machine: Schema.optionalKey(Schema.Boolean),
+  /** The script saw this test fail and then pass when re-run alone: a flake. A step
+      whose every failure is flaky passes with a warning (T3O-126). */
+  flaky: Schema.optionalKey(Schema.Boolean),
+  /** The command that re-runs just this test, for the flake's bug card. */
+  repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
 });
 export type BoardCiFailureDetail = typeof BoardCiFailureDetail.Type;
+
+/** One flaky test, by its file and title: the key a flake's bug card is matched on. */
+export function boardCiFlakeKey(file: string | null | undefined, title: string): string {
+  const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
+  const name = collapse(title);
+  const where = file == null ? "" : collapse(file);
+  return where.length === 0 ? name : `${where} › ${name}`;
+}
+
+/** Whether a reported failure counts as a flake: flagged by its script, or a test
+    already ruled flaky in this CI entry. A card's own target test never does. */
+export function isBoardCiFailureFlaky(
+  failure: Pick<BoardCiFailureDetail, "title" | "file" | "flaky">,
+  options: { readonly knownFlaky?: ReadonlyArray<string>; readonly notFlakyTitle?: string } = {},
+): boolean {
+  const key = boardCiFlakeKey(failure.file, failure.title);
+  if (options.notFlakyTitle !== undefined && key === options.notFlakyTitle) return false;
+  return failure.flaky === true || (options.knownFlaky?.includes(key) ?? false);
+}
 
 /** What a step reported beyond its exit code. Adds detail only: it
     never overrides the exit code. */
@@ -1553,23 +1577,45 @@ export type BoardCiStepResult = typeof BoardCiStepResult.Type;
 
 const decodeFailureDetail = Schema.decodeUnknownOption(BoardCiFailureDetail);
 
-/**
- * Parse a script's `$T3O_CI_RESULT` file: `{ summary?, failures?: [{ title,
- * detail?, file?, line?, machine? }] }`. Invalid failures are dropped and at most
- * `BOARD_CI_MAX_FAILURES` kept; a file that isn't that shape is a warning.
- */
+const clipFailureFields = (entry: unknown): unknown => {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+  const record = { ...(entry as Record<string, unknown>) };
+  for (const [field, max] of [
+    ["title", 500],
+    ["detail", 4_000],
+    ["file", 500],
+    ["repro", 500],
+  ] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > max) record[field] = value.slice(0, max);
+  }
+  return record;
+};
+
+/** Parse a script's `$T3O_CI_RESULT` file. Over-long fields are clipped, invalid failures
+    dropped and at most `BOARD_CI_MAX_FAILURES` kept; a bad file is a warning. `complete` is
+    false when a reported failure didn't survive, so no caller judges the step on the rest. */
 export function parseBoardCiResultFile(text: string): {
   readonly result: BoardCiStepResult | null;
   readonly warning: string | null;
+  readonly complete: boolean;
 } {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
-    return { result: null, warning: "The step's result file isn't valid JSON; ignored." };
+    return {
+      result: null,
+      warning: "The step's result file isn't valid JSON; ignored.",
+      complete: false,
+    };
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { result: null, warning: "The step's result file isn't a JSON object; ignored." };
+    return {
+      result: null,
+      warning: "The step's result file isn't a JSON object; ignored.",
+      complete: false,
+    };
   }
   const record = raw as Record<string, unknown>;
   const summary =
@@ -1578,7 +1624,7 @@ export function parseBoardCiResultFile(text: string): {
       : null;
   const listed = Array.isArray(record.failures) ? record.failures : [];
   const failures = listed.flatMap((entry) => {
-    const decoded = decodeFailureDetail(entry);
+    const decoded = decodeFailureDetail(clipFailureFields(entry));
     return decoded._tag === "Some" ? [decoded.value] : [];
   });
   const dropped = listed.length - failures.length;
@@ -1586,8 +1632,9 @@ export function parseBoardCiResultFile(text: string): {
     result: { summary, failures: failures.slice(0, BOARD_CI_MAX_FAILURES) },
     warning:
       dropped > 0
-        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine? }; ignored.`
+        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro? }; ignored.`
         : null,
+    complete: dropped === 0 && failures.length <= BOARD_CI_MAX_FAILURES,
   };
 }
 
@@ -1651,12 +1698,13 @@ const BOARD_CI_FAILURE_MARKER = "::t3o-failure::";
 const BOARD_CI_FAILURE_STEP_MAX = 80;
 const BOARD_CI_FAILURE_REASON_MAX = 300;
 
-/** Parse one `::t3o-failure::{step?, reason, machine?}` output line, or null
+/** Parse one `::t3o-failure::{step?, reason, machine?, flaky?}` output line, or null
     when the line is not one, its JSON is unreadable or it has no reason. */
 export function parseBoardCiFailureLine(line: string): {
   readonly step: string | null;
   readonly reason: string;
   readonly machine: boolean | null;
+  readonly flaky: boolean | null;
 } | null {
   const at = line.indexOf(BOARD_CI_FAILURE_MARKER);
   if (at < 0) return null;
@@ -1672,6 +1720,7 @@ export function parseBoardCiFailureLine(line: string): {
       step: text(record.step, BOARD_CI_FAILURE_STEP_MAX),
       reason,
       machine: typeof record.machine === "boolean" ? record.machine : null,
+      flaky: typeof record.flaky === "boolean" ? record.flaky : null,
     };
   } catch {
     return null;
@@ -1871,6 +1920,8 @@ export const BoardCardCiStep = Schema.Struct({
   /** A running step has printed nothing since then, for at least
       `BOARD_CI_SILENT_AFTER_MS`. Display only. */
   silentSince: Schema.optionalKey(IsoDateTime),
+  /** The step passed with only flaky failures: an amber warning in CI detail. */
+  flaky: Schema.optionalKey(Schema.Literal(true)),
 });
 export type BoardCardCiStep = typeof BoardCardCiStep.Type;
 
@@ -1921,8 +1972,29 @@ export const BoardCardCi = Schema.Struct({
   /** What the pass's first failing step says failed and why, for
       the card face; cleared when the next pass starts. */
   headline: Schema.optionalKey(BoardCiHeadline),
+  /** Uncounted flaky checks the fix agent has run this entry (T3O-126). */
+  flakyChecks: Schema.optionalKey(NonNegativeInt),
+  /** The running fix is a flaky-only check: it can call failures flaky, never fix them. */
+  fixTriage: Schema.optionalKey(Schema.Literal(true)),
+  /** `boardCiFlakeKey` of every test ruled flaky this entry, on code unchanged since: a repeat
+      passes with no agent. */
+  flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type BoardCardCi = typeof BoardCardCi.Type;
+
+/** Most flaky titles a CI entry remembers. */
+const BOARD_CI_MAX_FLAKY_TITLES = 50;
+
+/** Uncounted flaky checks one CI entry allows: a loop guard, not a budget. */
+export const BOARD_CI_MAX_FLAKY_CHECKS = 10;
+
+/** A CI entry's flaky titles with `more` added, deduped and capped. */
+export function boardCiMergeFlakyTitles(
+  current: ReadonlyArray<string> | undefined,
+  more: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  return [...new Set([...(current ?? []), ...more])].slice(-BOARD_CI_MAX_FLAKY_TITLES);
+}
 
 /** How a card last left CI other than by passing, for the card face: sent
     back to review (the failing step and the fixes used) or skipped by a
@@ -1989,6 +2061,21 @@ export const BoardCiPassStep = Schema.Struct({
   silentSince: Schema.optionalKey(IsoDateTime),
   /** A failed or timed-out step's headline: what failed and why. */
   headline: Schema.optionalKey(BoardCiHeadline),
+  /** The step passed, but only because every failure it had was a flake: these
+      tests (T3O-126). Its status is `passed`. */
+  flaky: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+        file: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+        repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+        /** The fix agent, not the script, saw it pass alone. */
+        byAgent: Schema.optionalKey(Schema.Literal(true)),
+        /** The test is in the card's own change. */
+        inDiff: Schema.optionalKey(Schema.Literal(true)),
+      }),
+    ),
+  ),
 });
 export type BoardCiPassStep = typeof BoardCiPassStep.Type;
 
@@ -2084,7 +2171,7 @@ export function boardCardCiSteps(
       | "parallel"
       | "progress"
       | "silentSince"
-    >
+    > & { readonly flaky?: BoardCiPassStep["flaky"] | true }
   >,
 ): ReadonlyArray<BoardCardCiStep> {
   return steps.map((step) => ({
@@ -2112,6 +2199,10 @@ export function boardCardCiSteps(
           },
         }),
     ...(step.silentSince === undefined ? {} : { silentSince: step.silentSince }),
+    ...(step.status === "passed" &&
+    (step.flaky === true || (Array.isArray(step.flaky) && step.flaky.length > 0))
+      ? { flaky: true as const }
+      : {}),
   }));
 }
 
@@ -2958,6 +3049,9 @@ const BOARD_CARD_ACTIVITY_KINDS = [
   /** T3o (T3O-123): what the board did to a finished card's worktree beyond removing it: a
       snapshot of uncommitted work, ignored files stripped, or why neither happened. */
   "card-worktree-cleanup",
+  /** T3o (T3O-126): a flaky CI test, noted on its bug card or on the card it flaked on. */
+  "card-ci-flaked-again",
+  "card-ci-flakes-filed",
 ] as const;
 export const BoardCardActivityKind = Schema.Literals(BOARD_CARD_ACTIVITY_KINDS);
 export type BoardCardActivityKind = typeof BoardCardActivityKind.Type;
@@ -6231,6 +6325,10 @@ export const BoardCardNoteKind = Schema.Literals([
   /** CI is holding the card, with the reason. */
   "card-ci-held",
   "card-worktree-cleanup",
+  /** T3o (T3O-126): a test this card's open flake card tracks flaked again elsewhere. */
+  "card-ci-flaked-again",
+  /** T3o (T3O-126): CI passed this card over flaky tests, and the bug cards it filed. */
+  "card-ci-flakes-filed",
 ]);
 export type BoardCardNoteKind = typeof BoardCardNoteKind.Type;
 
@@ -6263,6 +6361,11 @@ export const BoardCardCiAction = Schema.Union([
     fresh: Schema.optionalKey(Schema.Boolean),
     /** The project's Stop on failure is No, frozen on the pass. */
     continueOnFailure: Schema.optionalKey(Schema.Literal(true)),
+    /** Tests the fix just ruled flaky, so the re-run passes them (T3O-126). */
+    flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** The branch changed since the pass this one replaces started, so the entry's flaky
+        rulings no longer describe this code and are dropped (T3O-126). */
+    flakyRulingsStale: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({
     kind: Schema.Literal("step"),
@@ -6287,6 +6390,15 @@ export const BoardCardCiAction = Schema.Union([
     runId: TrimmedNonEmptyString,
     /** How many issues the fix works on. */
     fixIssues: Schema.optionalKey(NonNegativeInt),
+    /** A flaky-only check (T3O-126): uncounted, allowed once the fixes are used up. */
+    triage: Schema.optionalKey(Schema.Literal(true)),
+  }),
+  /** T3o (T3O-126): the fix agent ruled every failure flaky; the same pass carries on.
+      The fix's attempt is refunded and the row reopened. */
+  Schema.Struct({
+    kind: Schema.Literal("flaky-resume"),
+    runId: TrimmedNonEmptyString,
+    titles: Schema.Array(Schema.String),
   }),
   Schema.Struct({
     kind: Schema.Literal("send-back"),
@@ -7309,6 +7421,8 @@ export const BoardCiPassSettle = Schema.Struct({
   outcome: Schema.optionalKey(BoardCiPassOutcome),
   finishedAt: Schema.optionalKey(IsoDateTime),
   fixThreadId: Schema.optionalKey(ThreadId),
+  /** Clear the row's finish: a failed pass the fix agent found only flakes in runs on. */
+  reopen: Schema.optionalKey(Schema.Literal(true)),
 });
 export type BoardCiPassSettle = typeof BoardCiPassSettle.Type;
 
@@ -10758,16 +10872,24 @@ export function decodeBoardCiAgentStepPayload(
 /** One issue's outcome in a fix agent's report. */
 export const BoardCiFixIssueReport = Schema.Struct({
   id: TrimmedNonEmptyString,
-  status: Schema.Literals(["resolved", "cannot-fix"]),
+  status: Schema.Literals(["resolved", "cannot-fix", "flaky"]),
   note: Schema.optionalKey(Schema.String),
+  /** A flaky issue's test, `file › name` or its name: required for a whole-step issue. */
+  title: Schema.optionalKey(Schema.String),
+  file: Schema.optionalKey(Schema.String),
+  /** The command that re-ran it alone. */
+  repro: Schema.optionalKey(Schema.String),
+  /** The test is in the card's own change. */
+  inDiff: Schema.optionalKey(Schema.Boolean),
 });
 export type BoardCiFixIssueReport = typeof BoardCiFixIssueReport.Type;
 
 /** `fixed` re-runs every CI step; `cannot-fix` (or the older `return-to-review`) stops the
-    card for a human with `finding` saying why. An issue left out of `issues` reads resolved
-    under `fixed` and open otherwise. */
+    card for a human with `finding` saying why; `flaky` says every failure passed when re-run
+    alone, so the pass carries on. An issue left out of `issues` reads resolved under `fixed`
+    and open otherwise. */
 export const BoardCiFixPayload = Schema.Struct({
-  verdict: Schema.Literals(["fixed", "cannot-fix", "return-to-review"]),
+  verdict: Schema.Literals(["fixed", "cannot-fix", "return-to-review", "flaky"]),
   finding: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   issues: Schema.optionalKey(Schema.Array(BoardCiFixIssueReport)),
   fixedSha: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -10775,7 +10897,7 @@ export const BoardCiFixPayload = Schema.Struct({
 export type BoardCiFixPayload = typeof BoardCiFixPayload.Type;
 
 export const BOARD_CI_FIX_PAYLOAD_SHAPE =
-  '{ "verdict": "fixed" | "cannot-fix", "issues": [{ "id": string, "status": "resolved" | "cannot-fix", "note"?: string }], "fixedSha"?: string, "finding": string }';
+  '{ "verdict": "fixed" | "cannot-fix" | "flaky", "issues": [{ "id": string, "status": "resolved" | "cannot-fix" | "flaky", "note"?: string, "title"?: string, "file"?: string, "repro"?: string, "inDiff"?: boolean }], "fixedSha"?: string, "finding": string }';
 
 /** The most issues one fix is handed; the rest roll into a last issue. */
 export const BOARD_CI_MAX_FIX_ISSUES = 30;
@@ -10805,7 +10927,8 @@ export function boardCiFixIssues(
   for (const [stepIndex, step] of steps.entries()) {
     if (!isBoardCiStepFailure(step.status)) continue;
     const failures = step.result?.failures ?? [];
-    if (failures.length === 0) {
+    // Flagged flakes aren't the fix's to touch (T3O-126); the rest keep their numbering.
+    if (failures.every((failure) => failure.flaky === true)) {
       all.push({
         id: `s${stepIndex}`,
         stepIndex,
@@ -10815,6 +10938,7 @@ export function boardCiFixIssues(
       continue;
     }
     for (const [n, failure] of failures.entries()) {
+      if (failure.flaky === true) continue;
       all.push({
         id: `s${stepIndex}-${n + 1}`,
         stepIndex,
@@ -10842,7 +10966,7 @@ export function boardCiFixIssues(
   ];
 }
 
-export type BoardCiFixIssueStatus = "open" | "resolved" | "cannot-fix";
+export type BoardCiFixIssueStatus = "open" | "resolved" | "cannot-fix" | "flaky";
 
 /** Each issue's status for display. A reported status wins; an issue
     the report leaves out reads resolved under `fixed` and open otherwise.
@@ -12843,7 +12967,7 @@ export const DEFAULT_BOARD_CI_FIX_PROMPT =
   "This card must pass the project's CI steps to become ready for merge. Fix every failure CI reported, commit and push.";
 
 /** The fix attempts one CI entry allows before the card stops for a human. */
-export const DEFAULT_BOARD_CI_MAX_FIX_ATTEMPTS = 3;
+export const DEFAULT_BOARD_CI_MAX_FIX_ATTEMPTS = 5;
 
 /** CI failure round trips allowed before the card stops for a human.
     Unused since CI stopped sending cards back by itself; kept so

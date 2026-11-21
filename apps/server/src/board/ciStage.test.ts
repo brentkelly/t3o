@@ -6,6 +6,7 @@
  */
 import {
   BOARD_LOCAL_WORKER_ID,
+  BOARD_SEED_LABEL_IDS,
   BOARD_SEED_STAGES,
   BOARD_SEED_STAGE_IDS,
   BoardCardId,
@@ -17,9 +18,12 @@ import {
   boardCiAgentStepId,
   type BoardCiStep,
   type BoardCard,
+  type BoardCiPassStep,
   type BoardCiStepDefinition,
+  type BoardCiStepResult,
   type BoardEvent,
   type BoardState,
+  type BoardCommand,
 } from "@t3tools/contracts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -103,6 +107,10 @@ type Script =
       readonly alsoFailed?: ReadonlyArray<number>;
       /** Force `ranAll`, as an older worker that sends none reads (false). */
       readonly ranAll?: boolean;
+      /** A step's reported failures, by request index (T3O-126). */
+      readonly results?: Readonly<Record<number, BoardCiStepResult>>;
+      /** Steps that passed over flaky tests, by request index. */
+      readonly flaky?: Readonly<Record<number, NonNullable<BoardCiPassStep["flaky"]>>>;
     })
   | "hang"
   | "drop";
@@ -146,10 +154,14 @@ const scriptedRunner = (scripts: ReadonlyArray<Script>) =>
                 ...(failed && script.result === "failed" && script.headline !== undefined
                   ? { headline: script.headline }
                   : {}),
+                ...(script.results?.[index] === undefined ? {} : { result: script.results[index] }),
+                ...(!failed && script.flaky?.[index] !== undefined
+                  ? { flaky: script.flaky[index] }
+                  : {}),
               },
             });
           }
-          const { alsoFailed: _alsoFailed, ...result } = script;
+          const { alsoFailed: _alsoFailed, results: _results, flaky: _flaky, ...result } = script;
           return {
             ...result,
             ranAll: script.ranAll ?? (runsAll || last === request.steps.length - 1),
@@ -361,7 +373,7 @@ it.effect("a failure gets a fix agent; its fix re-runs every step from the top",
         assert.isDefined(select);
         if (select?.type !== "board.card.select-step") return;
         assert.strictEqual(select.stepId, fixStep);
-        assert.strictEqual(select.stepLabel, "CI fix 1 of 3");
+        assert.strictEqual(select.stepLabel, "CI fix 1 of 5");
         assert.strictEqual(fixing.ci?.fixIssues, 1);
         // Stop on failure is Yes by default: the runner is told nothing.
         assert.isUndefined((yield* requests)[0]?.stopOnFailure);
@@ -820,10 +832,31 @@ it.effect("after the last fix attempt the card stops in CI, and Retry CI starts 
           fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "fixed", finding: "" }, 2),
         );
         yield* h.reactor.drainCi;
+        // T3O-126: past the limit an uncounted flaky check runs first; a real failure stops.
+        const checking = yield* live(h, subject.id);
+        assert.strictEqual(checking.ci?.phase, "fixing");
+        assert.strictEqual(checking.ci?.fixTriage, true);
+        assert.strictEqual(checking.ci?.fixAttempts, 1);
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 2),
+            {
+              verdict: "cannot-fix",
+              finding: "Test fails alone too",
+              issues: [{ id: "s1", status: "cannot-fix" }],
+            },
+            3,
+          ),
+        );
+        yield* h.reactor.drainCi;
         const stopped = yield* live(h, subject.id);
         assert.strictEqual(stopped.stage, ci);
         assert.strictEqual(stopped.ci?.phase, "stopped");
-        assert.strictEqual(stopped.ci?.stopReason, "CI still failing after 1 fix: Test.");
+        assert.strictEqual(
+          stopped.ci?.stopReason,
+          "The fix agent couldn't fix Test: Test fails alone too.",
+        );
         const sentBack = ciRecords(yield* h.decided).filter(
           (record) => record.payload.action.kind === "send-back",
         );
@@ -1918,5 +1951,391 @@ it.effect("a nearly full disk on this server holds the pass as a machine problem
         freeBytes: (path) => Effect.sync(() => (checked.push(path), 0.5 * 1024 ** 3)),
       }),
     );
+  }),
+);
+
+// T3O-126: a flaky test never stops a card; each flake becomes an auto-built bug card.
+const flakeTitle = { title: "adds two numbers", file: "src/math.test.ts" };
+
+const flakeCards = (commands: ReadonlyArray<HarnessCommand>) =>
+  commands.filter(
+    (command): command is Extract<HarnessCommand, { type: "board.card.create" }> =>
+      command.type === "board.card.create" &&
+      (command as { externalRef?: { system: string } }).externalRef?.system === "t3o-flaky",
+  );
+
+it.effect(
+  "T3O-126: a pass whose only failures are flaky passes, uses no fix and files a bug card",
+  () =>
+    Effect.gen(function* () {
+      const { runner, calls } = yield* scriptedRunner([
+        {
+          result: "passed",
+          failedIndex: null,
+          results: {
+            1: { summary: null, failures: [{ ...flakeTitle, detail: "expected 3", flaky: true }] },
+          },
+          flaky: { 1: [flakeTitle] },
+        },
+      ]);
+      const subject = card("flaky-pass", review);
+      yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          assert.strictEqual(yield* calls, 1);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          const commands = yield* h.commands;
+          assert.isFalse(commands.some((command) => command.type === "board.card.select-step"));
+          const actions = ciRecords(yield* h.decided).map((record) => record.payload.action);
+          assert.isFalse(actions.some((action) => action.kind === "begin-fix"));
+          const stepRecord = actions.find(
+            (action) =>
+              action.kind === "step" && action.index === 1 && action.step.status === "passed",
+          );
+          assert.deepStrictEqual(stepRecord?.kind === "step" ? stepRecord.step.flaky : undefined, [
+            flakeTitle,
+          ]);
+
+          const created = flakeCards(commands);
+          assert.lengthOf(created, 1);
+          const create = created[0]!;
+          assert.deepStrictEqual(create.labels, [BOARD_SEED_LABEL_IDS.bug]);
+          assert.strictEqual(
+            create.externalRef?.id,
+            `${projectId}:src/math.test.ts › adds two numbers`,
+          );
+          assert.strictEqual(create.planReview?.unattended, true);
+          assert.include(create.brief ?? "", "passed when re-run alone");
+          assert.include(create.brief ?? "", "expected 3");
+          const automation = commands.find(
+            (command) =>
+              command.type === "board.card.set-automation" && command.cardId === create.cardId,
+          );
+          assert.deepInclude(automation, {
+            autoPlan: true,
+            autoSignOff: true,
+            autoBuild: true,
+            autoMerge: false,
+          });
+          const moved = commands.find(
+            (command) => command.type === "board.card.move" && command.cardId === create.cardId,
+          );
+          assert.strictEqual(moved?.type === "board.card.move" ? moved.toStage : null, "planning");
+          assert.isTrue(
+            commands.some(
+              (command) =>
+                command.type === "board.card.record-note" &&
+                command.cardId === subject.id &&
+                command.kind === "card-ci-flakes-filed",
+            ),
+          );
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-126: a mixed step's fix sees only the real failures; its flake is still filed", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([
+      {
+        result: "failed",
+        failedIndex: 1,
+        results: {
+          1: {
+            summary: null,
+            failures: [
+              { title: "real break", file: "src/a.test.ts" },
+              { ...flakeTitle, flaky: true },
+            ],
+          },
+        },
+      },
+    ]);
+    const subject = card("mixed", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const fixing = yield* live(h, subject.id);
+        assert.strictEqual(fixing.ci?.phase, "fixing");
+        assert.strictEqual(fixing.ci?.fixIssues, 1);
+        const select = (yield* h.commands).find(
+          (command) => command.type === "board.card.select-step",
+        );
+        if (select?.type !== "board.card.select-step") return assert.fail("no fix step");
+        assert.include(select.prompt, "[s1-1] Test: real break");
+        assert.notInclude(select.prompt, "[s1-2]");
+        assert.include(select.prompt, "Flaky, not yours: leave alone.");
+        assert.lengthOf(flakeCards(yield* h.commands), 1);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  { label: "a clean worktree", worktreeDirty: false },
+  { label: "only an untracked file in the worktree", worktreeDirty: "untracked" as const },
+])(
+  "T3O-126: the fix agent's flaky verdict with $label carries the same pass on from the next step",
+  ({ worktreeDirty }) =>
+    Effect.gen(function* () {
+      const { runner, calls, requests } = yield* scriptedRunner([
+        {
+          result: "failed",
+          failedIndex: 0,
+          results: { 0: { summary: null, failures: [flakeTitle] } },
+        },
+        { result: "passed", failedIndex: null },
+      ]);
+      const subject = card(`agent-flaky-${String(worktreeDirty)}`, review);
+      yield* withGovernor({ board: boardWith([subject]), settings, worktreeDirty }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          const fixing = yield* live(h, subject.id);
+          assert.strictEqual(fixing.ci?.phase, "fixing");
+          assert.strictEqual(fixing.ci?.fixAttempts, 1);
+          const runId = fixing.ci!.runId;
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiFixStepId(1, 1),
+              {
+                verdict: "flaky",
+                issues: [{ id: "s0-1", status: "flaky", repro: "vp test src/math.test.ts" }],
+              },
+              2,
+            ),
+          );
+          yield* h.reactor.drainCi;
+          assert.strictEqual(yield* calls, 2);
+          const resumed = (yield* requests)[1]!;
+          // Only the step after the flake runs again, on the same pass.
+          assert.deepStrictEqual(
+            resumed.steps.map((step) => step.name),
+            ["Test"],
+          );
+          assert.strictEqual(resumed.indexOffset, 1);
+          assert.deepStrictEqual(resumed.knownFlaky, ["src/math.test.ts › adds two numbers"]);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          const records = ciRecords(yield* h.decided);
+          assert.strictEqual(
+            records.filter((record) => record.payload.action.kind === "start-pass").length,
+            1,
+          );
+          const resume = records.find((record) => record.payload.action.kind === "flaky-resume");
+          assert.isDefined(resume);
+          assert.strictEqual(resume?.payload.card.ci?.fixAttempts, 0);
+          assert.strictEqual(resume?.payload.card.ci?.flakyChecks, 1);
+          const rewritten = records
+            .map((record) => record.payload.action)
+            .find(
+              (action) =>
+                action.kind === "step" &&
+                action.runId === runId &&
+                action.index === 0 &&
+                action.step.status === "passed",
+            );
+          assert.deepStrictEqual(rewritten?.kind === "step" ? rewritten.step.flaky : undefined, [
+            { ...flakeTitle, repro: "vp test src/math.test.ts", byAgent: true },
+          ]);
+          assert.isTrue(
+            records.some((record) =>
+              record.payload.settled.some(
+                (entry) => entry.runId === runId && entry.outcome === "passed",
+              ),
+            ),
+          );
+          const created = flakeCards(yield* h.commands);
+          assert.lengthOf(created, 1);
+          assert.include(created[0]!.brief ?? "", "vp test src/math.test.ts");
+          assert.include(created[0]!.brief ?? "", "CI fix agent");
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect.each([
+  { label: "a failure the agent never called flaky", worktreeDirty: false, real: true },
+  { label: "an uncommitted edit in the worktree", worktreeDirty: true, real: false },
+])("T3O-126: a flaky verdict with $label re-runs the pass, counted", ({ worktreeDirty, real }) =>
+  Effect.gen(function* () {
+    const failures = real ? [flakeTitle, { title: "real break" }] : [flakeTitle];
+    const { runner, requests } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card(`flaky-not-resumed-${String(worktreeDirty)}`, review);
+    yield* withGovernor({ board: boardWith([subject]), settings, worktreeDirty }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 1),
+            { verdict: "flaky", issues: [{ id: "s0-1", status: "flaky" }] },
+            2,
+          ),
+        );
+        yield* h.reactor.drainCi;
+        const rerun = (yield* requests)[1]!;
+        assert.strictEqual(rerun.indexOffset ?? 0, 0);
+        const records = ciRecords(yield* h.decided);
+        assert.isUndefined(records.find((record) => record.payload.action.kind === "flaky-resume"));
+        assert.strictEqual(
+          records.filter((record) => record.payload.action.kind === "start-pass").length,
+          2,
+        );
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  {
+    label: "a flaky step's rewrite to passed that never lands",
+    failures: [flakeTitle],
+    issues: [{ id: "s0-1", status: "flaky" as const }],
+    rewriteFails: true,
+    flakeCardCount: 1,
+  },
+  {
+    label: "a whole-step flaky report with no test title",
+    failures: [],
+    issues: [{ id: "s0", status: "flaky" as const }],
+    rewriteFails: false,
+    flakeCardCount: 0,
+  },
+  {
+    label: "a flake in the card's own diff",
+    failures: [flakeTitle],
+    issues: [{ id: "s0-1", status: "flaky" as const, inDiff: true }],
+    rewriteFails: false,
+    flakeCardCount: 0,
+  },
+])(
+  "T3O-126: $label re-runs the pass, counted",
+  ({ label, failures, issues, rewriteFails, flakeCardCount }) =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+        { result: "passed", failedIndex: null },
+      ]);
+      const subject = card(`flaky-unlanded-${label.replaceAll(/\W+/g, "-")}`, review);
+      const failCommand = (command: BoardCommand) =>
+        rewriteFails &&
+        command.type === "board.card.record-ci" &&
+        command.action.kind === "step" &&
+        command.action.step.flaky !== undefined;
+      yield* withGovernor({ board: boardWith([subject]), settings, failCommand }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          yield* h.pumpDomain(
+            fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "flaky", issues }, 2),
+          );
+          yield* h.reactor.drainCi;
+          const records = ciRecords(yield* h.decided);
+          assert.isUndefined(
+            records.find((record) => record.payload.action.kind === "flaky-resume"),
+          );
+          assert.strictEqual(
+            records.filter((record) => record.payload.action.kind === "start-pass").length,
+            2,
+          );
+          assert.lengthOf(flakeCards(yield* h.commands), flakeCardCount);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-126: a flaky `more` covers the failures rolled into it, so the pass resumes", () =>
+  Effect.gen(function* () {
+    const failures = Array.from({ length: 32 }, (_, n) => ({
+      title: `flake ${n + 1}`,
+      file: "src/many.test.ts",
+    }));
+    const { runner } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card("flaky-more", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const issues = [
+          ...Array.from({ length: 29 }, (_, n) => ({
+            id: `s0-${n + 1}`,
+            status: "flaky" as const,
+          })),
+          { id: "more", status: "flaky" as const },
+        ];
+        yield* h.pumpDomain(
+          fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "flaky", issues }, 2),
+        );
+        yield* h.reactor.drainCi;
+        const records = ciRecords(yield* h.decided);
+        const resume = records.find((record) => record.payload.action.kind === "flaky-resume");
+        assert.isDefined(resume);
+        const action = resume!.payload.action;
+        assert.lengthOf(action.kind === "flaky-resume" ? action.titles : [], 32);
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.isFalse(
+          flakeCards(yield* h.commands).some((command) =>
+            (command.externalRef?.id ?? "").includes(" more in "),
+          ),
+        );
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  { label: "on unchanged code, the re-run is told the tests it ruled flaky", committed: false },
+  { label: "that commits, the re-run trusts none of its flaky rulings", committed: true },
+])("T3O-126: after a counted fix $label", ({ committed }) =>
+  Effect.gen(function* () {
+    const { runner, requests } = yield* scriptedRunner([
+      {
+        result: "failed",
+        failedIndex: 1,
+        results: {
+          1: { summary: null, failures: [{ title: "real break" }, flakeTitle] },
+        },
+      },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card(`fixed-flaky-${String(committed)}`, review);
+    yield* withGovernor(
+      {
+        board: boardWith([subject]),
+        settings,
+        ...(committed ? { latestBranchCommitIso: "2999-01-01T00:00:00.000Z" } : {}),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiFixStepId(1, 1),
+              {
+                verdict: "fixed",
+                issues: [
+                  { id: "s1-1", status: "resolved" },
+                  { id: "s1-2", status: "flaky" },
+                ],
+              },
+              2,
+            ),
+          );
+          yield* h.reactor.drainCi;
+          const rerun = (yield* requests)[1]!;
+          assert.strictEqual(rerun.indexOffset ?? 0, 0);
+          assert.deepStrictEqual(
+            rerun.knownFlaky,
+            committed ? undefined : ["src/math.test.ts › adds two numbers"],
+          );
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          assert.lengthOf(flakeCards(yield* h.commands), 1);
+        }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
   }),
 );

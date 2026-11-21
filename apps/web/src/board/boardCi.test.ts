@@ -62,6 +62,9 @@ describe("boardCiSegments", () => {
     ]);
     expect(boardCiSegments(ci({ phase: "running", steps }))[1]?.state).toBe("failed");
     expect(boardCiSegments(ci({ steps: [step("Test", "timed-out")] }))[0]?.state).toBe("failed");
+    expect(
+      boardCiSegments(ci({ steps: [{ ...step("Test", "passed"), flaky: true }] }))[0]?.state,
+    ).toBe("flaky");
   });
 });
 
@@ -432,6 +435,24 @@ describe("a failed pass's fix row (T3O-57)", () => {
     const fixing = { runId: "run-3", phase: "fixing", fixAttempts: 2, maxFixAttempts: 3 } as const;
     const running = boardCiFixRow({ pass, completions: [], ci: fixing });
     expect(running).toMatchObject({ state: "running", headline: "Fix 2 of 3 · 2 issues" });
+    // T3O-126: a flaky check is numbered after the fixes and checks before it.
+    const checking = { ...fixing, fixAttempts: 3, flakyChecks: 1, fixTriage: true } as const;
+    expect(
+      boardCiFixRow({
+        pass,
+        completions: [
+          {
+            stepId: boardCiFixStepId(pass.entry, 5),
+            payload: JSON.stringify({ verdict: "flaky", issues: [{ id: "s0", status: "flaky" }] }),
+            threadId: null,
+          },
+        ],
+        ci: checking,
+      })?.issues.map((issue) => issue.status),
+    ).toEqual(["flaky", "open"]);
+    expect(boardCiFixRow({ pass, completions: [], ci: checking })).toMatchObject({
+      headline: "Flaky check · 2 issues",
+    });
     expect(running?.issues.map((issue) => issue.status)).toEqual(["open", "open"]);
     // Without stop on failure, the pass keeps running with its failures queued.
     expect(

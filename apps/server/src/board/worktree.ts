@@ -409,6 +409,9 @@ export const probeBoardWorktreeDurability = Effect.fn("probeBoardWorktreeDurabil
   const facts = {
     hasWorkingTreeChanges: changedPaths.length > 0,
     changedPaths,
+    hasTrackedChanges: status.stdout
+      .split("\n")
+      .some((line) => line.length >= 4 && !line.startsWith("??")),
     openPullRequestNumber: input.openPullRequestNumber ?? null,
   };
   if (changedPaths.length > 0) return { ...facts, durable: false, unmergedCount: 0 };

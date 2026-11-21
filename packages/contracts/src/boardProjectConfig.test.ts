@@ -109,7 +109,7 @@ describe("normalization and version", () => {
       delta: {
         stageSwitches: { backlog: true, sprint: false, review: false, ready: false, nope: true },
         overrides: {
-          ci: { maxFixAttempts: 3, maxRoundTrips: 5, autoExecute: false },
+          ci: { maxFixAttempts: 5, maxRoundTrips: 5, autoExecute: false },
           building: { prompt: DEFAULT_BOARD_SETTINGS.pipeline.building?.prompt ?? "x" },
           nope: { autoExecute: true },
         },
@@ -278,12 +278,14 @@ describe("script reporting", () => {
       parseBoardCiFailureLine(
         '  ::t3o-failure::{"step":" lint ","reason":"No files to lint","machine":false}',
       ),
-    ).toEqual({ step: "lint", reason: "No files to lint", machine: false });
+    ).toEqual({ step: "lint", reason: "No files to lint", machine: false, flaky: null });
     expect(parseBoardCiFailureLine('::t3o-failure::{"reason":"x"}')).toEqual({
       step: null,
       reason: "x",
       machine: null,
+      flaky: null,
     });
+    expect(parseBoardCiFailureLine('::t3o-failure::{"reason":"x","flaky":true}')?.flaky).toBe(true);
     const long = parseBoardCiFailureLine(
       `::t3o-failure::${JSON.stringify({ step: "s".repeat(200), reason: "r".repeat(900) })}`,
     );
@@ -300,6 +302,21 @@ describe("script reporting", () => {
     expect(parsed.result?.failures).toEqual([{ title: "browser", machine: true }]);
   });
 
+  it("keeps a result-file failure's flaky flag and repro command (T3O-126)", () => {
+    const parsed = parseBoardCiResultFile(
+      JSON.stringify({ failures: [{ title: "adds", flaky: true, repro: "vp test a" }] }),
+    );
+    expect(parsed.result?.failures).toEqual([{ title: "adds", flaky: true, repro: "vp test a" }]);
+  });
+
+  it("clips an over-long failure field rather than dropping the failure (T3O-126)", () => {
+    const parsed = parseBoardCiResultFile(
+      JSON.stringify({ failures: [{ title: "real", detail: "x".repeat(5_000) }] }),
+    );
+    expect(parsed.result?.failures[0]?.detail).toHaveLength(4_000);
+    expect(parsed.complete).toBe(true);
+  });
+
   it("keeps valid failures of a result file, capped, and warns about the rest", () => {
     const many = Array.from({ length: 60 }, (_, index) => ({ title: `f${index}` }));
     const parsed = parseBoardCiResultFile(
@@ -308,6 +325,7 @@ describe("script reporting", () => {
     expect(parsed.result?.summary).toBe("2 failed");
     expect(parsed.result?.failures).toHaveLength(50);
     expect(parsed.warning).toContain("1 of the step's reported failures");
+    expect(parsed.complete).toBe(false);
     expect(parseBoardCiResultFile("[]").result).toBeNull();
     expect(parseBoardCiResultFile("{").warning).toContain("isn't valid JSON");
   });

@@ -569,6 +569,8 @@ export function withGovernor(
     /** Reject every `thread.create`, so a test can drive the spawn-failure path
         (a thread the engine refuses to create) without a provider double. */
     readonly rejectThreadCreate?: boolean;
+    /** Fail the board commands it picks, as a dispatch that never lands. */
+    readonly failCommand?: (command: BoardCommand) => boolean;
     /** Provider instances turned off for every project: a spawn on one is
         refused with the provider-disabled reason. */
     readonly providerDisabled?: ReadonlyArray<string>;
@@ -651,8 +653,9 @@ export function withGovernor(
     readonly localMergeConflict?: "conflict" | "unresolvable" | "unfetched";
     /** Make the stubbed `statusDetails` report uncommitted changes, so a test
         can drive the reclaim refusal — the case where the checkout holds work
-        that exists nowhere else and must NOT be deleted to save disk. */
-    readonly worktreeDirty?: boolean;
+        that exists nowhere else and must NOT be deleted to save disk. `"untracked"` leaves
+        only an untracked file. */
+    readonly worktreeDirty?: boolean | "untracked";
     /** Make the durability probe find the worktree's commits nowhere else:
         no remote ref contains HEAD and two commits are unmerged.
         Durable by default, since that is what a merged card looks like. */
@@ -858,6 +861,11 @@ export function withGovernor(
     const dispatchBoard = (command: BoardCommand) =>
       recordCommand(command).pipe(
         Effect.andThen(
+          input.failCommand?.(command) === true
+            ? Effect.die(new Error(`fixture failed ${command.type}`))
+            : Effect.void,
+        ),
+        Effect.andThen(
           Effect.gen(function* () {
             const context = yield* loadDecisionContext(command, boardQueriesStub, gateway);
             const outcome = yield* decideBoardCommand({
@@ -918,7 +926,7 @@ export function withGovernor(
       resolveDefaultBranchName: () => Effect.succeed("main"),
       statusDetails: () =>
         Effect.succeed({
-          hasWorkingTreeChanges: input.worktreeDirty === true,
+          hasWorkingTreeChanges: input.worktreeDirty !== undefined && input.worktreeDirty !== false,
           hasUpstream: true,
           aheadCount: 0,
         }),
@@ -986,7 +994,12 @@ export function withGovernor(
         if (request.args?.[0] === "status" && request.args[1] === "--porcelain") {
           return (input.duringDurabilityProbe?.(model) ?? Effect.void).pipe(
             Effect.as({
-              stdout: input.worktreeDirty === true ? " M README.md\n" : "",
+              stdout:
+                input.worktreeDirty === true
+                  ? " M README.md\n"
+                  : input.worktreeDirty === "untracked"
+                    ? "?? scratch.txt\n"
+                    : "",
               stderr: "",
               exitCode: 0,
             }),

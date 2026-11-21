@@ -500,6 +500,9 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
             logDir: boardCiLogDir(input.worktreePath, input.runId),
             ...(input.indexOffset === undefined ? {} : { indexOffset: input.indexOffset }),
             ...(input.stopOnFailure === false ? { stopOnFailure: false } : {}),
+            // T3o (T3O-126): flaky rules travel with the pass.
+            ...(input.knownFlaky === undefined ? {} : { knownFlaky: input.knownFlaky }),
+            ...(input.notFlakyTitle === undefined ? {} : { notFlakyTitle: input.notFlakyTitle }),
           },
           (progress) =>
             Queue.offer(queue, { _tag: "step", ...progress } as const).pipe(Effect.asVoid),

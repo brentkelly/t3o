@@ -192,6 +192,10 @@ function ActivityIcon({
       return <ChevronsRightIcon className={className} />;
     case "card-ci-held":
       return <TriangleAlertIcon className={cn(className, "text-warning-foreground")} />;
+    // A flake is a warning, never a pass and never a failure.
+    case "card-ci-flakes-filed":
+    case "card-ci-flaked-again":
+      return <TriangleAlertIcon className={cn(className, "text-warning-foreground")} />;
     case "card-ci-stopped":
       return <PauseIcon className={cn(className, "text-attention-foreground")} />;
     case "card-worktree-cleanup":
@@ -241,6 +245,8 @@ const CI_ACTIVITY_KINDS: ReadonlySet<BoardCardActivityEntry["kind"]> = new Set([
   "card-ci-skipped",
   "card-ci-held",
   "card-ci-stopped",
+  "card-ci-flakes-filed",
+  "card-ci-flaked-again",
 ]);
 
 function roundsPhrase(rounds: number): string {
@@ -456,6 +462,10 @@ function activitySentence(
       return <>skipped CI</>;
     case "card-ci-held":
       return payload.detail === undefined ? <>held the card in CI</> : <>{payload.detail}</>;
+    case "card-ci-flakes-filed":
+      return payload.detail === undefined ? <>CI passed over flaky tests</> : <>{payload.detail}</>;
+    case "card-ci-flaked-again":
+      return payload.detail === undefined ? <>the test flaked again</> : <>{payload.detail}</>;
     case "card-ci-stopped":
       return <>stopped CI for a human: the card has failed CI too many times</>;
     case "card-worktree-cleanup":
