@@ -2204,15 +2204,22 @@ it.effect.each([
     rewriteFails: false,
     flakeCardCount: 0,
   },
+  {
+    label: "a flake in the card's own diff",
+    failures: [flakeTitle],
+    issues: [{ id: "s0-1", status: "flaky" as const, inDiff: true }],
+    rewriteFails: false,
+    flakeCardCount: 0,
+  },
 ])(
   "T3O-126: $label re-runs the pass, counted",
-  ({ failures, issues, rewriteFails, flakeCardCount }) =>
+  ({ label, failures, issues, rewriteFails, flakeCardCount }) =>
     Effect.gen(function* () {
       const { runner } = yield* scriptedRunner([
         { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
         { result: "passed", failedIndex: null },
       ]);
-      const subject = card(`flaky-unlanded-${String(rewriteFails)}`, review);
+      const subject = card(`flaky-unlanded-${label.replaceAll(/\W+/g, "-")}`, review);
       const failCommand = (command: BoardCommand) =>
         rewriteFails &&
         command.type === "board.card.record-ci" &&

@@ -62,6 +62,9 @@ describe("boardCiSegments", () => {
     ]);
     expect(boardCiSegments(ci({ phase: "running", steps }))[1]?.state).toBe("failed");
     expect(boardCiSegments(ci({ steps: [step("Test", "timed-out")] }))[0]?.state).toBe("failed");
+    expect(
+      boardCiSegments(ci({ steps: [{ ...step("Test", "passed"), flaky: true }] }))[0]?.state,
+    ).toBe("flaky");
   });
 });
 

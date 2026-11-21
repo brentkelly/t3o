@@ -29,14 +29,18 @@ export type BoardStepBadgeState =
   | "passed"
   | "failed"
   | "fixing"
-  | "cancelled";
+  | "cancelled"
+  | "flaky";
 
-/** A CI step's badge: a failure a fix agent is working on is blue, not amber. */
+/** A CI step's badge: a failure a fix agent is working on is blue, not amber, and a
+    step that passed only over flakes is an amber warning, never green. */
 export function boardCiStepBadgeState(
   status: BoardCiStepStatus,
   fixing: boolean,
+  flaky = false,
 ): BoardStepBadgeState {
   if (status === "failed" || status === "timed-out") return fixing ? "fixing" : "failed";
+  if (status === "passed" && flaky) return "flaky";
   return status;
 }
 
@@ -53,13 +57,14 @@ const SEGMENT_WORD: Record<BoardStepBadgeState, string> = {
   failed: "failed",
   fixing: "being fixed",
   cancelled: "cancelled",
+  flaky: "passed over flaky tests",
 };
 
 /** One progress segment per step of the entry's current pass. */
 export function boardCiSegments(ci: BoardCardCi): ReadonlyArray<BoardCiSegment> {
   const fixing = ci.phase === "fixing";
   return ci.steps.map((step) => {
-    const state = boardCiStepBadgeState(step.status, fixing);
+    const state = boardCiStepBadgeState(step.status, fixing, step.flaky === true);
     return { name: step.name, state, tooltip: `${step.name} · ${SEGMENT_WORD[state]}` };
   });
 }

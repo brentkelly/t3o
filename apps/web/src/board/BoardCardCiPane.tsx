@@ -245,7 +245,10 @@ function StepRow({
           (running || stepFixing) && "bg-info/5",
         )}
       >
-        <BoardStepBadge index={index + 1} state={boardCiStepBadgeState(step.status, fixing)} />
+        <BoardStepBadge
+          index={index + 1}
+          state={boardCiStepBadgeState(step.status, fixing, flakes.length > 0)}
+        />
         <div className="flex min-w-0 flex-1 flex-col gap-px">
           <BoardShimmerText
             active={running}

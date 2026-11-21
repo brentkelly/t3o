@@ -305,6 +305,15 @@ describe("CiStageExecutor", () => {
     expect(
       plan({ card: fixing, settledStepId: step, completions: [completion(step, mixed)] }),
     ).toEqual({ kind: "ci-pass", flakyIssues: [flaky] });
+    // A flake in the card's own diff is the card's failure: a counted fix.
+    const inDiff = { ...flaky, inDiff: true };
+    expect(
+      plan({
+        card: fixing,
+        settledStepId: step,
+        completions: [completion(step, { verdict: "flaky", issues: [inDiff] })],
+      }),
+    ).toEqual({ kind: "ci-pass", flakyIssues: [inDiff] });
     // A failed step the agent never named, or a timeout, isn't a flake: a counted fix.
     const twoFailed = cardInCi(
       ci({

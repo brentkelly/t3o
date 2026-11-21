@@ -952,8 +952,8 @@ export function boardCiFixPromptRules(
 ): ReadonlyArray<string> {
   // T3o (T3O-126): a flake never stops a card; the fix agent is the board's flake check.
   const flakyRules = [
-    "Before fixing a failing test from a script step, re-run that test alone with the project's own test runner. Re-run its whole file instead when this card's diff touches that test file or any test setup, fixture or helper file. With more than 10 failures in one step, re-run a sample of 3; if all 3 pass, report every failure of that step as flaky. Afterwards `git status` must be clean: revert anything the re-runs wrote.",
-    "A test that passes when re-run alone is a flake: mark its issue \"flaky\" with its `title` (`file › name`), `file`, the `repro` command you ran, and `inDiff` (whether this card's diff touches it). Do not edit it, even when it is not in this card's diff: the board files it as its own bug card.",
+    "Before fixing a failing test from a script step, re-run that test alone with the project's own test runner. Re-run its whole file instead when this card's diff touches that test file or any test setup, fixture or helper file. With more than 10 failures in one step, re-run 3 first: if any fails, treat the step's failures as real. Only a test you re-ran yourself and saw pass is flaky: never extrapolate from a sample, and mark `more` flaky only when you re-ran every failure it covers. Afterwards `git status` must be clean: revert anything the re-runs wrote.",
+    'A test that passes when re-run alone is a flake: mark its issue "flaky" with its `title` (`file › name`), `file`, the `repro` command you ran, and `inDiff` (whether this card\'s diff touches it). Do not edit a flake outside this card\'s diff: the board files it as its own bug card. A flake inside this card\'s diff is a real failure of this card, never "flaky".',
     "Agent and forge-checks steps are never flaky.",
     ...(options.notFlakyTitle === undefined
       ? []

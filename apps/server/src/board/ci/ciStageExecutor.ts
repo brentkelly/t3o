@@ -93,8 +93,8 @@ function issueStepKind(ci: BoardCardCi | null, issueId: string) {
   return ci.steps[Number(match[1])]?.kind ?? "script";
 }
 
-/** T3o (T3O-126): a `flaky` verdict counts only when every issue is flaky, on a script step,
-    and every failed step has one: a step the agent never named, or a timeout, is no flake. */
+/** T3o (T3O-126): a `flaky` verdict counts only when every issue is flaky, outside the
+    card's diff, on a script step, and every failed step has one: a step the agent never named, or a timeout, is no flake. */
 function isAllFlaky(ci: BoardCardCi | null, verdict: BoardCiFixPayload): boolean {
   const issues = verdict.issues ?? [];
   const named = new Set(issues.map((issue) => /^s(\d+)(?:-\d+)?$/.exec(issue.id)?.[1]));
@@ -105,6 +105,7 @@ function isAllFlaky(ci: BoardCardCi | null, verdict: BoardCiFixPayload): boolean
     issues.every(
       (issue) =>
         issue.status === "flaky" &&
+        issue.inDiff !== true &&
         (issue.id === "more" || issueStepKind(ci, issue.id) === "script"),
     ) &&
     (ci?.steps ?? []).every(

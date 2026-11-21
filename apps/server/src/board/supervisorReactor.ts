@@ -5847,8 +5847,8 @@ const make = Effect.gen(function* () {
 
   /** The flakes a fix agent reported, resolved against the pass's issues: a per-failure
       issue keeps the script's own title and file, so its key matches the runner's. Only a
-      test is a flake: the `more` rollup, a whole-step report with no title, and a report on
-      an agent or forge-checks step are none. */
+      test is a flake: the `more` rollup, a whole-step report with no title, a report on an
+      agent or forge-checks step, and a test in the card's own diff are none. */
   const agentCiFlakes = Effect.fn("board-supervisor-agentCiFlakes")(function* (
     cardId: BoardCardId,
     runId: string,
@@ -5858,7 +5858,8 @@ const make = Effect.gen(function* () {
     if (read === null) return [];
     return reports.flatMap((report): ReadonlyArray<BoardCiFlake & { readonly issueId: string }> => {
       const issue = read.issues.find((candidate) => candidate.id === report.id);
-      if (issue === undefined || issue.id === "more") return [];
+      // A flake in this card's own change is the card's to fix, never a pass-over.
+      if (issue === undefined || issue.id === "more" || report.inDiff === true) return [];
       const step = read.steps[issue.stepIndex];
       if (step === undefined || (step.kind ?? "script") !== "script") return [];
       const perFailure = /-\d+$/.test(issue.id);
@@ -5884,7 +5885,6 @@ const make = Effect.gen(function* () {
           ...(report.repro === undefined || report.repro.trim().length === 0
             ? {}
             : { repro: report.repro.trim().slice(0, 500) }),
-          ...(report.inDiff === true ? { inDiff: true } : {}),
           stepName: issue.stepName,
           command: step.command,
           source: "agent" as const,
@@ -5992,7 +5992,6 @@ const make = Effect.gen(function* () {
           ...(failure.file === undefined ? {} : { file: failure.file }),
           ...(repro === undefined ? {} : { repro }),
           ...(failure.flaky === true ? {} : { byAgent: true as const }),
-          ...(agent?.inDiff === true ? { inDiff: true as const } : {}),
         });
         return { ...failure, flaky: true };
       });
@@ -6003,7 +6002,6 @@ const make = Effect.gen(function* () {
           ...(whole.file === undefined ? {} : { file: whole.file }),
           ...(whole.repro === undefined ? {} : { repro: whole.repro }),
           byAgent: true,
-          ...(whole.inDiff === true ? { inDiff: true as const } : {}),
         });
       }
       const { headline: _headline, ...rest } = step;
