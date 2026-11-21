@@ -1577,23 +1577,45 @@ export type BoardCiStepResult = typeof BoardCiStepResult.Type;
 
 const decodeFailureDetail = Schema.decodeUnknownOption(BoardCiFailureDetail);
 
-/**
- * Parse a script's `$T3O_CI_RESULT` file: `{ summary?, failures?: [{ title,
- * detail?, file?, line?, machine?, flaky?, repro? }] }`. Invalid failures are dropped and at most
- * `BOARD_CI_MAX_FAILURES` kept; a file that isn't that shape is a warning.
- */
+const clipFailureFields = (entry: unknown): unknown => {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+  const record = { ...(entry as Record<string, unknown>) };
+  for (const [field, max] of [
+    ["title", 500],
+    ["detail", 4_000],
+    ["file", 500],
+    ["repro", 500],
+  ] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > max) record[field] = value.slice(0, max);
+  }
+  return record;
+};
+
+/** Parse a script's `$T3O_CI_RESULT` file. Over-long fields are clipped, invalid failures
+    dropped and at most `BOARD_CI_MAX_FAILURES` kept; a bad file is a warning. `complete` is
+    false when a reported failure didn't survive, so no caller judges the step on the rest. */
 export function parseBoardCiResultFile(text: string): {
   readonly result: BoardCiStepResult | null;
   readonly warning: string | null;
+  readonly complete: boolean;
 } {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
-    return { result: null, warning: "The step's result file isn't valid JSON; ignored." };
+    return {
+      result: null,
+      warning: "The step's result file isn't valid JSON; ignored.",
+      complete: false,
+    };
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { result: null, warning: "The step's result file isn't a JSON object; ignored." };
+    return {
+      result: null,
+      warning: "The step's result file isn't a JSON object; ignored.",
+      complete: false,
+    };
   }
   const record = raw as Record<string, unknown>;
   const summary =
@@ -1602,7 +1624,7 @@ export function parseBoardCiResultFile(text: string): {
       : null;
   const listed = Array.isArray(record.failures) ? record.failures : [];
   const failures = listed.flatMap((entry) => {
-    const decoded = decodeFailureDetail(entry);
+    const decoded = decodeFailureDetail(clipFailureFields(entry));
     return decoded._tag === "Some" ? [decoded.value] : [];
   });
   const dropped = listed.length - failures.length;
@@ -1612,6 +1634,7 @@ export function parseBoardCiResultFile(text: string): {
       dropped > 0
         ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro? }; ignored.`
         : null,
+    complete: dropped === 0 && failures.length <= BOARD_CI_MAX_FAILURES,
   };
 }
 

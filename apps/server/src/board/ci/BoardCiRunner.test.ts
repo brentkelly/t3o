@@ -425,6 +425,23 @@ it.live("a step whose every failure is flaky passes over them; a real one beside
   }),
 );
 
+// A failure the result parser couldn't keep is still a failure: the step never passes as all-flaky.
+it.live("a flaky step with a reported failure the parser dropped still fails", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const { events, emit } = collect();
+    const dropped = `printf '%s' '{"failures":[{"title":"adds","flaky":true},{"detail":"no title"}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const result = yield* runBoardCiPass(
+      request(cwd, [{ name: "Dropped", command: dropped, timeoutMinutes: 1 }]),
+      emit,
+    );
+    assert.deepInclude(result, { result: "failed", failedIndex: 0 });
+    const final = events.filter((event) => event.step.status !== "running").at(-1)?.step;
+    assert.strictEqual(final?.status, "failed");
+    assert.isUndefined(final?.flaky);
+  }),
+);
+
 it.live("a test already ruled flaky passes unflagged, except on its own flake card", () =>
   Effect.gen(function* () {
     const cwd = workdir();

@@ -518,26 +518,32 @@ const withStepLines = <A>(
 const readStepResult = (
   resultPath: string,
   tail: BoardCiTail,
-): { readonly result: BoardCiStepResult | null; readonly empty: boolean } => {
+): {
+  readonly result: BoardCiStepResult | null;
+  readonly empty: boolean;
+  /** False when the file reported a failure the parser couldn't keep. */
+  readonly complete: boolean;
+} => {
   let text: string;
   try {
     text = NodeFS.readFileSync(resultPath, "utf8");
   } catch {
-    return { result: null, empty: false };
+    return { result: null, empty: false, complete: true };
   }
-  if (text.trim().length === 0) return { result: null, empty: true };
+  if (text.trim().length === 0) return { result: null, empty: true, complete: true };
   const parsed = parseBoardCiResultFile(text);
   if (parsed.warning !== null) tail.push(`\n[board] ${parsed.warning}\n`);
-  return { result: parsed.result, empty: false };
+  return { result: parsed.result, empty: false, complete: parsed.complete };
 };
 
 /**
  * T3o (T3O-126): the step's failures with each flake marked by the request's rules, and
  * whether the step failed only on flakes. A step with no reported failures is all-flaky
- * only when its `::t3o-failure::` line says so; a timeout never is.
+ * only when its `::t3o-failure::` line says so; a timeout never is, nor is a step whose
+ * result file reported a failure the parser dropped or capped.
  */
 function boardCiStepFlakes(
-  result: BoardCiStepResult | null,
+  read: { readonly result: BoardCiStepResult | null; readonly complete: boolean },
   failureLine: { readonly step: string | null; readonly flaky: boolean | null } | null,
   stepName: string,
   options: Pick<BoardCiRunRequest, "knownFlaky" | "notFlakyTitle">,
@@ -554,6 +560,7 @@ function boardCiStepFlakes(
     ...(options.knownFlaky === undefined ? {} : { knownFlaky: options.knownFlaky }),
     ...(options.notFlakyTitle === undefined ? {} : { notFlakyTitle: options.notFlakyTitle }),
   };
+  const result = read.result;
   const failures = (result?.failures ?? []).map((failure): BoardCiFailureDetail => {
     const flaky = isBoardCiFailureFlaky(failure, rules);
     if (flaky === (failure.flaky === true)) return failure;
@@ -573,10 +580,11 @@ function boardCiStepFlakes(
   );
   const marked = result === null ? null : { ...result, failures };
   if (failures.length > 0) {
-    return { result: marked, flaky, allFlaky: flaky.length === failures.length };
+    return { result: marked, flaky, allFlaky: read.complete && flaky.length === failures.length };
   }
   const title = failureLine?.step ?? stepName;
   const lineFlaky =
+    read.complete &&
     failureLine?.flaky === true &&
     !(options.notFlakyTitle !== undefined && options.notFlakyTitle === title);
   return { result: marked, flaky: lineFlaky ? [{ title }] : [], allFlaky: lineFlaky };
@@ -717,12 +725,7 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
               }),
             );
             const read = readStepResult(resultPath, tail);
-            const flakes = boardCiStepFlakes(
-              read.result,
-              facts.failureLine,
-              definition.name,
-              request,
-            );
+            const flakes = boardCiStepFlakes(read, facts.failureLine, definition.name, request);
             const result = flakes.result;
             // T3o (T3O-126): a step that failed only on flakes passes; a timeout never does.
             const allFlaky = exit.status !== "timed-out" && flakes.allFlaky;
