@@ -2044,6 +2044,11 @@ export const BoardCiPassStep = Schema.Struct({
       Schema.Struct({
         title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
         file: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+        repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+        /** The fix agent, not the script, saw it pass alone. */
+        byAgent: Schema.optionalKey(Schema.Literal(true)),
+        /** The test is in the card's own change. */
+        inDiff: Schema.optionalKey(Schema.Literal(true)),
       }),
     ),
   ),
@@ -2142,8 +2147,7 @@ export function boardCardCiSteps(
       | "parallel"
       | "progress"
       | "silentSince"
-      | "flaky"
-    >
+    > & { readonly flaky?: BoardCiPassStep["flaky"] | true }
   >,
 ): ReadonlyArray<BoardCardCiStep> {
   return steps.map((step) => ({
@@ -2171,7 +2175,8 @@ export function boardCardCiSteps(
           },
         }),
     ...(step.silentSince === undefined ? {} : { silentSince: step.silentSince }),
-    ...(step.status === "passed" && step.flaky !== undefined && step.flaky.length > 0
+    ...(step.status === "passed" &&
+    (step.flaky === true || (Array.isArray(step.flaky) && step.flaky.length > 0))
       ? { flaky: true as const }
       : {}),
   }));

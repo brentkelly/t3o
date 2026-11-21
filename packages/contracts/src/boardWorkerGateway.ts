@@ -596,6 +596,7 @@ export const BoardWorkerCiProgress = Schema.Union([
           Schema.Struct({
             title: TrimmedNonEmptyString,
             file: Schema.optionalKey(TrimmedNonEmptyString),
+            repro: Schema.optionalKey(TrimmedNonEmptyString),
           }),
         ),
       ),

@@ -16,6 +16,7 @@ import {
   boardCiStepGroups,
   isBoardCiFailureFlaky,
   parseBoardCiResultFile,
+  type BoardCiFailureDetail,
   type BoardCiHeadline,
   type BoardCiPassStep,
   type BoardCiStepDefinition,
@@ -542,14 +543,18 @@ export function boardCiStepFlakes(
   options: Pick<BoardCiRunRequest, "knownFlaky" | "notFlakyTitle">,
 ): {
   readonly result: BoardCiStepResult | null;
-  readonly flaky: ReadonlyArray<{ readonly title: string; readonly file?: string }>;
+  readonly flaky: ReadonlyArray<{
+    readonly title: string;
+    readonly file?: string;
+    readonly repro?: string;
+  }>;
   readonly allFlaky: boolean;
 } {
   const rules = {
     ...(options.knownFlaky === undefined ? {} : { knownFlaky: options.knownFlaky }),
     ...(options.notFlakyTitle === undefined ? {} : { notFlakyTitle: options.notFlakyTitle }),
   };
-  const failures = (result?.failures ?? []).map((failure) => {
+  const failures = (result?.failures ?? []).map((failure): BoardCiFailureDetail => {
     const flaky = isBoardCiFailureFlaky(failure, rules);
     if (flaky === (failure.flaky === true)) return failure;
     const { flaky: _dropped, ...rest } = failure;
@@ -557,7 +562,13 @@ export function boardCiStepFlakes(
   });
   const flaky = failures.flatMap((failure) =>
     failure.flaky === true
-      ? [{ title: failure.title, ...(failure.file === undefined ? {} : { file: failure.file }) }]
+      ? [
+          {
+            title: failure.title,
+            ...(failure.file === undefined ? {} : { file: failure.file }),
+            ...(failure.repro === undefined ? {} : { repro: failure.repro }),
+          },
+        ]
       : [],
   );
   const marked = result === null ? null : { ...result, failures };

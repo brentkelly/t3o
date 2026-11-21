@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * T3o (T3O-126): every flaky CI test becomes a bug card in its project, auto-planned and
  * auto-built but never auto-merged, so a human comes back to a fix ready to merge. A test is
@@ -21,6 +22,7 @@ import {
   resolveBoardStageExecution,
   type BoardActivityActor,
   type BoardCard,
+  type BoardCiPassStep,
   type BoardCommand,
   type BoardSettings,
   type BoardState,
@@ -213,7 +215,9 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     const matches = board.cards.filter((candidate) => isFlakeCardFor(candidate, base));
     const open = matches.find(isOpen);
     if (open !== undefined) {
-      yield* noteOn(open, key, flake, seed);
+      // This pass already filed it from another call site: nothing more to say.
+      if (open.id !== flakeCardId(seed)) yield* noteOn(open, key, flake, seed);
+      else filed.push(open.key);
       continue;
     }
     const openInProject = board.cards.filter(
@@ -264,9 +268,7 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
       ...(bugLabelLive ? { labels: [BOARD_SEED_LABEL_IDS.bug] } : {}),
       externalRef: { system: BOARD_CI_FLAKE_REF_SYSTEM, id: refId, url: null },
       planReview: {
-        ...boardPlanReviewCreationDefaults(
-          planExecution?.kind === "simple" ? planExecution : null,
-        ),
+        ...boardPlanReviewCreationDefaults(planExecution?.kind === "simple" ? planExecution : null),
         unattended: true,
       },
       createdAt: yield* deps.nowIso,
@@ -343,3 +345,48 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
   }
   return { filed, noted, listed } satisfies BoardCiFlakeFiling;
 });
+
+/** A pass row's flakes: every flaky test of a step that passed over them, and the
+    script-flagged flakes beside a real failure. */
+export function boardCiPassFlakes(
+  steps: ReadonlyArray<
+    Pick<BoardCiPassStep, "name" | "command" | "status" | "result" | "flaky" | "kind">
+  >,
+): ReadonlyArray<BoardCiFlake> {
+  return steps.flatMap((step) => {
+    const failures = step.result?.failures ?? [];
+    const command = step.kind === undefined || step.kind === "script" ? step.command : undefined;
+    const base = { stepName: step.name, ...(command === undefined ? {} : { command }) };
+    if (step.status === "passed") {
+      return (step.flaky ?? []).map((entry): BoardCiFlake => {
+        const reported = failures.find(
+          (failure) => failure.title === entry.title && failure.file === entry.file,
+        );
+        const repro = entry.repro ?? reported?.repro;
+        return {
+          ...base,
+          title: entry.title,
+          ...(entry.file === undefined ? {} : { file: entry.file }),
+          ...(reported?.detail === undefined ? {} : { detail: reported.detail }),
+          ...(repro === undefined ? {} : { repro }),
+          ...(entry.inDiff === true ? { inDiff: true } : {}),
+          source: entry.byAgent === true ? "agent" : "script",
+        };
+      });
+    }
+    return failures.flatMap((failure): ReadonlyArray<BoardCiFlake> =>
+      failure.flaky === true
+        ? [
+            {
+              ...base,
+              title: failure.title,
+              ...(failure.file === undefined ? {} : { file: failure.file }),
+              ...(failure.detail === undefined ? {} : { detail: failure.detail }),
+              ...(failure.repro === undefined ? {} : { repro: failure.repro }),
+              source: "script",
+            },
+          ]
+        : [],
+    );
+  });
+}

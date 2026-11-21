@@ -14,6 +14,7 @@ import {
   isBoardCiActive,
   isBoardCiSwitchedOn,
   boardCiFixIssues,
+  boardCiFlakeKey,
   boardCiNextSegment,
   boardCiStopsOnFailure,
   boardCiPassStepsFromSnapshot,
@@ -165,6 +166,7 @@ import {
   deriveBoardGroupStage,
   isBoardCardPlanned,
   type BoardCiFixIssue,
+  type BoardCiFixIssueReport,
   textGeneratorForSelection,
   canonicalJson,
   ZERO_BOARD_RESOURCE_PROFILE,
@@ -302,6 +304,14 @@ import { BOARD_HUMAN_ACTOR_FALLBACK_NAME, boardActivityActorFor } from "./activi
 import { makeBoardCiPasses, type BoardCiPasses, type BoardCiPassFinished } from "./ci/ciPasses.ts";
 import type { BoardCiFailure, BoardStagePlan } from "./stageExecutor.ts";
 import { boardCiSendBackFinding } from "./ci/ciStageExecutor.ts";
+import {
+  BOARD_CI_FLAKE_ACTOR,
+  boardCiFlakeCardTarget,
+  boardCiPassFlakes,
+  fileBoardCiFlakes,
+  type BoardCiFlake,
+} from "./ci/ciFlakeCards.ts";
+import { createBoardCard } from "./createCard.ts";
 import { BoardWorkspaces, type BoardCardWorkspace } from "./workspace/BoardWorkspace.ts";
 import { formatBoardBytes } from "./worktreeAtDone.ts";
 import {
@@ -425,6 +435,12 @@ type BoardCardReclaimAttempt =
 
 /** How a CI hold marks the pass beyond its reason. */
 type CiHoldOptions = { readonly machine?: boolean; readonly headline?: BoardCiHeadline };
+type CiPassStartOptions = {
+  readonly fixThreadId: ThreadId | null;
+  readonly fresh?: boolean;
+  /** T3o (T3O-126): tests a fix ruled flaky, so the re-run passes them. */
+  readonly flakyTitles?: ReadonlyArray<string>;
+};
 
 const isThreadCommandFailed = Schema.is(ThreadCommandFailedError);
 const isThreadCommandRefused = Schema.is(ThreadCommandRefusedError);
@@ -4687,10 +4703,10 @@ const make = Effect.gen(function* () {
   /** Start a pass at the first step (entry, a fix, or a restart). */
   const startCiPass: (
     cardId: BoardCardId,
-    options: { readonly fixThreadId: ThreadId | null; readonly fresh?: boolean },
+    options: CiPassStartOptions,
   ) => Effect.Effect<void, ThreadReadError> = Effect.fn("board-supervisor-startCiPass")(function* (
     cardId: BoardCardId,
-    options: { readonly fixThreadId: ThreadId | null; readonly fresh?: boolean },
+    options: CiPassStartOptions,
   ) {
     const board = yield* readBoard;
     const card = board.cards.find((candidate) => candidate.id === cardId);
@@ -4773,6 +4789,9 @@ const make = Effect.gen(function* () {
         queued: true,
         fixThreadId: options.fixThreadId,
         ...(options.fresh === true ? { fresh: true } : {}),
+        ...(options.flakyTitles === undefined || options.flakyTitles.length === 0
+          ? {}
+          : { flakyTitles: options.flakyTitles }),
         // Frozen on the pass, so a flip applies from the next one.
         ...(boardCiStopsOnFailure(projectConfig.ci) ? {} : { continueOnFailure: true }),
       },
@@ -4832,7 +4851,10 @@ const make = Effect.gen(function* () {
           createdAt: yield* nowIso,
         });
         if (!recorded) ciLostResults.set(runId, { exitCode: 0 });
-        else if (yield* ciPassRecordedAs(card.id, runId, "passed")) yield* advanceFromCi(card);
+        else if (yield* ciPassRecordedAs(card.id, runId, "passed")) {
+          yield* advanceFromCi(card);
+          yield* fileCiFlakes(card, runId, boardCiPassFlakes(read.steps));
+        }
         return;
       }
       if (segment.kind !== "scripts") {
@@ -4878,6 +4900,7 @@ const make = Effect.gen(function* () {
       // replaced or held while the worktree was readied.
       const fresh = yield* readCard(cardId);
       if (fresh === null || !isCiPassLive(fresh, runId)) return;
+      const notFlakyTitle = boardCiFlakeCardTarget(card);
       yield* ciPasses.start({
         cardId: card.id,
         runId,
@@ -4885,6 +4908,9 @@ const make = Effect.gen(function* () {
         workerId,
         steps: boardCiScriptDefinitions(steps.slice(segment.start, segment.end)),
         indexOffset: segment.start,
+        // T3o (T3O-126): a test already ruled flaky this entry passes with no agent turn.
+        ...(fresh.ci.flakyTitles === undefined ? {} : { knownFlaky: fresh.ci.flakyTitles }),
+        ...(notFlakyTitle === null ? {} : { notFlakyTitle }),
         ...(card.ci.continueOnFailure === true ? { stopOnFailure: false } : {}),
         ...(runner === undefined ? {} : { runner }),
       });
@@ -5146,7 +5172,12 @@ const make = Effect.gen(function* () {
         headline: step.headline ?? null,
       });
     }
-    return { steps: pass.steps, failures, issues: boardCiFixIssues(pass.steps) };
+    return {
+      steps: pass.steps,
+      failures,
+      issues: boardCiFixIssues(pass.steps),
+      startedAt: pass.startedAt,
+    };
   });
 
   /**
@@ -5183,6 +5214,7 @@ const make = Effect.gen(function* () {
         ciIssues: read.issues,
         fixThreadId: null,
       });
+      yield* fileCiFlakes(card, runId, boardCiPassFlakes(read.steps));
       return;
     }
     const shellSteps = card.ci?.steps ?? [];
@@ -5777,6 +5809,187 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /** T3o (T3O-126): the deps a flake filing writes through, as the system's CI actor. */
+  const ciFlakeDeps = {
+    readBoard,
+    settings: boardSettings,
+    dispatch: dispatchRefusal,
+    nowIso,
+    create: Effect.fn("board-supervisor-createCiFlakeCard")(
+      function* (create: Parameters<typeof createBoardCard>[0]["create"]) {
+        const projects = yield* threads.projects();
+        const project = projects.find((candidate) => candidate.id === create.projectId);
+        yield* createBoardCard({
+          engine: boardEngine,
+          actor: BOARD_CI_FLAKE_ACTOR,
+          projectTitle: project?.title ?? "",
+          create,
+        }).pipe(Effect.provideService(ServerSettingsService, serverSettings));
+        return null as string | null;
+      },
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+        const error = Cause.findErrorOption(cause).pipe(Option.getOrUndefined) as
+          | { readonly detail?: unknown; readonly message?: unknown }
+          | undefined;
+        const detail =
+          typeof error?.detail === "string"
+            ? error.detail
+            : typeof error?.message === "string"
+              ? error.message
+              : "the card could not be created";
+        return Effect.succeed<string | null>(detail);
+      }),
+    ),
+  };
+
+  /** File a pass's flakes as bug cards; a fault is logged and never touches the card. */
+  const fileCiFlakes = Effect.fn("board-supervisor-fileCiFlakes")(
+    function* (card: BoardCard, runId: string, flakes: ReadonlyArray<BoardCiFlake>) {
+      if (flakes.length === 0) return;
+      const { ordinal } = yield* ciPassSnapshot(card.id, runId);
+      yield* fileBoardCiFlakes(ciFlakeDeps, { card, runId, passOrdinal: ordinal, flakes });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: filing CI flakes failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
+  /** The flakes a fix agent reported, resolved against the pass's issues: a per-failure
+      issue keeps the script's own title and file, so its key matches the runner's. */
+  const agentCiFlakes = Effect.fn("board-supervisor-agentCiFlakes")(function* (
+    cardId: BoardCardId,
+    runId: string,
+    reports: ReadonlyArray<BoardCiFixIssueReport>,
+  ) {
+    const read = yield* ciPassFailures(cardId, runId);
+    if (read === null) return [];
+    return reports.flatMap((report): ReadonlyArray<BoardCiFlake & { readonly issueId: string }> => {
+      const issue = read.issues.find((candidate) => candidate.id === report.id);
+      const step = issue === undefined ? undefined : read.steps[issue.stepIndex];
+      const perFailure = issue !== undefined && /-\d+$/.test(issue.id);
+      const file = perFailure ? issue.file : (report.file ?? issue?.file);
+      const rawTitle = perFailure ? issue.title : (report.title ?? issue?.title ?? report.id);
+      const title =
+        file !== undefined && rawTitle.startsWith(`${file} › `)
+          ? rawTitle.slice(file.length + 3)
+          : rawTitle;
+      if (title.trim().length === 0) return [];
+      return [
+        {
+          issueId: report.id,
+          title: title.trim().slice(0, 500),
+          ...(file === undefined ? {} : { file: file.slice(0, 500) }),
+          ...(issue?.detail === undefined ? {} : { detail: issue.detail }),
+          ...(report.repro === undefined || report.repro.trim().length === 0
+            ? {}
+            : { repro: report.repro.trim().slice(0, 500) }),
+          ...(report.inDiff === true ? { inDiff: true } : {}),
+          stepName: issue?.stepName ?? "CI",
+          ...(step === undefined || (step.kind ?? "script") !== "script"
+            ? {}
+            : { command: step.command }),
+          source: "agent" as const,
+        },
+      ];
+    });
+  });
+
+  /**
+   * T3o (T3O-126): the fix agent found only flakes. With nothing committed since the pass
+   * started, each flaky step is rewritten as passed over its flakes and the SAME pass
+   * carries on from its first unrun step, uncounted. A moved branch makes it a counted fix.
+   */
+  const resumeCiAfterFlakes = Effect.fn("board-supervisor-resumeCiAfterFlakes")(function* (
+    card: BoardCard,
+    reports: ReadonlyArray<BoardCiFixIssueReport>,
+    fixThreadId: ThreadId | null,
+  ) {
+    const ci = card.ci;
+    if (ci === null || ci.phase !== "fixing") return;
+    const runId = ci.runId;
+    const read = yield* ciPassFailures(card.id, runId);
+    const { steps } = yield* ciPassSnapshot(card.id, runId);
+    const flakes = yield* agentCiFlakes(card.id, runId, reports);
+    const titles = flakes.map((flake) => boardCiFlakeKey(flake.file, flake.title));
+    const worktreePath = card.worktree?.path ?? null;
+    const baseRefName = card.worktree?.baseRefName ?? null;
+    const committedAt =
+      read === null || worktreePath === null || baseRefName === null
+        ? null
+        : yield* latestBranchCommitIso(card, worktreePath, baseRefName);
+    const moved = committedAt !== null && read !== null && isAfter(committedAt, read.startedAt);
+    if (read === null || steps === null || moved) {
+      // Not provably unchanged: a flaky check can't count, so it stops; a fix re-runs counted.
+      if (ci.fixTriage === true) {
+        yield* stopCiForHuman(
+          card,
+          "The flaky check changed the branch, so CI can't carry the pass on.",
+          fixThreadId,
+        );
+        return;
+      }
+      yield* startCiPass(card.id, { fixThreadId, flakyTitles: titles });
+      yield* fileCiFlakes(card, runId, flakes);
+      return;
+    }
+    const byIssue = new Map(flakes.map((flake) => [flake.issueId, flake]));
+    for (const [index, step] of read.steps.entries()) {
+      if (!isBoardCiStepFailure(step.status) || (step.kind ?? "script") !== "script") continue;
+      const failures = step.result?.failures ?? [];
+      const entries: Array<NonNullable<BoardCiPassStep["flaky"]>[number]> = [];
+      const marked = failures.map((failure, n) => {
+        const agent = byIssue.get(`s${index}-${n + 1}`);
+        if (failure.flaky !== true && agent === undefined) return failure;
+        const repro = failure.repro ?? agent?.repro;
+        entries.push({
+          title: failure.title,
+          ...(failure.file === undefined ? {} : { file: failure.file }),
+          ...(repro === undefined ? {} : { repro }),
+          ...(failure.flaky === true ? {} : { byAgent: true as const }),
+          ...(agent?.inDiff === true ? { inDiff: true as const } : {}),
+        });
+        return { ...failure, flaky: true };
+      });
+      const whole = byIssue.get(`s${index}`);
+      if (whole !== undefined) {
+        entries.push({
+          title: whole.title,
+          ...(whole.file === undefined ? {} : { file: whole.file }),
+          ...(whole.repro === undefined ? {} : { repro: whole.repro }),
+          byAgent: true,
+          ...(whole.inDiff === true ? { inDiff: true as const } : {}),
+        });
+      }
+      const { headline: _headline, ...rest } = step;
+      yield* recordCiStep(card.id, runId, index, {
+        ...rest,
+        status: "passed",
+        ...(step.result === undefined ? {} : { result: { ...step.result, failures: marked } }),
+        flaky: entries.length > 0 ? entries : [{ title: step.name }],
+      });
+    }
+    const resumed = yield* dispatchLanded({
+      type: "board.card.record-ci",
+      commandId: yield* commandId("ci-flaky-resume"),
+      cardId: card.id,
+      action: { kind: "flaky-resume", runId, titles },
+      createdAt: yield* nowIso,
+    });
+    if (!resumed) return;
+    const fresh = yield* readCard(card.id);
+    if (fresh === null || !isCiPassLive(fresh, runId)) return;
+    const firstUnrun = fresh.ci.steps.findIndex((step) => step.status === "pending");
+    yield* runCiSegment(card.id, runId, steps, firstUnrun < 0 ? steps.length : firstUnrun);
+    yield* fileCiFlakes(
+      fresh,
+      runId,
+      boardCiPassFlakes((yield* ciPassFailures(card.id, runId))?.steps ?? []),
+    );
+  });
+
   /** Ask the CI executor what follows, and do it. */
   const continueCi = Effect.fn("board-supervisor-continueCi")(function* (input: {
     readonly cardId: BoardCardId;
@@ -5846,9 +6059,23 @@ const make = Effect.gen(function* () {
     },
   ) {
     switch (plan.kind) {
-      case "ci-pass":
-        yield* startCiPass(card.id, { fixThreadId: context.fixThreadId });
+      case "ci-pass": {
+        if (plan.flaky === true) {
+          yield* resumeCiAfterFlakes(card, plan.flakyIssues ?? [], context.fixThreadId);
+          return;
+        }
+        const runId = card.ci?.runId ?? null;
+        const flakes =
+          runId === null || plan.flakyIssues === undefined
+            ? []
+            : yield* agentCiFlakes(card.id, runId, plan.flakyIssues);
+        yield* startCiPass(card.id, {
+          fixThreadId: context.fixThreadId,
+          flakyTitles: flakes.map((flake) => boardCiFlakeKey(flake.file, flake.title)),
+        });
+        if (runId !== null) yield* fileCiFlakes(card, runId, flakes);
         return;
+      }
       case "ci-agent-done":
         yield* finishCiAgentStep(card, plan, context.fixThreadId);
         return;
@@ -5865,6 +6092,7 @@ const make = Effect.gen(function* () {
             kind: "begin-fix",
             runId: card.ci.runId,
             ...(context.fixIssues === undefined ? {} : { fixIssues: context.fixIssues }),
+            ...(plan.ciTriage === true ? { triage: true } : {}),
           },
           createdAt: yield* nowIso,
         });
