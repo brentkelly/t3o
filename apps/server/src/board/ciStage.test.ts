@@ -2149,6 +2149,42 @@ it.effect(
     }),
 );
 
+it.effect.each([
+  { label: "a failure the agent never called flaky", worktreeDirty: false, real: true },
+  { label: "an uncommitted edit in the worktree", worktreeDirty: true, real: false },
+])("T3O-126: a flaky verdict with $label re-runs the pass, counted", ({ worktreeDirty, real }) =>
+  Effect.gen(function* () {
+    const failures = real ? [flakeTitle, { title: "real break" }] : [flakeTitle];
+    const { runner, requests } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card(`flaky-not-resumed-${String(worktreeDirty)}`, review);
+    yield* withGovernor({ board: boardWith([subject]), settings, worktreeDirty }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 1),
+            { verdict: "flaky", issues: [{ id: "s0-1", status: "flaky" }] },
+            2,
+          ),
+        );
+        yield* h.reactor.drainCi;
+        const rerun = (yield* requests)[1]!;
+        assert.strictEqual(rerun.indexOffset ?? 0, 0);
+        const records = ciRecords(yield* h.decided);
+        assert.isUndefined(records.find((record) => record.payload.action.kind === "flaky-resume"));
+        assert.strictEqual(
+          records.filter((record) => record.payload.action.kind === "start-pass").length,
+          2,
+        );
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
 it.effect("T3O-126: after a counted fix, the re-run is told the tests it ruled flaky", () =>
   Effect.gen(function* () {
     const { runner, requests } = yield* scriptedRunner([

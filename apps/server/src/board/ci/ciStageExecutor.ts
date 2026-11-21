@@ -15,6 +15,7 @@ import {
   decodeBoardCiAgentStepPayload,
   decodeBoardCiFixPayload,
   isBoardCiStageExecution,
+  isBoardCiStepFailure,
   parseBoardCiAgentStepId,
   parseBoardCiFixStepId,
   type BoardCardCi,
@@ -92,15 +93,22 @@ function issueStepKind(ci: BoardCardCi | null, issueId: string) {
   return ci.steps[Number(match[1])]?.kind ?? "script";
 }
 
-/** T3o (T3O-126): a `flaky` verdict counts only when every issue is flaky, on a script step. */
+/** T3o (T3O-126): a `flaky` verdict counts only when every issue is flaky, on a script step,
+    and every failed step has one: a step the agent never named, or a timeout, is no flake. */
 function isAllFlaky(ci: BoardCardCi | null, verdict: BoardCiFixPayload): boolean {
   const issues = verdict.issues ?? [];
+  const named = new Set(issues.map((issue) => /^s(\d+)(?:-\d+)?$/.exec(issue.id)?.[1]));
   return (
     issues.length > 0 &&
     issues.every(
       (issue) =>
         issue.status === "flaky" &&
         (issue.id === "more" || issueStepKind(ci, issue.id) === "script"),
+    ) &&
+    (ci?.steps ?? []).every(
+      (step, index) =>
+        !isBoardCiStepFailure(step.status) ||
+        (step.status === "failed" && named.has(String(index))),
     )
   );
 }
@@ -181,22 +189,20 @@ export const CiStageExecutor: BoardStageExecutor = {
     const flakyChecks = ci?.flakyChecks ?? 0;
     // T3o (T3O-126): past the fix limit, one uncounted flaky check still runs, so a flake on
     // the last pass never stops the card; agent and forge steps can't be flaky.
-    const triage =
+    const checkable =
       ci !== null &&
       maxFixAttempts > 0 &&
       used >= maxFixAttempts &&
-      flakyChecks < BOARD_CI_MAX_FLAKY_CHECKS &&
       failures.some(
         (failure) => failure.command !== "agent step" && failure.command !== "forge checks",
       );
+    const triage = checkable && flakyChecks < BOARD_CI_MAX_FLAKY_CHECKS;
     if (ci === null || (used >= maxFixAttempts && !triage)) {
       return {
         kind: "ci-stop",
         stepName: failures[0]!.stepName,
-        reason:
-          ci !== null && flakyChecks >= BOARD_CI_MAX_FLAKY_CHECKS
-            ? flakeStormReason(ci)
-            : exhaustedReason(failures, used),
+        // A storm only when the flaky-check cap is what stopped it.
+        reason: checkable && ci !== null ? flakeStormReason(ci) : exhaustedReason(failures, used),
       };
     }
     const attempt = used + 1;

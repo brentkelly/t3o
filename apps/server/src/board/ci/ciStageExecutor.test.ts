@@ -162,7 +162,9 @@ describe("CiStageExecutor", () => {
     // Only agent and forge steps failed: nothing can be flaky, so the card stops.
     expect(
       plan({
-        card: cardInCi(ci({ fixAttempts: 1, maxFixAttempts: 1 })),
+        card: cardInCi(
+          ci({ fixAttempts: 1, maxFixAttempts: 1, flakyChecks: BOARD_CI_MAX_FLAKY_CHECKS }),
+        ),
         ciFailures: [{ ...failure, command: "agent step" }],
       }),
     ).toMatchObject({
@@ -303,6 +305,36 @@ describe("CiStageExecutor", () => {
     expect(
       plan({ card: fixing, settledStepId: step, completions: [completion(step, mixed)] }),
     ).toEqual({ kind: "ci-pass", flakyIssues: [flaky] });
+    // A failed step the agent never named, or a timeout, isn't a flake: a counted fix.
+    const twoFailed = cardInCi(
+      ci({
+        phase: "fixing",
+        fixAttempts: 1,
+        steps: [
+          { name: "Lint", status: "failed", startedAt: NOW, finishedAt: NOW },
+          { name: "Test", status: "failed", startedAt: NOW, finishedAt: NOW },
+        ],
+      }),
+    );
+    const timedOut = cardInCi(
+      ci({
+        phase: "fixing",
+        fixAttempts: 1,
+        steps: [
+          { name: "Lint", status: "passed", startedAt: NOW, finishedAt: NOW },
+          { name: "Test", status: "timed-out", startedAt: NOW, finishedAt: NOW },
+        ],
+      }),
+    );
+    for (const card of [twoFailed, timedOut]) {
+      expect(
+        plan({
+          card,
+          settledStepId: step,
+          completions: [completion(step, { verdict: "flaky", issues: [flaky] })],
+        }),
+      ).toEqual({ kind: "ci-pass", flakyIssues: [flaky] });
+    }
     // An agent step is never flaky.
     const agentFailed = cardInCi(
       ci({

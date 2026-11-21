@@ -1198,6 +1198,26 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(null as string | null)),
     );
 
+  /**
+   * T3o (T3O-126): whether the card's worktree has uncommitted changes. A failed probe reads
+   * as dirty: a flaky verdict resumes only on a tree provably unchanged.
+   */
+  const ciWorktreeDirty = (card: BoardCard, worktreePath: string, baseRefName: string) =>
+    workspaceFor(card).pipe(
+      Effect.flatMap((workspace) =>
+        workspace.probeWorktreeDurability({
+          worktreePath,
+          baseRefName,
+          branch: card.worktree?.branch ?? baseRefName,
+          mergedPullRequestNumbers: [],
+          openPullRequestNumber: null,
+          baseAlreadyFetched: true,
+        }),
+      ),
+      Effect.map((facts) => facts.hasWorkingTreeChanges),
+      Effect.catchCause(() => Effect.succeed(true)),
+    );
+
   /** The step thread's cached todo row, or null. Best-effort: a
       snapshot query built without the board factory (upstream test mocks) or a
       read failure both answer "no list", which reads as "no progress" — the
@@ -5865,9 +5885,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * T3o (T3O-126): the fix agent found only flakes. With nothing committed since the pass
-   * started, each flaky step is rewritten as passed over its flakes and the SAME pass
-   * carries on from its first unrun step, uncounted. A moved branch makes it a counted fix.
+   * T3o (T3O-126): the fix agent found only flakes. With every failure flaky, nothing
+   * committed since the pass started and a clean tree, each flaky step is rewritten as passed
+   * and the SAME pass carries on from its first unrun step, uncounted. Else a counted fix.
    */
   const resumeCiAfterFlakes = Effect.fn("board-supervisor-resumeCiAfterFlakes")(function* (
     card: BoardCard,
@@ -5888,12 +5908,36 @@ const make = Effect.gen(function* () {
         ? null
         : yield* latestBranchCommitIso(card, worktreePath, baseRefName);
     const moved = committedAt !== null && read !== null && isAfter(committedAt, read.startedAt);
-    if (read === null || steps === null || moved) {
-      // Not provably unchanged: a flaky check can't count, so it stops; a fix re-runs counted.
+    const dirty =
+      read === null || worktreePath === null || baseRefName === null
+        ? true
+        : yield* ciWorktreeDirty(card, worktreePath, baseRefName);
+    const byIssue = new Map(flakes.map((flake) => [flake.issueId, flake]));
+    // Every failure must be flaky: flagged by its script or reported flaky, per failure or
+    // for the whole step. A timeout, or a step the agent left out, is no flake.
+    const covered =
+      read !== null &&
+      read.steps.every((step, index) => {
+        if (!isBoardCiStepFailure(step.status)) return true;
+        if (step.status !== "failed" || (step.kind ?? "script") !== "script") return false;
+        if (byIssue.has(`s${index}`)) return true;
+        const failures = step.result?.failures ?? [];
+        return (
+          failures.length > 0 &&
+          failures.every(
+            (failure, n) => failure.flaky === true || byIssue.has(`s${index}-${n + 1}`),
+          )
+        );
+      });
+    if (read === null || steps === null || moved || dirty || !covered) {
+      // Not provably unchanged and all flaky: a flaky check can't count, so it stops; a fix
+      // re-runs counted.
       if (ci.fixTriage === true) {
         yield* stopCiForHuman(
           card,
-          "The flaky check changed the branch, so CI can't carry the pass on.",
+          covered
+            ? "The flaky check changed the branch, so CI can't carry the pass on."
+            : "The flaky check didn't find every failure flaky, so CI can't carry the pass on.",
           fixThreadId,
         );
         return;
@@ -5902,7 +5946,6 @@ const make = Effect.gen(function* () {
       yield* fileCiFlakes(card, runId, flakes);
       return;
     }
-    const byIssue = new Map(flakes.map((flake) => [flake.issueId, flake]));
     for (const [index, step] of read.steps.entries()) {
       if (!isBoardCiStepFailure(step.status) || (step.kind ?? "script") !== "script") continue;
       const failures = step.result?.failures ?? [];
