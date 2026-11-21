@@ -229,6 +229,8 @@ function StepRow({
 }) {
   const failed = isBoardCiStepFailure(step.status);
   const stepFixing = failed && fixing;
+  // T3o (T3O-126): passed over flakes, a warning: amber, never green and never red.
+  const flakes = step.status === "passed" ? (step.flaky ?? []) : [];
   const running = step.status === "running" && live;
   const hasTail = failed && step.tail.length > 0;
   const duration =
@@ -267,6 +269,16 @@ function StepRow({
           </span>
           {step.note === undefined ? null : (
             <span className="text-board-11 text-muted-foreground">{step.note}</span>
+          )}
+          {flakes.length === 0 ? null : (
+            <span className="text-board-11 text-warning-foreground">
+              Flaky, passed alone:{" "}
+              {flakes
+                .map((flake) =>
+                  flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`,
+                )
+                .join(", ")}
+            </span>
           )}
           {running ? <RunningMeta step={step} /> : null}
           {step.progress === undefined || step.status === "passed" ? null : (
@@ -316,10 +328,14 @@ function StepRow({
         <span
           className={cn(
             "w-[92px] shrink-0 text-right text-board-11-5 font-medium",
-            statusClass(step.status, fixing),
+            flakes.length > 0 ? "text-warning-foreground" : statusClass(step.status, fixing),
           )}
         >
-          {stepFixing ? "Failed · fixing" : STATUS_WORD[step.status]}
+          {stepFixing
+            ? "Failed · fixing"
+            : flakes.length > 0
+              ? "Passed · flaky"
+              : STATUS_WORD[step.status]}
           {step.exitCode !== null && failed && !stepFixing ? (
             <span className="sr-only">{` (exit ${step.exitCode})`}</span>
           ) : null}
@@ -337,7 +353,12 @@ function StepRow({
               // oxlint-disable-next-line react/no-array-index-key -- one result's failures never reorder and titles can repeat
               key={`${failure.title}:${index}`}
             >
-              <span className="text-foreground">{failure.title}</span>
+              <span className="text-foreground">
+                {failure.title}
+                {failure.flaky === true ? (
+                  <span className="text-warning-foreground"> · flaky</span>
+                ) : null}
+              </span>
               {failure.file === undefined ? null : (
                 <span className="font-mono text-board-10-5 text-muted-foreground">
                   {failure.file}
@@ -372,12 +393,14 @@ const ISSUE_STATUS: Record<BoardCiFixRow["issues"][number]["status"], string> = 
   open: "Open",
   resolved: "Resolved",
   "cannot-fix": "Can't fix",
+  flaky: "Flaky",
 };
 
 const ISSUE_STATUS_CLASS: Record<BoardCiFixRow["issues"][number]["status"], string> = {
   open: "text-muted-foreground",
   resolved: "text-success-foreground",
   "cannot-fix": "text-attention-foreground",
+  flaky: "text-warning-foreground",
 };
 
 /** A failed pass's fix, shown as the pass's last step. */

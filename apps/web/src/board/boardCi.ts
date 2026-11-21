@@ -414,7 +414,10 @@ export interface BoardCiFixRow {
 export function boardCiFixRow(input: {
   readonly pass: Pick<BoardCiPass, "runId" | "entry" | "steps" | "fixThreadId">;
   readonly completions: ReadonlyArray<Pick<BoardStepCompletion, "stepId" | "payload" | "threadId">>;
-  readonly ci: Pick<BoardCardCi, "runId" | "phase" | "fixAttempts" | "maxFixAttempts"> | null;
+  readonly ci: Pick<
+    BoardCardCi,
+    "runId" | "phase" | "fixAttempts" | "maxFixAttempts" | "flakyChecks" | "fixTriage"
+  > | null;
 }): BoardCiFixRow | null {
   const issues = boardCiFixIssues(input.pass.steps);
   if (issues.length === 0) return null;
@@ -422,7 +425,15 @@ export function boardCiFixRow(input: {
     input.ci !== null && input.ci.runId === input.pass.runId && input.ci.phase === "fixing";
   const { entry, fixThreadId } = input.pass;
   const liveStepId =
-    fixingNow && input.ci !== null ? boardCiFixStepId(entry, input.ci.fixAttempts) : null;
+    fixingNow && input.ci !== null
+      ? // The executor numbers fixes and flaky checks together (T3O-126).
+        boardCiFixStepId(
+          entry,
+          input.ci.fixAttempts +
+            (input.ci.flakyChecks ?? 0) +
+            (input.ci.fixTriage === true ? 1 : 0),
+        )
+      : null;
   const completion = input.completions.findLast((candidate) =>
     fixThreadId === null
       ? candidate.stepId === liveStepId
@@ -446,7 +457,10 @@ export function boardCiFixRow(input: {
     return {
       state: "running",
       badge: "fixing",
-      headline: `Fix ${Math.max(1, input.ci.fixAttempts)} of ${input.ci.maxFixAttempts} · ${count}`,
+      headline:
+        input.ci.fixTriage === true
+          ? `Flaky check · ${count}`
+          : `Fix ${Math.max(1, input.ci.fixAttempts)} of ${input.ci.maxFixAttempts} · ${count}`,
       issues: outcomes,
       fixedSha: null,
     };
