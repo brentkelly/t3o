@@ -42,7 +42,7 @@ const flakeCard = (id: string, title: string, extra: Partial<BoardCard> = {}): B
 });
 
 /** A board that applies the filing's commands, refusing a create whose ref a live card holds. */
-const fakeBoard = (cards: ReadonlyArray<BoardCard>, raceOn?: string) =>
+const fakeBoard = (cards: ReadonlyArray<BoardCard>, raceOn?: string, refuseAutomation?: string) =>
   Effect.sync(() => {
     let board: BoardState = { cards, stages: BOARD_SEED_STAGES, nextCardNumberByProject: {} };
     let next = 100;
@@ -50,6 +50,9 @@ const fakeBoard = (cards: ReadonlyArray<BoardCard>, raceOn?: string) =>
     const dispatch = (command: BoardCommand) =>
       Effect.sync((): string | null => {
         commands.push(command);
+        if (command.type === "board.card.set-automation" && refuseAutomation !== undefined) {
+          return refuseAutomation;
+        }
         if (command.type === "board.card.create") {
           const ref = command.externalRef;
           if (raceOn !== undefined && ref?.id.endsWith(raceOn)) {
@@ -173,7 +176,7 @@ it.effect("a Done card keeps its ref; the flake files a new card on the next suf
     const { deps, commands } = yield* fakeBoard([tested, done]);
     yield* file(deps, [flake("adds")]);
     const [create] = ofType(commands, "board.card.create");
-    assert.strictEqual(create?.externalRef?.id, `${projectId}:src/a.test.ts › adds#2`);
+    assert.strictEqual(create?.externalRef?.id, `${projectId}:src/a.test.ts › adds  #2`);
     assert.include(create?.brief ?? "", "T3O-40 fixed this test before");
   }),
 );
@@ -202,6 +205,39 @@ it.effect(
       assert.deepStrictEqual(capped.filed, []);
       assert.deepStrictEqual(capped.listed, ["src/a.test.ts › fresh"]);
     }),
+);
+
+it.effect("a refused automation leaves the new card in Backlog and says so", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested], undefined, "Auto-merge is locked.");
+    const result = yield* file(deps, [flake("adds")]);
+    assert.deepStrictEqual(result.filed, []);
+    assert.lengthOf(ofType(commands, "board.card.move"), 0);
+    assert.include(
+      ofType(commands, "board.card.record-note").at(-1)?.detail ?? "",
+      "Auto-merge is locked.",
+    );
+  }),
+);
+
+it.effect("a long title or one ending in #digits still reads back as the card's own test", () =>
+  Effect.gen(function* () {
+    for (const title of [`it ${"x".repeat(400)}`, "retries #2"]) {
+      const { deps, commands } = yield* fakeBoard([tested]);
+      yield* file(deps, [flake(title)]);
+      const ref = ofType(commands, "board.card.create")[0]?.externalRef ?? null;
+      const target = boardCiFlakeCardTarget({ projectId, externalRef: ref });
+      assert.strictEqual(target, `src/a.test.ts › ${title}`);
+      const done = {
+        ...makeBoardCard({ id: "d", stage: BOARD_SEED_STAGE_IDS.done, orderKey: "b" }),
+        externalRef: ref,
+      };
+      const again = yield* fakeBoard([tested, done]);
+      yield* file(again.deps, [flake(title)]);
+      const next = ofType(again.commands, "board.card.create")[0]?.externalRef ?? null;
+      assert.strictEqual(boardCiFlakeCardTarget({ projectId, externalRef: next }), target);
+    }
+  }),
 );
 
 it.effect("a flake card files no cards of its own, and its target is never flaky", () =>

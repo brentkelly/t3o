@@ -34,7 +34,9 @@ export const BOARD_CI_FLAKE_CARDS_PER_PASS = 3;
 /** Open flake cards a project may hold before flakes are only listed. */
 export const BOARD_CI_FLAKE_CARDS_OPEN_MAX = 10;
 
-const REF_ID_MAX = 200;
+/** Between a ref and a Done card's successor's number. A flake key collapses whitespace, so
+    a double space never appears in one and the suffix can't be read off a test's title. */
+const REF_SUFFIX = "  #";
 const DETAIL_MAX = 2_000;
 
 const BOARD_CI_FLAKE_ACTOR: BoardActivityActor = {
@@ -74,7 +76,8 @@ export interface BoardCiFlakeFiling {
   readonly listed: ReadonlyArray<string>;
 }
 
-const refBase = (projectId: string, key: string) => `${projectId}:${key}`.slice(0, REF_ID_MAX);
+// The whole key, never clipped: a flake card's CI reads its own test back off the ref.
+const refBase = (projectId: string, key: string) => `${projectId}:${key}`;
 
 /** The flake key a flake card exists to fix, or null for any other card. */
 export function boardCiFlakeCardTarget(
@@ -83,7 +86,9 @@ export function boardCiFlakeCardTarget(
   const ref = card.externalRef;
   if (ref === null || ref.system !== BOARD_CI_FLAKE_REF_SYSTEM) return null;
   const prefix = `${card.projectId}:`;
-  const id = ref.id.replace(/#\d+$/, "");
+  const at = ref.id.lastIndexOf(REF_SUFFIX);
+  const id =
+    at >= 0 && /^\d+$/.test(ref.id.slice(at + REF_SUFFIX.length)) ? ref.id.slice(0, at) : ref.id;
   return id.startsWith(prefix) ? id.slice(prefix.length) : id;
 }
 
@@ -92,7 +97,7 @@ const isFlakeCardFor = (card: BoardCard, base: string) => {
   return (
     ref !== null &&
     ref.system === BOARD_CI_FLAKE_REF_SYSTEM &&
-    (ref.id === base || ref.id.startsWith(`${base}#`))
+    (ref.id === base || ref.id.startsWith(`${base}${REF_SUFFIX}`))
   );
 };
 
@@ -231,7 +236,7 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     // A Done card still holding the ref keeps it; the new card takes the next free suffix.
     const taken = new Set(matches.map((candidate) => candidate.externalRef?.id));
     let refId = base;
-    for (let n = 2; taken.has(refId); n++) refId = `${base.slice(0, REF_ID_MAX - 4)}#${n}`;
+    for (let n = 2; taken.has(refId); n++) refId = `${base}${REF_SUFFIX}${n}`;
     const earlier = matches.findLast((candidate) => candidate.archivedAt === null) ?? null;
     const cardId = flakeCardId(seed);
     const settings = yield* deps.settings;
@@ -279,8 +284,8 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
       else refusals.push(`${key}: ${refused}`);
       continue;
     }
-    // Auto-merge off explicitly, so a board- or project-wide Auto-merge can't merge it.
-    yield* dispatchAs({
+    // Auto-merge off explicitly, so a group's Auto-merge can't merge it.
+    const automationRefused = yield* dispatchAs({
       type: "board.card.set-automation",
       commandId: commandIdFor(seed, "automation"),
       cardId,
@@ -290,6 +295,13 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
       autoMerge: false,
       createdAt: yield* deps.nowIso,
     });
+    if (automationRefused !== null) {
+      // Without its toggles it's an ordinary Backlog card: left there for a human.
+      refusals.push(
+        `${key}: its automation was refused, so it stayed in Backlog: ${automationRefused}`,
+      );
+      continue;
+    }
     const after = yield* deps.readBoard;
     const created = after.cards.find((candidate) => candidate.id === cardId);
     const createdKey = created?.key ?? refId;

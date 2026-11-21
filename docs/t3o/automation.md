@@ -51,7 +51,9 @@ included.
   only stop is the loop guard: 10 flaky checks in one entry stops the card as a flake storm.
 - **Flake cards are the one place the board turns automation on by itself.** Each flaky test files
   a bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
-  sign-off and Auto-build on, Auto-merge explicitly off, and an unattended plan review. It is
+  sign-off and Auto-build on, Auto-merge explicitly off (board-wide Auto-merge still locks it on,
+  as for every card), and an unattended plan review. If the toggles are refused it stays in
+  Backlog. It is
   matched by its `file › title`, so a repeat flake notes the open card instead of filing a second.
   It's bounded: at most 3 new cards per pass, none once 10 are open in the project, a flake card
   files no cards of its own, and a flake card's own test is never flaky on it. Flakes over a limit
