@@ -56,6 +56,9 @@ export const BOARD_UNPUSHED_COMMITS_MAX = 10;
 export const BoardWorkspaceDurability = Schema.Struct({
   hasWorkingTreeChanges: Schema.Boolean,
   changedPaths: Schema.Array(Schema.String),
+  /** T3o (T3O-126): a tracked file is changed; untracked files don't count. Absent from a
+      worker that predates it. */
+  hasTrackedChanges: Schema.optionalKey(Schema.Boolean),
   openPullRequestNumber: Schema.NullOr(PositiveInt),
   durable: Schema.Boolean,
   /** Commits on `HEAD` that no remote-tracking ref contains. */

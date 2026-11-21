@@ -23,6 +23,7 @@ import {
   type BoardCiStepResult,
   type BoardEvent,
   type BoardState,
+  type BoardCommand,
 } from "@t3tools/contracts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -2070,9 +2071,12 @@ it.effect("T3O-126: a mixed step's fix sees only the real failures; its flake is
   }),
 );
 
-it.effect(
-  "T3O-126: the fix agent's flaky verdict carries the same pass on from the next step",
-  () =>
+it.effect.each([
+  { label: "a clean worktree", worktreeDirty: false },
+  { label: "only an untracked file in the worktree", worktreeDirty: "untracked" as const },
+])(
+  "T3O-126: the fix agent's flaky verdict with $label carries the same pass on from the next step",
+  ({ worktreeDirty }) =>
     Effect.gen(function* () {
       const { runner, calls, requests } = yield* scriptedRunner([
         {
@@ -2082,8 +2086,8 @@ it.effect(
         },
         { result: "passed", failedIndex: null },
       ]);
-      const subject = card("agent-flaky", review);
-      yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      const subject = card(`agent-flaky-${String(worktreeDirty)}`, review);
+      yield* withGovernor({ board: boardWith([subject]), settings, worktreeDirty }, (h) =>
         Effect.gen(function* () {
           yield* enterCiAndRun(h, subject, 1);
           const fixing = yield* live(h, subject.id);
@@ -2179,6 +2183,97 @@ it.effect.each([
         assert.strictEqual(
           records.filter((record) => record.payload.action.kind === "start-pass").length,
           2,
+        );
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  {
+    label: "a flaky step's rewrite to passed that never lands",
+    failures: [flakeTitle],
+    issues: [{ id: "s0-1", status: "flaky" as const }],
+    rewriteFails: true,
+    flakeCardCount: 1,
+  },
+  {
+    label: "a whole-step flaky report with no test title",
+    failures: [],
+    issues: [{ id: "s0", status: "flaky" as const }],
+    rewriteFails: false,
+    flakeCardCount: 0,
+  },
+])(
+  "T3O-126: $label re-runs the pass, counted",
+  ({ failures, issues, rewriteFails, flakeCardCount }) =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+        { result: "passed", failedIndex: null },
+      ]);
+      const subject = card(`flaky-unlanded-${String(rewriteFails)}`, review);
+      const failCommand = (command: BoardCommand) =>
+        rewriteFails &&
+        command.type === "board.card.record-ci" &&
+        command.action.kind === "step" &&
+        command.action.step.flaky !== undefined;
+      yield* withGovernor({ board: boardWith([subject]), settings, failCommand }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          yield* h.pumpDomain(
+            fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "flaky", issues }, 2),
+          );
+          yield* h.reactor.drainCi;
+          const records = ciRecords(yield* h.decided);
+          assert.isUndefined(
+            records.find((record) => record.payload.action.kind === "flaky-resume"),
+          );
+          assert.strictEqual(
+            records.filter((record) => record.payload.action.kind === "start-pass").length,
+            2,
+          );
+          assert.lengthOf(flakeCards(yield* h.commands), flakeCardCount);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-126: a flaky `more` covers the failures rolled into it, so the pass resumes", () =>
+  Effect.gen(function* () {
+    const failures = Array.from({ length: 32 }, (_, n) => ({
+      title: `flake ${n + 1}`,
+      file: "src/many.test.ts",
+    }));
+    const { runner } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card("flaky-more", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const issues = [
+          ...Array.from({ length: 29 }, (_, n) => ({
+            id: `s0-${n + 1}`,
+            status: "flaky" as const,
+          })),
+          { id: "more", status: "flaky" as const },
+        ];
+        yield* h.pumpDomain(
+          fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "flaky", issues }, 2),
+        );
+        yield* h.reactor.drainCi;
+        const records = ciRecords(yield* h.decided);
+        const resume = records.find((record) => record.payload.action.kind === "flaky-resume");
+        assert.isDefined(resume);
+        const action = resume!.payload.action;
+        assert.lengthOf(action.kind === "flaky-resume" ? action.titles : [], 32);
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.isFalse(
+          flakeCards(yield* h.commands).some((command) =>
+            (command.externalRef?.id ?? "").includes(" more in "),
+          ),
         );
       }),
     ).pipe(Effect.provideService(BoardCiRunner, runner));

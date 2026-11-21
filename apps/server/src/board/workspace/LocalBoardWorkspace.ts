@@ -753,6 +753,7 @@ export function makeLocalBoardWorkspace(
     return {
       hasWorkingTreeChanges: facts.hasWorkingTreeChanges,
       changedPaths: facts.changedPaths,
+      hasTrackedChanges: facts.hasTrackedChanges,
       openPullRequestNumber: facts.openPullRequestNumber,
       durable: facts.durable,
       unmergedCount: facts.unmergedCount,

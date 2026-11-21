@@ -138,6 +138,11 @@ it.effect("the first flake files one bug card, auto-built but never auto-merged"
     assert.lengthOf(notes, 1);
     assert.strictEqual(notes[0]?.cardId, tested.id);
     assert.include(notes[0]?.detail ?? "", "filed T3O-101");
+    // A resumed pass files again under the same run: its note is a new command, not a replay.
+    yield* file(deps, [flake("subtracts")]);
+    const second = ofType(commands, "board.card.record-note");
+    assert.lengthOf(second, 2);
+    assert.notStrictEqual(second[1]?.commandId, second[0]?.commandId);
   }),
 );
 

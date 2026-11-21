@@ -333,7 +333,11 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     const inDiff = input.flakes.filter((flake) => flake.inDiff === true);
     yield* dispatchAs({
       type: "board.card.record-note",
-      commandId: commandIdFor(`${input.runId}\0${card.id}`, "filed"),
+      // Seeded by the flakes too: a resumed pass files again under the same run.
+      commandId: commandIdFor(
+        `${input.runId}\0${card.id}\0${[...seen].sort().join("\0")}`,
+        "filed",
+      ),
       cardId: card.id,
       kind: "card-ci-flakes-filed",
       detail: clip(

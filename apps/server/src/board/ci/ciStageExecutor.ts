@@ -98,6 +98,8 @@ function issueStepKind(ci: BoardCardCi | null, issueId: string) {
 function isAllFlaky(ci: BoardCardCi | null, verdict: BoardCiFixPayload): boolean {
   const issues = verdict.issues ?? [];
   const named = new Set(issues.map((issue) => /^s(\d+)(?:-\d+)?$/.exec(issue.id)?.[1]));
+  // A flaky `more` speaks for the failures rolled into it; the reactor checks each one.
+  const more = issues.some((issue) => issue.id === "more");
   return (
     issues.length > 0 &&
     issues.every(
@@ -108,7 +110,7 @@ function isAllFlaky(ci: BoardCardCi | null, verdict: BoardCiFixPayload): boolean
     (ci?.steps ?? []).every(
       (step, index) =>
         !isBoardCiStepFailure(step.status) ||
-        (step.status === "failed" && named.has(String(index))),
+        (step.status === "failed" && (more || named.has(String(index)))),
     )
   );
 }
