@@ -85,10 +85,14 @@ export function decideBoardCiRecord(
       // T3o (T3O-126): an entry's flaky checks and flaky tests carry across its passes.
       const carry = sameEntry && action.fresh !== true;
       const flakyChecks = carry ? (current.flakyChecks ?? 0) : 0;
-      const flakyTitles = boardCiMergeFlakyTitles(
-        carry ? current.flakyTitles : undefined,
-        action.flakyTitles ?? [],
-      );
+      // A ruling holds only while the code it was ruled on is unchanged.
+      const flakyTitles =
+        action.flakyRulingsStale === true
+          ? []
+          : boardCiMergeFlakyTitles(
+              carry ? current.flakyTitles : undefined,
+              action.flakyTitles ?? [],
+            );
       const ci: BoardCardCi = {
         runId: action.runId,
         entry: action.entry,

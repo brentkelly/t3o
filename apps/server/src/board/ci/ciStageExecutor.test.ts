@@ -623,7 +623,7 @@ describe("decideBoardCiRecord", () => {
     expect(resumed.ok && resumed.payload.card.ci?.fixTriage).toBeUndefined();
   });
 
-  it("carries flaky checks and titles across an entry's passes, and resets them on a fresh entry", () => {
+  it("carries flaky checks and titles across an entry's passes; a fresh entry resets both, a changed branch drops the titles", () => {
     const card = cardInCi(
       ci({ phase: "fixing", fixAttempts: 1, flakyChecks: 2, flakyTitles: ["a"] }),
     );
@@ -642,6 +642,12 @@ describe("decideBoardCiRecord", () => {
     } as BoardCardRecordCiCommand["action"]);
     expect(fresh.ok && fresh.payload.card.ci?.flakyChecks).toBeUndefined();
     expect(fresh.ok && fresh.payload.card.ci?.flakyTitles).toBeUndefined();
+    const stale = record(card, {
+      ...start("thread-fix"),
+      flakyRulingsStale: true,
+    } as BoardCardRecordCiCommand["action"]);
+    expect(stale.ok && stale.payload.card.ci?.flakyChecks).toBe(2);
+    expect(stale.ok && stale.payload.card.ci?.flakyTitles).toBeUndefined();
   });
 
   it("refuses a pass for a card outside CI, and a fix past the cap", () => {

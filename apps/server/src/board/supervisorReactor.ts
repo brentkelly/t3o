@@ -1219,6 +1219,22 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(true)),
     );
 
+  /**
+   * T3o (T3O-126): whether the card's branch is provably the code it was at `since`: no branch
+   * commit after it and no tracked change. Anything it can't read answers no.
+   */
+  const ciCodeUnchangedSince = Effect.fn("board-supervisor-ciCodeUnchangedSince")(function* (
+    card: BoardCard,
+    since: string,
+  ) {
+    const worktreePath = card.worktree?.path ?? null;
+    const baseRefName = card.worktree?.baseRefName ?? null;
+    if (worktreePath === null || baseRefName === null) return false;
+    const committedAt = yield* latestBranchCommitIso(card, worktreePath, baseRefName);
+    if (committedAt !== null && isAfter(committedAt, since)) return false;
+    return !(yield* ciWorktreeDirty(card, worktreePath, baseRefName));
+  });
+
   /** The step thread's cached todo row, or null. Best-effort: a
       snapshot query built without the board factory (upstream test mocks) or a
       read failure both answer "no list", which reads as "no progress" — the
@@ -4782,6 +4798,16 @@ const make = Effect.gen(function* () {
         ? Math.max(latestEntry, card.ci?.entry ?? 0) + 1
         : (card.ci?.entry ?? latestEntry + 1);
     const ordinal = passes.filter((pass) => pass.entry === entry).length + 1;
+    // T3o (T3O-126): the entry's flaky rulings were made on the pass this one replaces; a fix
+    // commit since then may have broken those very tests, so they no longer hold.
+    const prior = options.fresh === true || card.ci?.entry !== entry ? null : card.ci;
+    const ruled = (prior?.flakyTitles?.length ?? 0) + (options.flakyTitles?.length ?? 0) > 0;
+    const priorStartedAt =
+      prior === null
+        ? null
+        : (passes.find((pass) => pass.runId === prior.runId)?.startedAt ?? null);
+    const rulingsHold =
+      ruled && priorStartedAt !== null && (yield* ciCodeUnchangedSince(card, priorStartedAt));
     const settings = yield* boardSettings;
     const exec = resolveBoardStageExecution(
       settings,
@@ -4808,9 +4834,11 @@ const make = Effect.gen(function* () {
         queued: true,
         fixThreadId: options.fixThreadId,
         ...(options.fresh === true ? { fresh: true } : {}),
-        ...(options.flakyTitles === undefined || options.flakyTitles.length === 0
+        ...(!ruled
           ? {}
-          : { flakyTitles: options.flakyTitles }),
+          : rulingsHold
+            ? { flakyTitles: options.flakyTitles ?? [] }
+            : { flakyRulingsStale: true }),
         // Frozen on the pass, so a flip applies from the next one.
         ...(boardCiStopsOnFailure(projectConfig.ci) ? {} : { continueOnFailure: true }),
       },
@@ -5934,17 +5962,7 @@ const make = Effect.gen(function* () {
     }
     const allFlakes = [...flakes, ...rolledUp];
     const titles = allFlakes.map((flake) => boardCiFlakeKey(flake.file, flake.title));
-    const worktreePath = card.worktree?.path ?? null;
-    const baseRefName = card.worktree?.baseRefName ?? null;
-    const committedAt =
-      read === null || worktreePath === null || baseRefName === null
-        ? null
-        : yield* latestBranchCommitIso(card, worktreePath, baseRefName);
-    const moved = committedAt !== null && read !== null && isAfter(committedAt, read.startedAt);
-    const dirty =
-      read === null || worktreePath === null || baseRefName === null
-        ? true
-        : yield* ciWorktreeDirty(card, worktreePath, baseRefName);
+    const unchanged = read !== null && (yield* ciCodeUnchangedSince(card, read.startedAt));
     // Every failure must be flaky: flagged by its script or reported flaky, per failure or
     // for the whole step. A timeout, or a step the agent left out, is no flake.
     const covered =
@@ -5969,7 +5987,7 @@ const make = Effect.gen(function* () {
       yield* startCiPass(card.id, { fixThreadId, flakyTitles: titles });
       yield* fileCiFlakes(card, runId, allFlakes);
     });
-    if (read === null || steps === null || moved || dirty || !covered) {
+    if (read === null || steps === null || !unchanged || !covered) {
       yield* notResumed(
         covered
           ? "The flaky check changed the branch, so CI can't carry the pass on."

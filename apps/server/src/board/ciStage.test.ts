@@ -2287,7 +2287,10 @@ it.effect("T3O-126: a flaky `more` covers the failures rolled into it, so the pa
   }),
 );
 
-it.effect("T3O-126: after a counted fix, the re-run is told the tests it ruled flaky", () =>
+it.effect.each([
+  { label: "on unchanged code, the re-run is told the tests it ruled flaky", committed: false },
+  { label: "that commits, the re-run trusts none of its flaky rulings", committed: true },
+])("T3O-126: after a counted fix $label", ({ committed }) =>
   Effect.gen(function* () {
     const { runner, requests } = yield* scriptedRunner([
       {
@@ -2299,31 +2302,40 @@ it.effect("T3O-126: after a counted fix, the re-run is told the tests it ruled f
       },
       { result: "passed", failedIndex: null },
     ]);
-    const subject = card("fixed-flaky", review);
-    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
-      Effect.gen(function* () {
-        yield* enterCiAndRun(h, subject, 1);
-        yield* h.pumpDomain(
-          fixCompleted(
-            subject.id,
-            boardCiFixStepId(1, 1),
-            {
-              verdict: "fixed",
-              issues: [
-                { id: "s1-1", status: "resolved" },
-                { id: "s1-2", status: "flaky" },
-              ],
-            },
-            2,
-          ),
-        );
-        yield* h.reactor.drainCi;
-        const rerun = (yield* requests)[1]!;
-        assert.strictEqual(rerun.indexOffset ?? 0, 0);
-        assert.deepStrictEqual(rerun.knownFlaky, ["src/math.test.ts › adds two numbers"]);
-        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
-        assert.lengthOf(flakeCards(yield* h.commands), 1);
-      }),
+    const subject = card(`fixed-flaky-${String(committed)}`, review);
+    yield* withGovernor(
+      {
+        board: boardWith([subject]),
+        settings,
+        ...(committed ? { latestBranchCommitIso: "2999-01-01T00:00:00.000Z" } : {}),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiFixStepId(1, 1),
+              {
+                verdict: "fixed",
+                issues: [
+                  { id: "s1-1", status: "resolved" },
+                  { id: "s1-2", status: "flaky" },
+                ],
+              },
+              2,
+            ),
+          );
+          yield* h.reactor.drainCi;
+          const rerun = (yield* requests)[1]!;
+          assert.strictEqual(rerun.indexOffset ?? 0, 0);
+          assert.deepStrictEqual(
+            rerun.knownFlaky,
+            committed ? undefined : ["src/math.test.ts › adds two numbers"],
+          );
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          assert.lengthOf(flakeCards(yield* h.commands), 1);
+        }),
     ).pipe(Effect.provideService(BoardCiRunner, runner));
   }),
 );

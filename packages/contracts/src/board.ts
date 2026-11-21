@@ -1976,7 +1976,8 @@ export const BoardCardCi = Schema.Struct({
   flakyChecks: Schema.optionalKey(NonNegativeInt),
   /** The running fix is a flaky-only check: it can call failures flaky, never fix them. */
   fixTriage: Schema.optionalKey(Schema.Literal(true)),
-  /** `boardCiFlakeKey` of every test ruled flaky this entry: a repeat passes with no agent. */
+  /** `boardCiFlakeKey` of every test ruled flaky this entry, on code unchanged since: a repeat
+      passes with no agent. */
   flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type BoardCardCi = typeof BoardCardCi.Type;
@@ -6362,6 +6363,9 @@ export const BoardCardCiAction = Schema.Union([
     continueOnFailure: Schema.optionalKey(Schema.Literal(true)),
     /** Tests the fix just ruled flaky, so the re-run passes them (T3O-126). */
     flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** The branch changed since the pass this one replaces started, so the entry's flaky
+        rulings no longer describe this code and are dropped (T3O-126). */
+    flakyRulingsStale: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({
     kind: Schema.Literal("step"),
