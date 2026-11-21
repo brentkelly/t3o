@@ -10901,7 +10901,7 @@ export function boardCiFixIssues(
     if (!isBoardCiStepFailure(step.status)) continue;
     const failures = step.result?.failures ?? [];
     // Flagged flakes aren't the fix's to touch (T3O-126); the rest keep their numbering.
-    if (failures.length === 0 || failures.every((failure) => failure.flaky === true)) {
+    if (failures.every((failure) => failure.flaky === true)) {
       all.push({
         id: `s${stepIndex}`,
         stepIndex,

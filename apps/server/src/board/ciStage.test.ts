@@ -6,6 +6,7 @@
  */
 import {
   BOARD_LOCAL_WORKER_ID,
+  BOARD_SEED_LABEL_IDS,
   BOARD_SEED_STAGES,
   BOARD_SEED_STAGE_IDS,
   BoardCardId,
@@ -1997,7 +1998,7 @@ it.effect(
           const created = flakeCards(commands);
           assert.lengthOf(created, 1);
           const create = created[0]!;
-          assert.deepStrictEqual(create.labels, ["label-bug"]);
+          assert.deepStrictEqual(create.labels, [BOARD_SEED_LABEL_IDS.bug]);
           assert.strictEqual(
             create.externalRef?.id,
             `${projectId}:src/math.test.ts › adds two numbers`,

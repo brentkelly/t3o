@@ -285,9 +285,7 @@ describe("script reporting", () => {
       machine: null,
       flaky: null,
     });
-    expect(parseBoardCiFailureLine('::t3o-failure::{"reason":"x","flaky":true}')?.flaky).toBe(
-      true,
-    );
+    expect(parseBoardCiFailureLine('::t3o-failure::{"reason":"x","flaky":true}')?.flaky).toBe(true);
     const long = parseBoardCiFailureLine(
       `::t3o-failure::${JSON.stringify({ step: "s".repeat(200), reason: "r".repeat(900) })}`,
     );

@@ -3,6 +3,7 @@
  * `file › title`; a repeat flake notes the open card, and the volume is bounded.
  */
 import {
+  BOARD_SEED_LABEL_IDS,
   BOARD_SEED_STAGES,
   BOARD_SEED_STAGE_IDS,
   BoardCardId,
@@ -110,7 +111,7 @@ it.effect("the first flake files one bug card, auto-built but never auto-merged"
     const result = yield* file(deps, [flake("adds"), flake("adds")]);
     assert.deepStrictEqual(result.filed, ["T3O-101"]);
     const [create] = ofType(commands, "board.card.create");
-    assert.deepStrictEqual(create?.labels, ["label-bug"]);
+    assert.deepStrictEqual(create?.labels, [BOARD_SEED_LABEL_IDS.bug]);
     assert.strictEqual(create?.keyPrefix, "T3O");
     assert.strictEqual(create?.planReview?.unattended, true);
     assert.deepStrictEqual(create?.externalRef, {

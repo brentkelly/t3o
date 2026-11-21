@@ -1,11 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 /**
- * T3o (T3O-126): every flaky CI test becomes a bug card in its project, auto-planned and
- * auto-built but never auto-merged, so a human comes back to a fix ready to merge. A test is
- * matched by `boardCiFlakeKey` on the card's external ref: one open card per test, and a
- * repeat flake adds a note to it. The only path on which the board turns automation on for a
- * card nobody asked for, so it is bounded: a few new cards per pass, none past a per-project
- * ceiling, and a flake card never files cards of its own.
+ * T3o (T3O-126): each flaky CI test becomes an auto-built, never auto-merged bug card, one open
+ * card per `boardCiFlakeKey`. The only path that turns automation on for a card nobody asked
+ * for, so it is bounded; `docs/t3o/automation.md` has the contract.
  */
 import * as NodeCrypto from "node:crypto";
 

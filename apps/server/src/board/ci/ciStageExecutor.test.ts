@@ -543,7 +543,7 @@ describe("decideBoardCiRecord", () => {
   });
 
   it("a flaky verdict resumes the pass, refunding the fix and reopening its row", () => {
-    const fixing = cardInCi(ci({ phase: "fixing", fixAttempts: 2, headline: undefined }));
+    const fixing = cardInCi(ci({ phase: "fixing", fixAttempts: 2 }));
     const resumed = record(fixing, { kind: "flaky-resume", runId: "run-1", titles: ["a › b"] });
     expect(resumed.ok && resumed.payload.card.ci).toMatchObject({
       phase: "running",
