@@ -1959,7 +1959,7 @@ export const BoardCardCi = Schema.Struct({
 export type BoardCardCi = typeof BoardCardCi.Type;
 
 /** Most flaky titles a CI entry remembers. */
-export const BOARD_CI_MAX_FLAKY_TITLES = 50;
+const BOARD_CI_MAX_FLAKY_TITLES = 50;
 
 /** Uncounted flaky checks one CI entry allows: a loop guard, not a budget. */
 export const BOARD_CI_MAX_FLAKY_CHECKS = 10;

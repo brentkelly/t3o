@@ -28,7 +28,7 @@ import * as Effect from "effect/Effect";
 
 import { stampBoardActivityActor } from "../activityActors.ts";
 
-export const BOARD_CI_FLAKE_REF_SYSTEM = "t3o-flaky";
+const BOARD_CI_FLAKE_REF_SYSTEM = "t3o-flaky";
 /** New flake cards one pass may file. */
 export const BOARD_CI_FLAKE_CARDS_PER_PASS = 3;
 /** Open flake cards a project may hold before flakes are only listed. */
@@ -37,7 +37,7 @@ export const BOARD_CI_FLAKE_CARDS_OPEN_MAX = 10;
 const REF_ID_MAX = 200;
 const DETAIL_MAX = 2_000;
 
-export const BOARD_CI_FLAKE_ACTOR: BoardActivityActor = {
+const BOARD_CI_FLAKE_ACTOR: BoardActivityActor = {
   kind: "system",
   name: "CI: flaky test",
   providerInstanceId: null,
@@ -115,7 +115,7 @@ const commandIdFor = (seed: string, step: string) =>
 const clip = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 
-export function boardCiFlakeBrief(input: {
+function boardCiFlakeBrief(input: {
   readonly key: string;
   readonly flake: BoardCiFlake;
   readonly testedKey: string;

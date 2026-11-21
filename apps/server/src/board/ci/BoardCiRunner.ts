@@ -536,7 +536,7 @@ const readStepResult = (
  * whether the step failed only on flakes. A step with no reported failures is all-flaky
  * only when its `::t3o-failure::` line says so; a timeout never is.
  */
-export function boardCiStepFlakes(
+function boardCiStepFlakes(
   result: BoardCiStepResult | null,
   failureLine: { readonly step: string | null; readonly flaky: boolean | null } | null,
   stepName: string,
