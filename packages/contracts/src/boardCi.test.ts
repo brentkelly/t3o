@@ -193,12 +193,12 @@ describe("CI activeness", () => {
 });
 
 describe("CI member resolution", () => {
-  it("defaults to no steps, three fixes and the compiled-in prompt, in build mode and unattended", () => {
+  it("defaults to no steps, five fixes and the compiled-in prompt, in build mode and unattended", () => {
     const exec = resolveBoardStageExecution(DEFAULT_BOARD_SETTINGS, ci);
     expect(isBoardCiStageExecution(exec)).toBe(true);
     if (!isBoardCiStageExecution(exec)) return;
     expect(exec).toMatchObject({
-      maxFixAttempts: 3,
+      maxFixAttempts: 5,
       prompt: DEFAULT_BOARD_CI_FIX_PROMPT,
       mode: "build",
       humanInLoop: false,
@@ -305,7 +305,7 @@ describe("CI fix issues (T3O-57)", () => {
   const step = (
     name: string,
     status: "passed" | "failed" | "timed-out",
-    failures: ReadonlyArray<{ title: string; file?: string; line?: number }> = [],
+    failures: ReadonlyArray<{ title: string; file?: string; line?: number; flaky?: boolean }> = [],
   ) => ({
     name,
     status,
@@ -334,6 +334,21 @@ describe("CI fix issues (T3O-57)", () => {
       { id: "s1-2", stepIndex: 1, stepName: "Lint", title: "no-explicit-any" },
       { id: "s2", stepIndex: 2, stepName: "Test", title: "Test failed" },
       { id: "s3", stepIndex: 3, stepName: "Browser", title: "Browser timed out" },
+    ]);
+  });
+
+  it("leaves a script-flagged flake out, keeping the others' numbering (T3O-126)", () => {
+    const issues = boardCiFixIssues([
+      step("Test", "failed", [
+        { title: "flaky", flaky: true },
+        { title: "real", file: "a.ts" },
+      ]),
+      step("E2E", "failed", [{ title: "only flaky", flaky: true }]),
+    ]);
+    expect(issues).toEqual([
+      { id: "s0-2", stepIndex: 0, stepName: "Test", title: "real", file: "a.ts" },
+      // A step failed with only flakes failed on something else (a dirty tree): the step.
+      { id: "s1", stepIndex: 1, stepName: "E2E", title: "E2E failed" },
     ]);
   });
 

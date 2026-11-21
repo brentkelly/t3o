@@ -389,7 +389,113 @@ it.live("reads the step's result file, which adds detail and never overrides the
       summary: "1 of 3 failed",
       failures: [{ title: "boom", file: "src/a.ts", line: 4 }],
     });
-    assert.include(final.tail, "weren't { title, detail?, file?, line?, machine?, flaky?, repro? }");
+    assert.include(
+      final.tail,
+      "weren't { title, detail?, file?, line?, machine?, flaky?, repro? }",
+    );
+  }),
+);
+
+// T3O-126: a step that failed only on flakes passes, with the flakes on its row.
+it.live("a step whose every failure is flaky passes over them; a real one beside them fails", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const { events, emit } = collect();
+    const flakyOnly = `printf '%s' '{"failures":[{"title":"adds","file":"a.test.ts","flaky":true,"repro":"vp test a"}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const mixed = `printf '%s' '{"failures":[{"title":"real"},{"title":"adds","file":"a.test.ts","flaky":true}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const result = yield* runBoardCiPass(
+      request(cwd, [
+        { name: "Flaky only", command: flakyOnly, timeoutMinutes: 1 },
+        { name: "Mixed", command: mixed, timeoutMinutes: 1 },
+      ]),
+      emit,
+    );
+    assert.deepInclude(result, { result: "failed", failedIndex: 1 });
+    const finals = events.filter((event) => event.step.status !== "running");
+    const [first, second] = finals.map((event) => event.step);
+    assert.strictEqual(first?.status, "passed");
+    assert.deepStrictEqual(first?.flaky, [
+      { title: "adds", file: "a.test.ts", repro: "vp test a" },
+    ]);
+    assert.isUndefined(first?.headline);
+    assert.strictEqual(second?.status, "failed");
+    assert.isUndefined(second?.flaky);
+    // The flake beside a real failure never heads the step.
+    assert.notInclude(second?.headline?.why ?? "", "adds");
+  }),
+);
+
+it.live("a test already ruled flaky passes unflagged, except on its own flake card", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const write = (titles: string) =>
+      `printf '%s' '{"failures":[${titles}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const known = yield* Effect.sync(collect);
+    const passed = yield* runBoardCiPass(
+      {
+        ...request(cwd, [
+          {
+            name: "Known",
+            command: write('{"title":"adds","file":"a.test.ts"}'),
+            timeoutMinutes: 1,
+          },
+        ]),
+        knownFlaky: ["a.test.ts › adds"],
+      },
+      known.emit,
+    );
+    assert.strictEqual(passed.result, "passed");
+    const final = known.events.at(-1)!.step;
+    assert.deepStrictEqual(final.result?.failures, [
+      { title: "adds", file: "a.test.ts", flaky: true },
+    ]);
+
+    const own = yield* Effect.sync(collect);
+    const failed = yield* runBoardCiPass(
+      {
+        ...request(cwd, [
+          {
+            name: "Own",
+            command: write(
+              '{"title":"adds","file":"a.test.ts","flaky":true},{"title":"other","flaky":true}',
+            ),
+            timeoutMinutes: 1,
+          },
+          {
+            name: "Other",
+            command: write('{"title":"other","flaky":true}'),
+            timeoutMinutes: 1,
+          },
+        ]),
+        stopOnFailure: false,
+        notFlakyTitle: "a.test.ts › adds",
+      },
+      own.emit,
+    );
+    assert.deepInclude(failed, { result: "failed", failedIndex: 0 });
+    const statuses = own.events
+      .filter((event) => event.step.status !== "running")
+      .map((event) => event.step.status);
+    assert.deepStrictEqual(statuses, ["failed", "passed"]);
+  }),
+);
+
+it.live("a ::t3o-failure:: line can say a step failed only on a flake", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const { events, emit } = collect();
+    const result = yield* runBoardCiPass(
+      request(cwd, [
+        {
+          name: "Line",
+          command: `echo '::t3o-failure::{"step":"e2e › login","reason":"flaked","flaky":true}'; exit 1`,
+          timeoutMinutes: 1,
+        },
+      ]),
+      emit,
+    );
+    assert.strictEqual(result.result, "passed");
+    assert.deepStrictEqual(events.at(-1)!.step.flaky, [{ title: "e2e › login" }]);
   }),
 );
 

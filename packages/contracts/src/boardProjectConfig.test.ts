@@ -109,7 +109,7 @@ describe("normalization and version", () => {
       delta: {
         stageSwitches: { backlog: true, sprint: false, review: false, ready: false, nope: true },
         overrides: {
-          ci: { maxFixAttempts: 3, maxRoundTrips: 5, autoExecute: false },
+          ci: { maxFixAttempts: 5, maxRoundTrips: 5, autoExecute: false },
           building: { prompt: DEFAULT_BOARD_SETTINGS.pipeline.building?.prompt ?? "x" },
           nope: { autoExecute: true },
         },
@@ -278,12 +278,16 @@ describe("script reporting", () => {
       parseBoardCiFailureLine(
         '  ::t3o-failure::{"step":" lint ","reason":"No files to lint","machine":false}',
       ),
-    ).toEqual({ step: "lint", reason: "No files to lint", machine: false });
+    ).toEqual({ step: "lint", reason: "No files to lint", machine: false, flaky: null });
     expect(parseBoardCiFailureLine('::t3o-failure::{"reason":"x"}')).toEqual({
       step: null,
       reason: "x",
       machine: null,
+      flaky: null,
     });
+    expect(parseBoardCiFailureLine('::t3o-failure::{"reason":"x","flaky":true}')?.flaky).toBe(
+      true,
+    );
     const long = parseBoardCiFailureLine(
       `::t3o-failure::${JSON.stringify({ step: "s".repeat(200), reason: "r".repeat(900) })}`,
     );
@@ -298,6 +302,13 @@ describe("script reporting", () => {
       JSON.stringify({ failures: [{ title: "browser", machine: true }] }),
     );
     expect(parsed.result?.failures).toEqual([{ title: "browser", machine: true }]);
+  });
+
+  it("keeps a result-file failure's flaky flag and repro command (T3O-126)", () => {
+    const parsed = parseBoardCiResultFile(
+      JSON.stringify({ failures: [{ title: "adds", flaky: true, repro: "vp test a" }] }),
+    );
+    expect(parsed.result?.failures).toEqual([{ title: "adds", flaky: true, repro: "vp test a" }]);
   });
 
   it("keeps valid failures of a result file, capped, and warns about the rest", () => {
