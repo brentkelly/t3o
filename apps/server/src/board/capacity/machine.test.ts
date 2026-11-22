@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { BoardMachine } from "./machine.ts";
+import { BoardMachine, parseCpuPressure } from "./machine.ts";
 
 it.live("a worktree with an unreadable subfolder still measures, as du's total", () =>
   Effect.gen(function* () {
@@ -25,3 +25,13 @@ it.live("a worktree with an unreadable subfolder still measures, as du's total",
     }
   }),
 );
+
+it("reads host CPU pressure as the larger of avg10 and avg60, and unknown as null", () => {
+  const psi = (some: string) =>
+    `some ${some} avg300=1.00 total=123\nfull avg10=99.00 avg60=99.00 avg300=99.00 total=0\n`;
+  assert.strictEqual(parseCpuPressure(psi("avg10=12.50 avg60=80.25")), 80.25);
+  assert.strictEqual(parseCpuPressure(psi("avg10=91.00 avg60=40.00")), 91);
+  assert.strictEqual(parseCpuPressure(psi("avg10=0.00 avg60=0.00")), 0);
+  assert.isNull(parseCpuPressure(""));
+  assert.isNull(parseCpuPressure("full avg10=50.00 avg60=50.00 avg300=0 total=0\n"));
+});

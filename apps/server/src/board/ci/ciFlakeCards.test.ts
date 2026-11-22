@@ -308,3 +308,127 @@ it("reads a pass's flakes: passed-over ones with their error, and flagged ones b
     { stepName: "E2E", command: "vp e2e", title: "slow", repro: "vp e2e slow", source: "script" },
   ]);
 });
+
+// T3o (T3O-127): flakes under load.
+it.effect("a flake under load files a performance card; a calm one keeps the race brief", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    yield* fileBoardCiFlakes(deps, {
+      card: tested,
+      runId: "run-1",
+      passOrdinal: 2,
+      flakes: [flake("slow", { underLoad: true, cpuPressure: 87.4 }), flake("racy")],
+      loadThreshold: 50,
+    });
+    const [slow, racy] = ofType(commands, "board.card.create");
+    assert.strictEqual(slow?.title, "Slow under load: src/a.test.ts › slow");
+    assert.include(slow?.brief ?? "", "## Slow under load");
+    assert.include(slow?.brief ?? "", "CPU pressure 87 % (under-load threshold 50 %)");
+    assert.include(slow?.brief ?? "", "Make the test cheaper");
+    assert.include(slow?.brief ?? "", "mark it load-sensitive in the same pull request");
+    assert.include(slow?.brief ?? "", "Never retry, sleep or loosen timeouts");
+    // Same ref system as any flake card, so its own CI still finds its target.
+    assert.strictEqual(slow?.externalRef?.system, "t3o-flaky");
+    assert.strictEqual(racy?.title, "Flaky test: src/a.test.ts › racy");
+    assert.notInclude(racy?.brief ?? "", "Slow under load");
+  }),
+);
+
+it.effect("a test that already had a performance card, even archived, is only marked", () =>
+  Effect.gen(function* () {
+    const earlier = flakeCard("t3o-30", "slow", {
+      title: "Slow under load: src/a.test.ts › slow",
+      stage: BOARD_SEED_STAGE_IDS.done,
+      archivedAt: NOW,
+    });
+    const { deps, commands } = yield* fakeBoard([tested, earlier]);
+    yield* file(deps, [flake("slow", { underLoad: true })]);
+    const [create] = ofType(commands, "board.card.create");
+    assert.strictEqual(create?.externalRef?.id, `${projectId}:src/a.test.ts › slow  #2`);
+    assert.include(create?.brief ?? "", "T3O-30 already tried to make this test cheaper");
+    assert.include(create?.brief ?? "", "Do not optimise it again");
+    assert.notInclude(create?.brief ?? "", "Make the test cheaper");
+  }),
+);
+
+it.effect("a load-sensitive flake under load files nothing and uses none of the caps", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    const marked = Array.from({ length: BOARD_CI_FLAKE_CARDS_PER_PASS }, (_, n) =>
+      flake(`marked${n}`, { underLoad: true, loadSensitive: true }),
+    );
+    const result = yield* file(deps, [...marked, flake("racy")]);
+    assert.deepStrictEqual(result.filed, ["T3O-101"]);
+    assert.lengthOf(result.loadSensitive, BOARD_CI_FLAKE_CARDS_PER_PASS);
+    assert.deepStrictEqual(
+      ofType(commands, "board.card.create").map((create) => create.title),
+      ["Flaky test: src/a.test.ts › racy"],
+    );
+    assert.include(
+      ofType(commands, "board.card.record-note").at(-1)?.detail ?? "",
+      "not filed (marked load-sensitive, ran under load): src/a.test.ts › marked0",
+    );
+  }),
+);
+
+it.effect("a load-sensitive mark is ignored on a calm host and for a test in the change", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    const result = yield* file(deps, [
+      flake("calm", { loadSensitive: true }),
+      flake("changed", { loadSensitive: true, underLoad: true, inDiff: true }),
+    ]);
+    assert.lengthOf(result.filed, 2);
+    assert.deepStrictEqual(result.loadSensitive, []);
+    const titles = ofType(commands, "board.card.create").map((create) => create.title);
+    assert.deepStrictEqual(titles, [
+      "Flaky test: src/a.test.ts › calm",
+      "Slow under load: src/a.test.ts › changed",
+    ]);
+    // A flake card's own target is never excused by its mark.
+    const own = flakeCard("t3o-60", "adds", { stage: BOARD_SEED_STAGE_IDS.ci });
+    const target = yield* fakeBoard([own]);
+    const onOwn = yield* file(
+      target.deps,
+      [flake("adds", { loadSensitive: true, underLoad: true })],
+      own,
+    );
+    assert.deepStrictEqual(onOwn.loadSensitive, []);
+    assert.deepStrictEqual(onOwn.noted, ["T3O-60"]);
+  }),
+);
+
+it("reads a pass's load: the step's pressure, and a mark only from the script", () => {
+  const flakes = boardCiPassFlakes([
+    {
+      name: "E2E",
+      command: "vp e2e",
+      status: "passed",
+      cpuPressure: 88,
+      underLoad: true,
+      result: { summary: null, failures: [] },
+      flaky: [
+        { title: "marked", loadSensitive: true, underLoad: true },
+        { title: "ruled", byAgent: true, loadSensitive: true },
+      ],
+    },
+    {
+      name: "Unit",
+      command: "vp test",
+      status: "failed",
+      underLoad: true,
+      result: {
+        summary: null,
+        failures: [{ title: "real" }, { title: "flagged", flaky: true, loadSensitive: true }],
+      },
+    },
+  ]);
+  assert.deepStrictEqual(
+    flakes.map((entry) => [entry.title, entry.underLoad, entry.loadSensitive, entry.cpuPressure]),
+    [
+      ["marked", true, true, 88],
+      ["ruled", true, undefined, 88],
+      ["flagged", true, true, undefined],
+    ],
+  );
+});
