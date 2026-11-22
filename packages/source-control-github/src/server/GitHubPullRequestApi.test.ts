@@ -4127,6 +4127,11 @@ layer("GitHubPullRequestApi.layer", (it) => {
     }),
   );
 
+  const refusedChecks = {
+    type: "FORBIDDEN",
+    message: "Resource not accessible by integration",
+    path: ["repository", "pullRequest", "commits", "nodes", 0, "commit", "statusCheckRollup"],
+  };
   const unresolvedCore = {
     ...coreResponse({ baseRef: { compare: null } }),
     errors: [unresolvedPullRef],
@@ -4141,6 +4146,17 @@ layer("GitHubPullRequestApi.layer", (it) => {
       ],
       requestedReviewers: [100, 0],
     },
+    // T3o: the missing-scope fallback reads tolerate it too (T3O-8).
+    {
+      description: "beside a refused check rollup",
+      answers: [
+        { ...unresolvedCore, errors: [unresolvedPullRef, refusedChecks] },
+        { ...unresolvedCore, errors: [unresolvedPullRef, refusedChecks] },
+        unresolvedCore,
+      ],
+      // The reviewer count depends on the earlier rows' refusal cache, so it is not asserted.
+      requestedReviewers: null,
+    },
   ])(
     "reads a pull request without a pull ref, its comparison unknown ($description)",
     ({ answers, requestedReviewers }) =>
@@ -4151,6 +4167,10 @@ layer("GitHubPullRequestApi.layer", (it) => {
         const detail = yield* cli.getPullRequestDetail(pullRequestInput);
         expect(detail.number).toBe(7);
         expect(detail.comparison).toBeNull();
+        if (requestedReviewers === null) {
+          expect(detail).toMatchObject({ checksUnread: true });
+          return;
+        }
         expect(variablesOf("PullRequestCore").map((v) => v["requestedReviewers"])).toEqual(
           requestedReviewers,
         );
@@ -4159,14 +4179,15 @@ layer("GitHubPullRequestApi.layer", (it) => {
 
   it.effect("fails a missing pull ref beside another error, in GitHub's words", () =>
     Effect.gen(function* () {
-      const refusedChecks = {
-        type: "FORBIDDEN",
-        message: "Resource not accessible by integration",
+      // T3o: not a scope refusal, which the missing-scope fallback would read again (T3O-8).
+      const failedChecks = {
+        type: "INTERNAL",
+        message: "Something went wrong while executing your query.",
         path: ["repository", "pullRequest", "commits", "nodes", 0, "commit", "statusCheckRollup"],
       };
       mockedExecute.mockReturnValueOnce(
         Effect.succeed(
-          output(encodeJson({ ...unresolvedCore, errors: [unresolvedPullRef, refusedChecks] })),
+          output(encodeJson({ ...unresolvedCore, errors: [unresolvedPullRef, failedChecks] })),
         ),
       );
       const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
@@ -4176,7 +4197,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
         status: 200,
         githubErrors: [
           "Could not resolve head ref 'refs/pull/7/head'. (at repository.pullRequest.baseRef.compare)",
-          "Resource not accessible by integration (at repository.pullRequest.commits.nodes.0.commit.statusCheckRollup)",
+          "Something went wrong while executing your query. (at repository.pullRequest.commits.nodes.0.commit.statusCheckRollup)",
         ],
       });
     }),

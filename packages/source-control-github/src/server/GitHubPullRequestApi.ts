@@ -133,6 +133,8 @@ import {
 import {
   readCoreWithScopeFallback,
   readSummariesWithScopeFallback,
+  T3oPullRequestCoreWithoutReviewers,
+  T3oPullRequestCoreWithoutReviewersOrChecks,
   T3oScopeFallbackGraphQLGroup,
 } from "./t3oGraphQlScopeFallback.ts";
 import {
@@ -395,6 +397,13 @@ const toleratingMissingPullRef =
     );
 const decodePullRequestCore = Schema.decodeUnknownEffect(PullRequestCore.result);
 const decodePullRequestActionState = Schema.decodeUnknownEffect(PullRequestActionState.result);
+// T3o (T3O-8): the missing-scope fallback reads tolerate a missing pull ref the same way.
+const decodeT3oCoreWithoutReviewers = Schema.decodeUnknownEffect(
+  T3oPullRequestCoreWithoutReviewers.result,
+);
+const decodeT3oCoreWithoutReviewersOrChecks = Schema.decodeUnknownEffect(
+  T3oPullRequestCoreWithoutReviewersOrChecks.result,
+);
 
 /** A large pull request can produce a multi-megabyte patch; past this it is truncated. */
 const DIFF_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -1620,9 +1629,14 @@ export const make = Effect.gen(function* () {
         readCoreWithScopeFallback(
           {
             full: () => readRequestedReviewers(input, 100, read),
-            withoutReviewers: () => client.T3oPullRequestCoreWithoutReviewers(variables(0)),
+            withoutReviewers: () =>
+              client
+                .T3oPullRequestCoreWithoutReviewers(variables(0))
+                .pipe(toleratingMissingPullRef(decodeT3oCoreWithoutReviewers)),
             withoutReviewersOrChecks: () =>
-              client.T3oPullRequestCoreWithoutReviewersOrChecks(variables(0)),
+              client
+                .T3oPullRequestCoreWithoutReviewersOrChecks(variables(0))
+                .pipe(toleratingMissingPullRef(decodeT3oCoreWithoutReviewersOrChecks)),
           },
           (core) =>
             core.pipe(
