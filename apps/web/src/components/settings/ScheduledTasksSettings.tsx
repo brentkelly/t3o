@@ -1655,6 +1655,7 @@ function ScheduledTaskEditorForm({
           ? { boardAction: null }
           : parseBoardWebhookActionDraft(boardRule);
     if ("error" in board) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- T3o: the board is English-only.
       reportFailure("Invalid board rule", board.error);
       return;
     }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { InlineButton } from "../ui/button";
@@ -21,7 +21,7 @@ const CACHE_KEY = "t3o:latest-release";
 /** T3o's stand-in for upstream's AboutVersionTitle: the T3o and T3 Code versions, copyable. */
 export function T3oReleaseInfo() {
   const line = versionLine(stamp);
-  // Upstream dropped routine success toasts (#36527); the copy is silent here too.
+  // Like upstream's version copy, a success shows no toast.
   const { copyToClipboard } = useCopyToClipboard<void>({
     target: namedClipboardTarget("version"),
     onError: (error) => {

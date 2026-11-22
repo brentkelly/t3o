@@ -576,6 +576,7 @@ function ProjectScriptEditorForm({
             </label>
             {/* T3o: T3O-23 — several actions may set this; they run in order. */}
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm dark:border-transparent dark:bg-white/[0.035]">
+              {/* oxlint-disable-next-line t3code/no-untranslated-copy -- T3o: teardown is English-only. */}
               <span>Run before the worktree is removed</span>
               <Switch
                 checked={runOnWorktreeRemove}

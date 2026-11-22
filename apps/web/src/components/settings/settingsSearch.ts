@@ -167,6 +167,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   // T3o: the board's settings pages, a group above the stock ones.
   {
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- T3o: the board is English-only.
     heading: "Board",
     paths: [
       "/settings/board",

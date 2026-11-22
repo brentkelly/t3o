@@ -14,6 +14,7 @@ import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import {
   clampFileAttachmentUploadBytes,
   deletePendingAttachmentUpload,
@@ -31,6 +32,11 @@ import { attachmentEnvironment } from "../state/attachments";
 import { readPreparedConnection } from "../state/session";
 
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
+
+class BoardUploadTransferError extends Schema.TaggedError<BoardUploadTransferError>()(
+  "BoardUploadTransferError",
+  { message: Schema.String },
+) {}
 
 /** What the environment allows, read off its advertised capabilities. */
 export interface BoardAttachmentLimits {
@@ -214,7 +220,10 @@ export async function uploadBoardAttachment(input: {
               signal,
               onProgress: (progress) => input.onProgress?.(progress),
             }),
-          catch: (error) => (error instanceof Error ? error : new Error("Upload failed")),
+          catch: (cause) =>
+            new BoardUploadTransferError({
+              message: cause instanceof Error ? cause.message : "Upload failed",
+            }),
         }),
     }),
   );

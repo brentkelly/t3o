@@ -44,7 +44,6 @@ import * as Schema from "effect/Schema";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Path from "effect/Path";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
-import * as Context from "effect/Context";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
