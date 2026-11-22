@@ -409,7 +409,7 @@ it.live("reads the step's result file, which adds detail and never overrides the
     });
     assert.include(
       final.tail,
-      "weren't { title, detail?, file?, line?, machine?, flaky?, repro?, loadSensitive? }",
+      "weren't { title, detail?, file?, line?, machine?, flaky?, repro? }",
     );
   }),
 );
@@ -917,13 +917,18 @@ it.live("tells each step the host's CPU pressure, and whether that is under load
     assert.include(calm.tail, "P=30 U=none");
     assert.strictEqual(calm.cpuPressure, 30);
     assert.isUndefined(calm.underLoad);
-    // The project's own threshold decides; at it is under load.
+    // The project's own threshold decides; above it is under load, at it is not (T3O-129).
     const atThreshold = yield* runAt(30, 30);
-    assert.include(atThreshold.tail, "P=30 U=1");
-    // What the step is told is what decides: a reading shown as 50 is under a 50 threshold.
-    const roundsUp = yield* runAt(49.6, 50);
-    assert.include(roundsUp.tail, "P=50 U=1");
+    assert.include(atThreshold.tail, "P=30 U=none");
+    assert.include((yield* runAt(31, 30)).tail, "P=31 U=1");
+    // What the step is told is what decides: a reading shown as 51 is over a 50 threshold.
+    const roundsUp = yield* runAt(50.6, 50);
+    assert.include(roundsUp.tail, "P=51 U=1");
     assert.strictEqual(roundsUp.underLoad, true);
+    // 100 is the off switch: never busy, even at 100 %.
+    const off = yield* runAt(100, 100);
+    assert.include(off.tail, "P=100 U=none");
+    assert.isUndefined(off.underLoad);
     const unknown = yield* runAt(null);
     assert.include(unknown.tail, "P=none U=none");
     assert.isUndefined(unknown.cpuPressure);
@@ -962,11 +967,12 @@ it.live("reads the pressure once per step group, before the group starts", () =>
   }),
 );
 
-it.live("carries a runner's load-sensitive flakes and its skipped-under-load count", () =>
+// T3o (T3O-129): deferred tests, and T3O-127's ignored mark.
+it.live("moves a step's deferred tests onto it, and says the old mark is ignored", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    const command = `printf '%s' '{"skippedUnderLoad":4,"failures":[{"title":"adds","file":"a.test.ts","flaky":true,"loadSensitive":true}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const command = `printf '%s' '{"skippedUnderLoad":4,"deferred":[{"file":"e2e/a.spec.ts","title":"slow"}],"failures":[{"title":"adds","file":"a.test.ts","flaky":true,"loadSensitive":true}]}' > "$T3O_CI_RESULT"; exit 1`;
     const result = yield* runPass(
       request(cwd, [{ name: "E2e", command, timeoutMinutes: 1 }]),
       emit,
@@ -975,9 +981,82 @@ it.live("carries a runner's load-sensitive flakes and its skipped-under-load cou
     assert.strictEqual(result.result, "passed");
     const final = events.at(-1)!.step;
     assert.strictEqual(final.skippedUnderLoad, 4);
-    assert.deepStrictEqual(final.flaky, [
-      { title: "adds", file: "a.test.ts", loadSensitive: true, underLoad: true },
+    assert.deepStrictEqual(final.deferred, [{ file: "e2e/a.spec.ts", title: "slow" }]);
+    assert.isUndefined(final.result?.deferred);
+    assert.deepStrictEqual(final.flaky, [{ title: "adds", file: "a.test.ts", underLoad: true }]);
+    assert.include(final.tail, "[board] loadSensitive is ignored; the board keeps the list.");
+    assert.notInclude(final.tail, "on a calm machine");
+  }),
+);
+
+it.live("a step that defers tests on a calm machine still shows them, and is told so", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const { events, emit } = collect();
+    const command = `printf '%s' '{"deferred":[{"title":"slow"}],"failures":[]}' > "$T3O_CI_RESULT"`;
+    yield* runPass(request(cwd, [{ name: "E2e", command, timeoutMinutes: 1 }]), emit, 10);
+    const final = events.at(-1)!.step;
+    assert.deepStrictEqual(final.deferred, [{ title: "slow" }]);
+    assert.include(final.tail, "deferred tests on a calm machine");
+  }),
+);
+
+it.live("writes the run's load-sensitive list once, and names it to every step", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const step = {
+      name: "List",
+      command: 'cat "${T3O_CI_LOAD_SENSITIVE:-/nonexistent}" || echo NOLIST',
+      timeoutMinutes: 1,
+    };
+    const runWith = (loadSensitive?: BoardCiRunRequest["loadSensitive"]) =>
+      Effect.gen(function* () {
+        const { events, emit } = collect();
+        yield* runPass(
+          { ...request(cwd, [step]), ...(loadSensitive === undefined ? {} : { loadSensitive }) },
+          emit,
+        ).pipe(
+          // An inherited path is never the step's.
+          Effect.provideService(HostProcess.Environment, {
+            ...process.env,
+            T3O_CI_LOAD_SENSITIVE: "/elsewhere.json",
+          }),
+        );
+        return events.at(-1)!.step;
+      });
+    const first = yield* runWith([{ file: "e2e/a.spec.ts", title: "slow" }]);
+    assert.include(first.tail, '[{"file":"e2e/a.spec.ts","title":"slow"}]');
+    const path = NodePath.join(cwd, ".t3", "ci", "run-1", "load-sensitive.json");
+    assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(path, "utf8")), [
+      { file: "e2e/a.spec.ts", title: "slow" },
     ]);
+    // A later segment of the same run reads the same snapshot, whatever it is sent.
+    const later = yield* runWith([{ file: "e2e/b.spec.ts", title: "other" }]);
+    assert.include(later.tail, '[{"file":"e2e/a.spec.ts","title":"slow"}]');
+    // A new run with no list gets an empty one.
+    const fresh = workdir();
+    const { events, emit } = collect();
+    yield* runPass(request(fresh, [step]), emit);
+    assert.include(events.at(-1)!.step.tail, "[]");
+  }),
+);
+
+it.live("a list it can't write sets no variable and says so", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const logDir = NodePath.join(cwd, ".t3", "ci", "run-1");
+    NodeFS.mkdirSync(logDir, { recursive: true });
+    NodeFS.chmodSync(logDir, 0o500);
+    const { events, emit } = collect();
+    yield* runPass(
+      request(cwd, [
+        { name: "List", command: 'echo "L=${T3O_CI_LOAD_SENSITIVE:-none}"', timeoutMinutes: 1 },
+      ]),
+      emit,
+    ).pipe(Effect.ensuring(Effect.sync(() => NodeFS.chmodSync(logDir, 0o700))));
+    const final = events.at(-1)!.step;
+    assert.include(final.tail, "L=none");
+    assert.include(final.tail, "Could not write the load-sensitive list");
   }),
 );
 

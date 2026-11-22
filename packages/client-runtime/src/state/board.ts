@@ -96,6 +96,7 @@ import {
   getBoardProjectImportCandidates,
   getBoardProjectTokenStatus,
   importBoardProjectFile,
+  removeBoardProjectLoadSensitive,
   resetBoardProject,
   setBoardProjectCiEnabled,
   setBoardProjectCiStopOnFailure,
@@ -157,6 +158,7 @@ import {
   type DismissBoardProjectImportInput,
   type ResetBoardProjectInput,
   type SetBoardProjectCiEnabledInput,
+  type RemoveBoardProjectLoadSensitiveInput,
   type SetBoardProjectCiStopOnFailureInput,
   type SetBoardProjectCiStepsInput,
   type SetBoardProjectStageOverrideInput,
@@ -1366,6 +1368,12 @@ export function createBoardEnvironmentAtoms<R, ER>(
     resetProject: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:reset-project",
       execute: (input: ResetBoardProjectInput) => resetBoardProject(input),
+    }),
+    // T3o (T3O-129): a person takes tests off the load-sensitive list.
+    removeProjectLoadSensitive: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:remove-project-load-sensitive",
+      execute: (input: RemoveBoardProjectLoadSensitiveInput) =>
+        removeBoardProjectLoadSensitive(input),
     }),
     dismissProjectImport: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:dismiss-project-import",

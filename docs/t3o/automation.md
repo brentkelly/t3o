@@ -67,12 +67,12 @@ included.
   reported flaky by the script, on a card whose resolved Auto-merge is off, it is recorded as
   inconclusive and a human's merge is the gate. Flakes over a limit are only listed on the tested
   card (`ciFlakeCards.ts`).
-- **Load-born flakes (`T3O-127`).** A flake in a step that ran under load (host CPU pressure at or
-  above the project's `ciLoadThreshold`) files a `Slow under load:` performance card instead of a
-  race card; a test whose earlier one reached Done (archived or not) gets a "mark it, don't optimise"
-  brief. A flake the script reports `loadSensitive`, under load and not a flake card's own test, files
-  nothing and counts toward no cap. A CI pass's `ciCpuCores`
-  reservation is one best-effort grow at admit: it never delays the pass.
+- **Busy flakes file nothing (`T3O-129`).** A flake in a step that ran under load (host CPU pressure
+  above the project's `ciLoadThreshold`, which the board also requires to be below 100) goes onto the
+  project's expiring load-sensitive list and files no card; scripts may defer listed tests to the
+  nightly. A flake on a quiet machine files a low-priority race card. The per-pass and open caps
+  apply only to cards. A flake card's own target is never listed or skipped on its own CI. A CI
+  pass's `ciCpuCores` reservation is one best-effort grow at admit: it never delays the pass.
 - **A group's toggles are the authorisation for the cards in it.** A card moved into a group
   inherits the group's toggles, and an agent may regroup without asking; only turning a toggle on,
   on a card or in a group's settings, needs a human (`T3O-114`).

@@ -65,6 +65,7 @@ import {
   type BoardResolvedAutomation,
   resolveBoardCardAutomationIn,
   resolveBoardCiLoadThreshold,
+  boardLiveLoadSensitive,
   boardCardChildren,
   boardBuildHumanInLoopDefault,
   boardCardPendingSplit,
@@ -326,6 +327,7 @@ import {
   boardCiFlakeCardTarget,
   boardCiPassFlakes,
   fileBoardCiFlakes,
+  noteBoardCiDeferred,
   type BoardCiFlake,
 } from "./ci/ciFlakeCards.ts";
 import { BoardWorkspaces, type BoardCardWorkspace } from "./workspace/BoardWorkspace.ts";
@@ -5019,6 +5021,7 @@ const make = Effect.gen(function* () {
         else if (yield* ciPassRecordedAs(card.id, runId, "passed")) {
           yield* advanceFromCi(card);
           yield* fileCiFlakes(card, runId, boardCiPassFlakes(read.steps));
+          yield* noteCiDeferred(card, runId);
         }
         return;
       }
@@ -5092,6 +5095,13 @@ const make = Effect.gen(function* () {
         loadThreshold: resolveBoardCiLoadThreshold(
           boardProjectStageConfig(board, card.projectId)?.resources ?? null,
         ),
+        // T3o (T3O-129): a flake card's own target is never on its own skip list.
+        loadSensitive: boardLiveLoadSensitive(
+          boardProjectStageConfig(board, card.projectId)?.loadSensitive,
+          yield* nowIso,
+        )
+          .filter((entry) => entry.key !== notFlakyTitle)
+          .map((entry) => ({ file: entry.file, title: entry.title })),
         ...(inconclusiveTargetAllowed ? { inconclusiveTargetAllowed: true } : {}),
         ...(card.ci.continueOnFailure === true ? { stopOnFailure: false } : {}),
         ...(runner === undefined ? {} : { runner }),
@@ -5568,6 +5578,7 @@ const make = Effect.gen(function* () {
     const after = (yield* readBoard).cards.find((candidate) => candidate.id === card.id);
     if (after?.ci?.runId !== runId || after.ci.phase !== "held") return false;
     yield* holdInCi(card, reason);
+    yield* noteCiDeferred(card, runId);
     return true;
   });
 
@@ -6062,6 +6073,21 @@ const make = Effect.gen(function* () {
   /** T3o (T3O-126): the deps a flake filing writes through. */
   const ciFlakeDeps = { readBoard, settings: boardSettings, dispatch: dispatchRefusal, nowIso };
 
+  /** T3o (T3O-129): the tests a run deferred to the nightly, noted once on the card at the
+      run's real end. Never on a failed finish, which a flaky resume can carry on. */
+  const noteCiDeferred = Effect.fn("board-supervisor-noteCiDeferred")(
+    function* (card: BoardCard, runId: string) {
+      const read = yield* ciPassFailures(card.id, runId);
+      if (read === null) return;
+      yield* noteBoardCiDeferred(ciFlakeDeps, { card, runId, steps: read.steps });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: noting deferred CI tests failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
   /** File a pass's flakes as bug cards; a fault is logged and never touches the card. */
   const fileCiFlakes = Effect.fn("board-supervisor-fileCiFlakes")(
     function* (card: BoardCard, runId: string, flakes: ReadonlyArray<BoardCiFlake>) {
@@ -6127,9 +6153,10 @@ const make = Effect.gen(function* () {
             : { repro: report.repro.trim().slice(0, 500) }),
           stepName: issue.stepName,
           command: step.command,
-          // T3o (T3O-127): never load-sensitive (the agent can't see marks), but under load.
+          // T3o (T3O-129): under load, the agent's ruling lists the test like the script's,
+          // unless only the agent's own words name it.
           ...(step.underLoad === true ? { underLoad: true } : {}),
-          ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
+          ...(perFailure ? {} : { agentWorded: true }),
           source: "agent" as const,
         },
       ];
@@ -6172,7 +6199,6 @@ const make = Effect.gen(function* () {
           stepName: step.name,
           command: step.command,
           ...(step.underLoad === true ? { underLoad: true } : {}),
-          ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
           source: "agent",
         });
       }
@@ -6201,6 +6227,8 @@ const make = Effect.gen(function* () {
         yield* stopCiForHuman(card, reason, fixThreadId);
         return;
       }
+      // T3o (T3O-129): the new pass replaces this run, so this is its real end.
+      yield* noteCiDeferred(card, runId);
       yield* startCiPass(card.id, { fixThreadId, flakyTitles: titles });
       yield* fileCiFlakes(card, runId, allFlakes);
     });
@@ -6227,9 +6255,6 @@ const make = Effect.gen(function* () {
           ...(failure.file === undefined ? {} : { file: failure.file }),
           ...(repro === undefined ? {} : { repro }),
           ...(failure.flaky === true ? {} : { byAgent: true as const }),
-          ...(failure.flaky === true && failure.loadSensitive === true
-            ? { loadSensitive: true as const }
-            : {}),
           ...(step.underLoad === true ? { underLoad: true as const } : {}),
         });
         return { ...failure, flaky: true };
@@ -6241,6 +6266,7 @@ const make = Effect.gen(function* () {
           ...(whole.file === undefined ? {} : { file: whole.file }),
           ...(whole.repro === undefined ? {} : { repro: whole.repro }),
           byAgent: true,
+          agentWorded: true,
           ...(step.underLoad === true ? { underLoad: true as const } : {}),
         });
       }
@@ -6358,6 +6384,8 @@ const make = Effect.gen(function* () {
           return;
         }
         const runId = card.ci?.runId ?? null;
+        // Read before `startCiPass` replaces the run: that run has ended.
+        if (runId !== null) yield* noteCiDeferred(card, runId);
         const flakes =
           runId === null || plan.flakyIssues === undefined
             ? []
@@ -6374,6 +6402,7 @@ const make = Effect.gen(function* () {
         return;
       case "ci-stop":
         yield* stopCiForHuman(card, plan.reason, context.fixThreadId);
+        if (card.ci !== null) yield* noteCiDeferred(card, card.ci.runId);
         return;
       case "run": {
         if (card.ci === null) return;
@@ -14478,7 +14507,7 @@ const make = Effect.gen(function* () {
           event.type !== "board.worker-removed" &&
           event.type !== "board.card-worker-removal" &&
           // A project's CI switched off moves its cards on from CI.
-          // Settings edits, so rare.
+          // Settings edits and busy CI flakes (T3O-129), at most one per pass.
           event.type !== "board.project-stage-config-set" &&
           // The card's PR moved, or a thread joined the card: its threads'
           // PR links follow (T3O-75). One per PR change or spawn.

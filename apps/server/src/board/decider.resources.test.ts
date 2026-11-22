@@ -3,6 +3,7 @@
  * project's Resources settings.
  */
 import {
+  BOARD_SYSTEM_ACTOR,
   BoardCardId,
   BoardPlanId,
   BoardStageId,
@@ -310,6 +311,129 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("card sizes", (it
       assert.deepStrictEqual(after?.learned, learned);
       assert.deepStrictEqual(after?.pinDeclared, ["cpu"]);
     }),
+  );
+
+  it.effect(
+    "the load-sensitive list is recorded and removed without moving the version (T3O-129)",
+    () =>
+      Effect.gen(function* () {
+        let model = makeReadModel({ cards: [makeCard()] });
+        let sequence = 0;
+        const apply = (command: BoardCommand) =>
+          Effect.gen(function* () {
+            for (const event of yield* decideEvents(command, model)) {
+              model = yield* projectBoardEvent(model, { ...event, sequence: ++sequence } as never);
+            }
+            return boardProjectStageConfig(model.board!, projectId);
+          });
+        const entry = (title: string) => ({
+          key: `a.spec.ts › ${title}`,
+          file: "a.spec.ts",
+          title,
+          cardKey: "T3O-1",
+        });
+        const record = (
+          id: string,
+          runId: string,
+          titles: ReadonlyArray<string>,
+        ): BoardCommand => ({
+          type: "board.project.record-load-sensitive",
+          commandId: CommandId.make(id),
+          projectId,
+          runId,
+          entries: titles.map(entry),
+          createdAt: NOW,
+        });
+        const before = (yield* apply({
+          type: "board.project.set-ci-stop-on-failure",
+          commandId: CommandId.make("cmd-stop"),
+          projectId,
+          stopOnFailure: false,
+          createdAt: NOW,
+        } as BoardCommand))!.version;
+        const recorded = yield* apply(record("cmd-ls-1", "run-1", ["slow", "slower"]));
+        assert.strictEqual(recorded?.version, before);
+        assert.deepStrictEqual(
+          recorded?.loadSensitive?.map((row) => [row.title, row.lastFlakedAt, row.flakes]),
+          [
+            ["slow", NOW, 1],
+            ["slower", NOW, 1],
+          ],
+        );
+        // A human's edit and a Reset carry the board's list through.
+        yield* apply({
+          type: "board.project.set-resources",
+          commandId: CommandId.make("cmd-res"),
+          projectId,
+          resources: {
+            baseline: null,
+            setupTimeoutMinutes: null,
+            readinessPath: null,
+            readinessTimeoutSeconds: null,
+            readinessChecks: [],
+          },
+          createdAt: NOW,
+        } as BoardCommand);
+        const reset = yield* apply({
+          type: "board.project.reset",
+          commandId: CommandId.make("cmd-reset"),
+          projectId,
+          createdAt: NOW,
+        } as BoardCommand);
+        assert.lengthOf(reset?.loadSensitive ?? [], 2);
+        const afterReset = reset!.version;
+        const removed = yield* apply({
+          type: "board.project.remove-load-sensitive",
+          commandId: CommandId.make("cmd-ls-remove"),
+          projectId,
+          keys: ["a.spec.ts › slow"],
+          actor: BOARD_SYSTEM_ACTOR,
+          createdAt: NOW,
+        });
+        assert.deepStrictEqual(
+          removed?.loadSensitive?.map((row) => row.title),
+          ["slower"],
+        );
+        assert.strictEqual(removed?.version, afterReset);
+        // A removal that removes nothing emits nothing.
+        assert.lengthOf(
+          yield* decideEvents(
+            {
+              type: "board.project.remove-load-sensitive",
+              commandId: CommandId.make("cmd-ls-remove-none"),
+              projectId,
+              keys: ["a.spec.ts › gone"],
+              actor: BOARD_SYSTEM_ACTOR,
+              createdAt: NOW,
+            },
+            model,
+          ),
+          0,
+        );
+        const cleared = yield* apply({
+          type: "board.project.remove-load-sensitive",
+          commandId: CommandId.make("cmd-ls-clear"),
+          projectId,
+          all: true,
+          actor: BOARD_SYSTEM_ACTOR,
+          createdAt: NOW,
+        });
+        assert.deepStrictEqual(cleared?.loadSensitive, []);
+        assert.lengthOf(
+          yield* decideEvents(
+            {
+              type: "board.project.remove-load-sensitive",
+              commandId: CommandId.make("cmd-ls-clear-again"),
+              projectId,
+              all: true,
+              actor: BOARD_SYSTEM_ACTOR,
+              createdAt: NOW,
+            },
+            model,
+          ),
+          0,
+        );
+      }),
   );
 
   it.effect(

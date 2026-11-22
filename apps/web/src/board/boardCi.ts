@@ -157,7 +157,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
         segments,
         fixSegment,
         count,
-        detail: skipped === 0 ? "Every step passed" : `Passed · ${skipped} skipped`,
+        detail: boardCiPassedDetail(skipped, boardCiDeferredCount(ci.steps)),
         tooltip: "CI passed; the card moves on",
       };
     // Held says why, and a machine problem says so.
@@ -339,7 +339,44 @@ export function boardCiPassSummary(pass: Pick<BoardCiPass, "outcome" | "steps">)
   if (pass.outcome === "skipped") return "Skipped by a human";
   // T3o (T3O-130): a pass that skipped steps says how many, beside its chip.
   const skipped = pass.steps.filter((step) => step.status === "skipped").length;
-  return skipped === 0 ? "" : `${skipped} skipped`;
+  // T3o (T3O-129): and the tests it deferred, so a green chip never hides them.
+  const deferred = boardCiDeferredCount(pass.steps);
+  return [
+    ...(skipped === 0 ? [] : [`${skipped} skipped`]),
+    ...(deferred === 0 ? [] : [`${deferred} deferred`]),
+  ].join(" · ");
+}
+
+/** T3o (T3O-129): what a step's deferred tests are called in the CI pane. */
+export function boardCiDeferredLabel(count: number): string {
+  return `${count} load-sensitive ${count === 1 ? "test" : "tests"} deferred to the nightly`;
+}
+
+function boardCiPassedDetail(skipped: number, deferred: number): string {
+  if (skipped === 0 && deferred === 0) return "Every step passed";
+  return [
+    "Passed",
+    ...(skipped === 0 ? [] : [`${skipped} skipped`]),
+    ...(deferred === 0 ? [] : [`${deferred} deferred`]),
+  ].join(" · ");
+}
+
+/** T3o (T3O-129): load-sensitive tests the steps that ran deferred to the nightly. A full
+    pass row lists them; a shell step carries the count. */
+function boardCiDeferredCount(
+  steps: ReadonlyArray<{
+    readonly status: BoardCiStepStatus;
+    readonly deferred?: ReadonlyArray<unknown> | number;
+  }>,
+): number {
+  return steps.reduce(
+    (total, step) =>
+      step.status === "skipped"
+        ? total
+        : total +
+          (typeof step.deferred === "number" ? step.deferred : (step.deferred?.length ?? 0)),
+    0,
+  );
 }
 
 /** The CI tab header's status chip. */

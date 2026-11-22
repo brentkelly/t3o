@@ -94,6 +94,33 @@ describe("a skipped CI step (T3O-130)", () => {
   });
 });
 
+describe("deferred load-sensitive tests (T3O-129)", () => {
+  it("a passing card face and pass header never hide them behind green", () => {
+    const steps = [{ ...step("E2E", "passed"), deferred: 3 }, step("Test", "skipped")];
+    expect(boardCiFace(ci({ phase: "passed", steps }), NOW_MS).detail).toBe(
+      "Passed · 1 skipped · 3 deferred",
+    );
+    expect(
+      boardCiPassSummary({
+        outcome: "passed",
+        steps: [
+          {
+            name: "E2E",
+            status: "passed",
+            deferred: [{ title: "a" }, { title: "b" }],
+          } as unknown as BoardCiPassStep,
+          // A skipped step vouches for nothing, its deferrals included.
+          {
+            name: "Unit",
+            status: "skipped",
+            deferred: [{ title: "c" }],
+          } as unknown as BoardCiPassStep,
+        ],
+      }),
+    ).toBe("1 skipped · 2 deferred");
+  });
+});
+
 describe("boardCiFace", () => {
   it("names the running step with whole elapsed minutes", () => {
     const face = boardCiFace(

@@ -322,6 +322,22 @@ describe("export", () => {
       stages: { remove: ["sprint"] },
       ci: { enabled: true },
     });
+    // T3o (T3O-129): the board's load-sensitive list is never exported.
+    const listed = {
+      ...config,
+      loadSensitive: [
+        {
+          key: "a › b",
+          file: "a",
+          title: "b",
+          lastFlakedAt: "2026-11-01T00:00:00.000Z",
+          cardKey: "T3O-1",
+          flakes: 1,
+          lastRunId: "run",
+        },
+      ],
+    };
+    expect(buildT3oProjectFile({ board, config: listed })).toEqual(file);
     const back = resolve(JSON.parse(JSON.stringify(file)), board);
     expect(back.createStages).toEqual([]);
     expect(boardProjectDeltasEqual(back.delta, config)).toBe(true);

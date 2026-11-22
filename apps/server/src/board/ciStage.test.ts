@@ -111,6 +111,8 @@ type Script =
       readonly results?: Readonly<Record<number, BoardCiStepResult>>;
       /** Steps that passed over flaky tests, by request index. */
       readonly flaky?: Readonly<Record<number, NonNullable<BoardCiPassStep["flaky"]>>>;
+      /** T3o (T3O-129): tests each step deferred to the nightly, by request index. */
+      readonly deferred?: Readonly<Record<number, NonNullable<BoardCiPassStep["deferred"]>>>;
     })
   | "hang"
   | "drop";
@@ -158,10 +160,19 @@ const scriptedRunner = (scripts: ReadonlyArray<Script>) =>
                 ...(!failed && script.flaky?.[index] !== undefined
                   ? { flaky: script.flaky[index] }
                   : {}),
+                ...(script.deferred?.[index] === undefined
+                  ? {}
+                  : { deferred: script.deferred[index] }),
               },
             });
           }
-          const { alsoFailed: _alsoFailed, results: _results, flaky: _flaky, ...result } = script;
+          const {
+            alsoFailed: _alsoFailed,
+            results: _results,
+            flaky: _flaky,
+            deferred: _deferred,
+            ...result
+          } = script;
           return {
             ...result,
             ranAll: script.ranAll ?? (runsAll || last === request.steps.length - 1),
@@ -2067,6 +2078,39 @@ it.effect.each([
     }),
 );
 
+it.effect("T3O-129: a flake card's run request leaves its own target off the skip list", () =>
+  Effect.gen(function* () {
+    const { runner, requests } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+    const target = "src/math.test.ts › adds two numbers";
+    const subject = card("load-sensitive-own", review, {
+      externalRef: { system: "t3o-flaky", id: `${projectId}:${target}`, url: null },
+    });
+    const entry = (file: string, title: string) => ({
+      key: `${file} › ${title}`,
+      file,
+      title,
+      lastFlakedAt: NOW,
+      cardKey: "T3O-1",
+      flakes: 1,
+      lastRunId: "run-0",
+    });
+    const config = {
+      ...ciConfig(),
+      loadSensitive: [
+        entry("src/math.test.ts", "adds two numbers"),
+        entry("e2e/a.spec.ts", "slow"),
+      ],
+    };
+    yield* withGovernor({ board: boardWith([subject], config), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const request = (yield* requests)[0]!;
+        assert.deepStrictEqual(request.loadSensitive, [{ file: "e2e/a.spec.ts", title: "slow" }]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
 it.effect("T3O-126: a mixed step's fix sees only the real failures; its flake is still filed", () =>
   Effect.gen(function* () {
     const { runner } = yield* scriptedRunner([
@@ -2186,6 +2230,47 @@ it.effect.each([
     }),
 );
 
+// T3o (T3O-129): the agent's own words name a whole-step flake, so no script can match them.
+it.effect("T3O-129: a whole-step flaky ruling marks its entry agent-worded", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures: [] } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card("whole-step-agent-worded", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const runId = (yield* live(h, subject.id)).ci!.runId;
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 1),
+            {
+              verdict: "flaky",
+              issues: [{ id: "s0", status: "flaky", title: "the slow one", file: "src/x.ts" }],
+            },
+            2,
+          ),
+        );
+        yield* h.reactor.drainCi;
+        const rewritten = ciRecords(yield* h.decided)
+          .map((record) => record.payload.action)
+          .find(
+            (action) =>
+              action.kind === "step" &&
+              action.runId === runId &&
+              action.index === 0 &&
+              action.step.status === "passed",
+          );
+        assert.deepStrictEqual(rewritten?.kind === "step" ? rewritten.step.flaky : undefined, [
+          { title: "the slow one", file: "src/x.ts", byAgent: true, agentWorded: true },
+        ]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
 it.effect.each([
   { label: "a failure the agent never called flaky", worktreeDirty: false, real: true },
   { label: "an uncommitted edit in the worktree", worktreeDirty: true, real: false },
@@ -2193,7 +2278,12 @@ it.effect.each([
   Effect.gen(function* () {
     const failures = real ? [flakeTitle, { title: "real break" }] : [flakeTitle];
     const { runner, requests } = yield* scriptedRunner([
-      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      {
+        result: "failed",
+        failedIndex: 0,
+        results: { 0: { summary: null, failures } },
+        deferred: { 0: [{ file: "src/slow.test.ts", title: "boots" }] },
+      },
       { result: "passed", failedIndex: null },
     ]);
     const subject = card(`flaky-not-resumed-${String(worktreeDirty)}`, review);
@@ -2217,6 +2307,12 @@ it.effect.each([
           records.filter((record) => record.payload.action.kind === "start-pass").length,
           2,
         );
+        // T3o (T3O-129): the replaced run's deferrals are noted before the new pass starts.
+        const deferredNotes = (yield* h.commands).filter(
+          (command) =>
+            command.type === "board.card.record-note" && command.kind === "card-ci-deferred",
+        );
+        assert.lengthOf(deferredNotes, 1);
       }),
     ).pipe(Effect.provideService(BoardCiRunner, runner));
   }),

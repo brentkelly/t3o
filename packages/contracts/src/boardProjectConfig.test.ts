@@ -9,8 +9,11 @@ import {
   DEFAULT_BOARD_SETTINGS,
   EMPTY_BOARD_PROJECT_STAGE_CONFIG,
   EMPTY_BOARD_STATE,
+  BOARD_CI_LOAD_SENSITIVE_MAX,
   boardCiStepGroups,
   boardCiStepsRefusal,
+  boardLiveLoadSensitive,
+  boardLoadSensitiveUpsert,
   boardNewStageOrderKey,
   boardProjectConfigVersion,
   boardProjectDeltaNewTexts,
@@ -327,6 +330,30 @@ describe("script reporting", () => {
     expect(bad.complete).toBe(true);
   });
 
+  it("keeps a step's deferred tests, dropping bad entries (T3O-129)", () => {
+    const parsed = parseBoardCiResultFile(
+      JSON.stringify({
+        failures: [],
+        deferred: [
+          { file: "e2e/a.spec.ts", title: "slow" },
+          { title: "no file" },
+          { file: "x" },
+          { file: "e2e/a.spec.ts", title: "slow" },
+        ],
+      }),
+    );
+    expect(parsed.result?.deferred).toEqual([
+      { file: "e2e/a.spec.ts", title: "slow" },
+      { title: "no file" },
+    ]);
+    // Deferred tests are no failures: the step's judgement doesn't change.
+    expect(parsed.complete).toBe(true);
+    const many = Array.from({ length: 80 }, (_, index) => ({ title: `t${index}` }));
+    expect(
+      parseBoardCiResultFile(JSON.stringify({ failures: [], deferred: many })).result?.deferred,
+    ).toHaveLength(50);
+  });
+
   it("clips an over-long failure field rather than dropping the failure (T3O-126)", () => {
     const parsed = parseBoardCiResultFile(
       JSON.stringify({ failures: [{ title: "real", detail: "x".repeat(5_000) }] }),
@@ -346,5 +373,73 @@ describe("script reporting", () => {
     expect(parsed.complete).toBe(false);
     expect(parseBoardCiResultFile("[]").result).toBeNull();
     expect(parseBoardCiResultFile("{").warning).toContain("isn't valid JSON");
+  });
+});
+
+describe("load-sensitive list (T3O-129)", () => {
+  const at = (day: number) => `2026-11-${String(day).padStart(2, "0")}T00:00:00.000Z`;
+  const flake = (title: string) => ({
+    key: `a.spec.ts › ${title}`,
+    file: "a.spec.ts",
+    title,
+    cardKey: "T3O-1",
+  });
+
+  it("adds, refreshes once per run, and prunes what expired", () => {
+    const first = boardLoadSensitiveUpsert(undefined, [flake("slow")], "run-1", at(1));
+    expect(first).toEqual([
+      { ...flake("slow"), lastFlakedAt: at(1), flakes: 1, lastRunId: "run-1" },
+    ]);
+    // The same run filing twice (failed finish, then a flaky resume) counts once.
+    const again = boardLoadSensitiveUpsert(first, [flake("slow")], "run-1", at(2));
+    expect(again[0]?.flakes).toBe(1);
+    expect(again[0]?.lastFlakedAt).toBe(at(2));
+    const later = boardLoadSensitiveUpsert(again, [flake("slow"), flake("new")], "run-2", at(3));
+    expect(later.map((entry) => [entry.title, entry.flakes])).toEqual([
+      ["slow", 2],
+      ["new", 1],
+    ]);
+    // Fourteen days after its last flake an entry is gone, and the next upsert drops it.
+    const pruned = boardLoadSensitiveUpsert(later, [flake("fresh")], "run-3", at(17));
+    expect(pruned.map((entry) => entry.title)).toEqual(["fresh"]);
+  });
+
+  it("evicts the oldest past the cap", () => {
+    const full = Array.from(
+      { length: BOARD_CI_LOAD_SENSITIVE_MAX },
+      (_, index) =>
+        boardLoadSensitiveUpsert(
+          undefined,
+          [flake(`t${index}`)],
+          "run",
+          at(index === 0 ? 1 : 2),
+        )[0]!,
+    );
+    const next = boardLoadSensitiveUpsert(full, [flake("over")], "run-x", at(3));
+    expect(next).toHaveLength(BOARD_CI_LOAD_SENSITIVE_MAX);
+    expect(next.some((entry) => entry.title === "t0")).toBe(false);
+    expect(next.at(-1)?.title).toBe("over");
+  });
+
+  it("reads an entry live until fourteen days after its last flake", () => {
+    const [entry] = boardLoadSensitiveUpsert(undefined, [flake("slow")], "run", at(1));
+    expect(boardLiveLoadSensitive([entry!], "2026-11-14T23:59:59.999Z")).toHaveLength(1);
+    expect(boardLiveLoadSensitive([entry!], at(15))).toHaveLength(0);
+    expect(boardLiveLoadSensitive(undefined, at(1))).toEqual([]);
+  });
+
+  it("puts only a revision on the shell, and moves it on every change", () => {
+    const one = boardLoadSensitiveUpsert(undefined, [flake("a"), flake("b")], "run", at(1));
+    const config = { ...EMPTY_BOARD_PROJECT_STAGE_CONFIG, loadSensitive: one };
+    const shell = boardProjectStageConfigShell(config);
+    expect(shell).not.toHaveProperty("loadSensitive");
+    expect(shell.loadSensitiveRevision).toBeDefined();
+    const removed = boardProjectStageConfigShell({ ...config, loadSensitive: one.slice(1) });
+    expect(removed.loadSensitiveRevision).not.toBe(shell.loadSensitiveRevision);
+    expect(boardProjectStageConfigShell(EMPTY_BOARD_PROJECT_STAGE_CONFIG)).not.toHaveProperty(
+      "loadSensitiveRevision",
+    );
+    // The list is the board's record: it never moves the version a human's edit expects.
+    expect(boardProjectConfigVersion(config)).toBe(EMPTY_BOARD_PROJECT_STAGE_CONFIG.version);
   });
 });
