@@ -334,7 +334,12 @@ describe("script reporting", () => {
     const parsed = parseBoardCiResultFile(
       JSON.stringify({
         failures: [],
-        deferred: [{ file: "e2e/a.spec.ts", title: "slow" }, { title: "no file" }, { file: "x" }],
+        deferred: [
+          { file: "e2e/a.spec.ts", title: "slow" },
+          { title: "no file" },
+          { file: "x" },
+          { file: "e2e/a.spec.ts", title: "slow" },
+        ],
       }),
     );
     expect(parsed.result?.deferred).toEqual([

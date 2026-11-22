@@ -1676,11 +1676,17 @@ export function parseBoardCiResultFile(text: string): {
   const skipped = record.skippedUnderLoad;
   const skippedUnderLoad =
     typeof skipped === "number" && Number.isInteger(skipped) && skipped >= 0 ? skipped : null;
+  // Once per test: a repeat would count twice on the step, pass and card face.
+  const deferredKeys = new Set<string>();
   const deferred = Array.isArray(record.deferred)
     ? record.deferred
         .flatMap((entry) => {
           const decoded = decodeDeferredTest(clipFailureFields(entry));
-          return decoded._tag === "Some" ? [decoded.value] : [];
+          if (decoded._tag === "None") return [];
+          const key = boardCiFlakeKey(decoded.value.file, decoded.value.title);
+          if (deferredKeys.has(key)) return [];
+          deferredKeys.add(key);
+          return [decoded.value];
         })
         .slice(0, BOARD_CI_MAX_DEFERRED)
     : null;
