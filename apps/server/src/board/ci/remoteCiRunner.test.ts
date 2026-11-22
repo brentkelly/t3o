@@ -340,6 +340,8 @@ it.effect(
         cpuPressure: 84.5,
         underLoad: true as const,
         skippedUnderLoad: 2,
+        // T3o (T3O-129): and the tests it deferred to the nightly.
+        deferred: [{ file: "e2e/a.spec.ts", title: "slow" }, { title: "no file" }],
         note: "Target test inconclusive under load",
         flaky: [
           {
@@ -377,6 +379,7 @@ it.effect(
           notFlakyTitle: "c.test.ts › own",
           loadThreshold: 60,
           inconclusiveTargetAllowed: true,
+          loadSensitive: [{ file: "e2e/a.spec.ts", title: "slow" }],
         },
         (progress) => Effect.sync(() => seen.push(progress)),
       );
@@ -385,6 +388,8 @@ it.effect(
       assert.strictEqual(sent.notFlakyTitle, "c.test.ts › own");
       assert.strictEqual(sent.loadThreshold, 60);
       assert.strictEqual(sent.inconclusiveTargetAllowed, true);
+      assert.deepStrictEqual(sent.loadSensitive, [{ file: "e2e/a.spec.ts", title: "slow" }]);
+      assert.deepStrictEqual(seen[0]?.step.deferred, flakyStep.deferred);
       assert.deepStrictEqual(seen[0]?.step.flaky, flakyStep.flaky);
       assert.deepStrictEqual(seen[0]?.step.result, flakyStep.result);
       assert.strictEqual(seen[0]?.step.cpuPressure, 84.5);
