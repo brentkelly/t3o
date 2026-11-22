@@ -235,8 +235,8 @@ hasn't started, it marks the step "Will be skipped", and the pass skips it when 
   skipped", and Auto-merge still runs.
 - You can't skip every step: use Skip CI for that.
 - Skipping a step that runs in parallel with others restarts the others in its group. Its group
-  then runs in two parts, the steps before it and then the steps after it, for the rest of the
-  card's time in CI, so the group takes longer.
+  If the skipped step sits in the middle of its group, the group then runs in two parts, the steps
+  before it and then the steps after it, for the rest of the card's time in CI, so it takes longer.
 - Skipping a step later steps depend on, such as an install or a build, can make them fail. That's
   a real failure, and the fix agent sees it, along with which steps you skipped.
 
