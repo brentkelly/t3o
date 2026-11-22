@@ -368,7 +368,8 @@ function Round({
     <div className="shrink-0 overflow-hidden rounded-xl border border-border bg-card shadow-xs">
       <button
         className={cn(
-          "flex w-full items-center gap-2.5 px-3 py-2.5 text-left",
+          // T3o (T3O-134): on a phone the counts wrap onto a second line.
+          "flex w-full items-center gap-2.5 px-3 py-2.5 text-left max-sm:flex-wrap max-sm:gap-y-1",
           round.outcome === "in-progress" && !offStage ? "bg-foreground/2" : "",
         )}
         onClick={onToggle}
@@ -401,7 +402,7 @@ function Round({
             </span>
           </BoardHint>
         ) : null}
-        <span className="min-w-0 truncate text-board-11 text-muted-foreground">
+        <span className="min-w-0 truncate text-board-11 text-muted-foreground max-sm:order-last max-sm:basis-full">
           {roundSummary(round)}
         </span>
         <span className="flex-1" />
@@ -1191,7 +1192,8 @@ export function BoardCardReviewPane({
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-5 pt-3.5">
         <div className="flex shrink-0 flex-col gap-1.5 rounded-xl border border-border bg-card px-3.5 py-3">
-          <div className="flex gap-1">
+          {/* T3o (T3O-134): a phone lays the round pills out five to a row. */}
+          <div className="flex gap-1 max-sm:grid max-sm:grid-cols-5">
             {Array.from({ length: loop.maxRounds }, (_, index) => {
               const n = index + 1;
               const exists = loop.rounds.some((round) => round.round === n);
@@ -1209,7 +1211,7 @@ export function BoardCardReviewPane({
                 >
                   <button
                     className={cn(
-                      "flex h-[22px] flex-1 items-center justify-center rounded-md text-board-10-5 font-medium",
+                      "flex h-[22px] flex-1 items-center justify-center rounded-md text-board-10-5 font-medium max-sm:h-9 max-sm:w-full max-sm:text-board-12",
                       now
                         ? "bg-foreground text-background"
                         : exists
@@ -1232,7 +1234,7 @@ export function BoardCardReviewPane({
             })}
             {/* A stuck loop takes a ruling, not a budget. */}
             {onSetRounds === undefined || stuck ? null : (
-              <span className="ml-1 flex shrink-0 items-center">
+              <span className="ml-1 flex shrink-0 items-center max-sm:col-span-5 max-sm:ml-0 max-sm:justify-end">
                 <BoardHint
                   label={
                     loop.maxRounds <= budgetFloor

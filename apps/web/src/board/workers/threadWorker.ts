@@ -279,27 +279,37 @@ export function workerThreadAccessCopy(
   }
 }
 
-/** The thread header's worker chip (prototype 6.4); null for this server on a local-only board. */
+/**
+ * The thread header's worker chip (prototype 6.4); null for this server on a local-only board.
+ * `text` is `prefix` + `name`; a phone shows only the name (T3O-134).
+ */
 export function threadWorkerChip(input: {
   readonly worker: BoardThreadWorker;
   readonly running: boolean;
   readonly localOnly: boolean;
-}): { readonly text: string; readonly tooltip: string; readonly warning: boolean } | null {
+}): {
+  readonly text: string;
+  readonly prefix: string;
+  readonly name: string;
+  readonly tooltip: string;
+  readonly warning: boolean;
+} | null {
   const { worker } = input;
   if (worker.workerId === BOARD_LOCAL_WORKER_ID && input.localOnly) return null;
   const short = worker.abbreviation ?? worker.label;
   if (worker.state === "offline") {
-    return {
-      text:
-        worker.lastSeenAt === null
-          ? `${worker.label} offline`
-          : `${worker.label} offline since ${clockTime(worker.lastSeenAt)}`,
-      tooltip: worker.label,
-      warning: true,
-    };
+    // No prefix: "offline" is the message, so a phone keeps all of it.
+    const text =
+      worker.lastSeenAt === null
+        ? `${worker.label} offline`
+        : `${worker.label} offline since ${clockTime(worker.lastSeenAt)}`;
+    return { text, prefix: "", name: text, tooltip: worker.label, warning: true };
   }
+  const prefix = input.running ? "Running on " : "Ran on ";
   return {
-    text: input.running ? `Running on ${short}` : `Ran on ${short}`,
+    text: `${prefix}${short}`,
+    prefix,
+    name: short,
     tooltip: worker.label,
     warning: false,
   };

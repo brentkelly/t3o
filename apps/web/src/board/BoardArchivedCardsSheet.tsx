@@ -222,7 +222,8 @@ export function BoardArchivedCardsSheet({
 }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetPopup>
+      {/* T3o (T3O-134): the whole width on a phone. */}
+      <SheetPopup className="max-sm:w-full">
         <SheetHeader>
           <SheetTitle>Archived cards</SheetTitle>
           <SheetDescription>

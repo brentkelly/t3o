@@ -225,19 +225,28 @@ describe("the thread header's worker chip", () => {
   it("says where the thread runs or ran, by abbreviation, and amber while offline", () => {
     expect(threadWorkerChip({ worker: remote, running: true, localOnly: false })).toEqual({
       text: "Running on LB",
+      prefix: "Running on ",
+      name: "LB",
       tooltip: "linux-box",
       warning: false,
     });
-    expect(threadWorkerChip({ worker: remote, running: false, localOnly: false })?.text).toBe(
-      "Ran on LB",
-    );
+    expect(threadWorkerChip({ worker: remote, running: false, localOnly: false })).toMatchObject({
+      text: "Ran on LB",
+      prefix: "Ran on ",
+      name: "LB",
+    });
     expect(
       threadWorkerChip({
         worker: { ...remote, state: "offline" },
         running: false,
         localOnly: false,
       }),
-    ).toMatchObject({ text: "linux-box offline", warning: true });
+    ).toMatchObject({
+      text: "linux-box offline",
+      prefix: "",
+      name: "linux-box offline",
+      warning: true,
+    });
     expect(threadWorkerChip({ worker: local, running: true, localOnly: true })).toBeNull();
     expect(threadWorkerChip({ worker: local, running: true, localOnly: false })?.text).toBe(
       "Running on SRV",

@@ -177,3 +177,8 @@
 @utility pt-board-card-safe {
   padding-top: calc(var(--spacing) * 3 + env(safe-area-inset-top));
 }
+
+/* T3o (T3O-134): a phone sheet's footer keeps its padding above the home indicator. */
+@utility pb-board-footer-safe {
+  padding-bottom: calc(var(--spacing) * 4 + env(safe-area-inset-bottom));
+}

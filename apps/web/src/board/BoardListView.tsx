@@ -113,7 +113,11 @@ const INDENT_PX = 22;
 /** Below this many rows every row renders; above it, only the window. */
 const VIRTUALISE_FROM = 150;
 const OVERSCAN = 12;
-const GRID_COLUMNS = "grid-cols-[minmax(0,1fr)_124px_78px_168px_130px_150px_70px_82px]";
+/** T3o (T3O-134): a phone keeps Name and Stage; the other cells of each row hide. */
+const GRID_COLUMNS = cn(
+  "grid-cols-[minmax(0,1fr)_124px_78px_168px_130px_150px_70px_82px]",
+  "max-sm:grid-cols-[minmax(0,1fr)_104px] max-sm:[&>*:nth-child(n+3)]:hidden",
+);
 
 const toggled = (current: ReadonlySet<string>, id: string): ReadonlySet<string> => {
   const next = new Set(current);

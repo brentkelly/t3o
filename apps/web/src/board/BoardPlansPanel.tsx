@@ -64,10 +64,11 @@ export function BoardPlansPanel({
   });
   return (
     <section className="flex min-h-0 min-w-0 flex-col border-r border-border bg-muted/55">
-      <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border pl-3.5 pr-3">
+      {/* T3o (T3O-134): on a phone the chart and Board buttons wrap under the heading. */}
+      <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border pl-3.5 pr-3 max-sm:h-auto max-sm:flex-wrap max-sm:gap-y-2 max-sm:py-2">
         <SectionHeading>Cards</SectionHeading>
         <span className="text-board-11-5 text-muted-foreground">in dependency order</span>
-        <span className="flex-1" />
+        <span className="flex-1 max-sm:basis-full" />
         <button
           className={boardHeaderButtonClass(chartOpen)}
           onClick={() => setChartOpen((open) => !open)}
@@ -124,6 +125,9 @@ function PlanRow({
       <button
         className={cn(
           "flex w-full items-center gap-2.75 rounded-board-10 border bg-card px-3 py-2.5 text-left shadow-xs",
+          // T3o (T3O-134): a phone moves the stage chip onto the meta line. A grid over the
+          // same children; the text column dissolves into it.
+          "max-sm:grid max-sm:grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] max-sm:gap-y-1",
           row.live?.awaitingInput === true || row.live?.awaitingPermission === true
             ? "border-attention/50"
             : "border-border",
@@ -139,27 +143,34 @@ function PlanRow({
             negative margin keeps the bigger glyph on the dot's baseline, so
             the column of titles beside it does not shift. */}
         {row.done ? (
-          <span className="-mx-[5px] inline-flex size-[17px] shrink-0 items-center justify-center rounded-full bg-foreground">
+          <span className="-mx-[5px] inline-flex size-[17px] shrink-0 items-center justify-center rounded-full bg-foreground max-sm:col-start-1 max-sm:row-start-1">
             <CheckIcon aria-hidden className="size-[11px] text-card" strokeWidth={3.4} />
           </span>
         ) : (
-          <span className={cn("size-[7px] shrink-0 rounded-full", TONE_DOT[row.tone])} />
-        )}
-        <span className="shrink-0 text-board-11 font-semibold text-muted-foreground">#{row.n}</span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.75">
           <span
             className={cn(
-              "truncate text-board-13 font-medium text-foreground",
+              "size-[7px] shrink-0 rounded-full max-sm:col-start-1 max-sm:row-start-1",
+              TONE_DOT[row.tone],
+            )}
+          />
+        )}
+        <span className="shrink-0 text-board-11 font-semibold text-muted-foreground max-sm:col-start-2 max-sm:row-start-1">
+          #{row.n}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.75 max-sm:contents">
+          <span
+            className={cn(
+              "truncate text-board-13 font-medium text-foreground max-sm:col-start-3 max-sm:row-start-1",
               row.state === "archived" && "line-through",
             )}
           >
             {row.title}
           </span>
-          <span className="truncate text-board-10-5 text-muted-foreground">
+          <span className="truncate text-board-10-5 text-muted-foreground max-sm:col-start-3 max-sm:row-start-2">
             {meta.join("  ·  ")}
           </span>
           {row.blockers.length > 0 && !row.done ? (
-            <span className="inline-flex items-center gap-1 text-board-10-5 font-medium text-warning-foreground">
+            <span className="inline-flex items-center gap-1 text-board-10-5 font-medium text-warning-foreground max-sm:col-span-2 max-sm:col-start-3 max-sm:row-start-3">
               <LockIcon className="size-2.5 shrink-0" />
               Waiting on{" "}
               {row.blockers.map((blocker) => `#${blocker.n} · ${blocker.stageLabel}`).join(", ")}
@@ -167,36 +178,41 @@ function PlanRow({
           ) : null}
         </span>
         {row.done ? null : row.live?.stalled === true ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-board-10-5 font-medium text-warning-foreground">
+          <span className="inline-flex shrink-0 items-center gap-1 text-board-10-5 font-medium text-warning-foreground max-sm:col-start-4 max-sm:row-start-1">
             <CircleAlertIcon className="size-3" />
             Stalled
           </span>
         ) : row.live?.awaitingInput === true ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-board-10-5 font-medium text-attention-foreground">
+          <span className="inline-flex shrink-0 items-center gap-1 text-board-10-5 font-medium text-attention-foreground max-sm:col-start-4 max-sm:row-start-1">
             <CircleAlertIcon className="size-3" />
             Input needed
           </span>
         ) : row.live?.awaitingPermission === true ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-board-10-5 font-medium text-attention-foreground">
+          <span className="inline-flex shrink-0 items-center gap-1 text-board-10-5 font-medium text-attention-foreground max-sm:col-start-4 max-sm:row-start-1">
             <CircleAlertIcon className="size-3" />
             Needs permission
           </span>
         ) : row.live?.queued === true ? (
-          <span className="shrink-0 text-board-10-5 font-medium text-muted-foreground">Queued</span>
+          <span className="shrink-0 text-board-10-5 font-medium text-muted-foreground max-sm:col-start-4 max-sm:row-start-1">
+            Queued
+          </span>
         ) : row.live?.working === true ? (
           <BoardHint label="Working">
             <span
               aria-label="Working"
               role="img"
-              className="size-[11px] shrink-0 animate-spin rounded-full border-board-spinner-lg border-board-spinner-track border-t-info-foreground"
+              className="size-[11px] shrink-0 animate-spin rounded-full border-board-spinner-lg border-board-spinner-track border-t-info-foreground max-sm:col-start-4 max-sm:row-start-1"
             />
           </BoardHint>
         ) : null}
-        <span className="inline-flex h-5 shrink-0 items-center rounded-md border border-border bg-muted px-2 text-board-11 font-medium text-muted-foreground">
+        <span className="inline-flex h-5 shrink-0 items-center rounded-md border border-border bg-muted px-2 text-board-11 font-medium text-muted-foreground max-sm:col-start-4 max-sm:row-start-2 max-sm:justify-self-end">
           {row.stageLabel ?? "No card"}
         </span>
         <ChevronRightIcon
-          className={cn("size-3.5 shrink-0 text-muted-foreground", !openable && "opacity-0")}
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground max-sm:col-start-5 max-sm:row-span-2 max-sm:row-start-1",
+            !openable && "opacity-0",
+          )}
         />
       </button>
     </BoardHint>
