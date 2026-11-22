@@ -397,6 +397,36 @@ describe("the board MCP relay", () => {
           assert.strictEqual(edited[0]?.actor.sourceCardKey, ownKey);
           assert.strictEqual(edited[0]?.actor.sourceWorkerId, WORKER_ID);
 
+          // An incremental edit from another worker is one row, not two.
+          yield* onWorker(world, threadId, updateCard({ cardId: elsewhere, briefAppend: "A note" }));
+          const appended = (yield* queries.boardCardActivity(elsewhere)).filter(
+            (entry) => entry.kind === "card-edited",
+          );
+          assert.strictEqual(appended.length, 2);
+          const note = appended.find((entry) => entry.payload.briefEdit === "appended");
+          assert.strictEqual(note?.payload.editKind, "details");
+          assert.strictEqual(note?.actor.sourceWorkerId, WORKER_ID);
+
+          // A regroup names the cards it moves, never the group they land in or the caller.
+          const moveCard = relayable("board_move_card", boardHandlers.board_move_card);
+          yield* onWorker(world, threadId, moveCard({ cardId: elsewhere, parentCardId: group }));
+          const regrouped = (yield* queries.boardCardActivity(elsewhere)).find(
+            (entry) => entry.payload.editKind === "regrouped",
+          );
+          assert.isDefined(regrouped);
+          assert.strictEqual(regrouped?.actor.sourceCardKey, ownKey);
+          assert.isFalse(
+            (yield* queries.boardCardActivity(group)).some(
+              (entry) => entry.actor.sourceWorkerId !== undefined && entry.kind === "card-edited",
+            ),
+          );
+          yield* onWorker(world, threadId, moveCard({ cardId: elsewhere, parentCardId: null }));
+          assert.isFalse(
+            (yield* queries.boardCardActivity(ownId)).some(
+              (entry) => entry.actor.sourceCardKey !== undefined,
+            ),
+          );
+
           yield* onWorker(world, threadId, archiveCard({ cardId: elsewhere }));
           assert.isNotNull((yield* cardOf(elsewhere))?.archivedAt);
           yield* onWorker(world, threadId, unarchiveCard({ cardId: elsewhere }));
@@ -973,8 +1003,9 @@ describe("the board MCP relay for a schedule run on a worker (T3O-118)", () => {
         const edited = (yield* queries.boardCardActivity(created.cardId)).filter(
           (entry) => entry.kind === "card-edited",
         );
-        assert.strictEqual(edited.at(-1)?.actor.sourceWorkerId, WORKER_ID);
-        assert.isUndefined(edited.at(-1)?.actor.sourceCardKey);
+        const fromRun = edited.find((entry) => entry.payload.editKind === "details");
+        assert.strictEqual(fromRun?.actor.sourceWorkerId, WORKER_ID);
+        assert.isUndefined(fromRun?.actor.sourceCardKey);
       }),
     ),
   );

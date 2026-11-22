@@ -167,7 +167,7 @@ describe("a schedule run's board tools", () => {
       for (const input of [
         { title: "Elsewhere", projectId: otherProject },
         { title: "Straight to build", stage: "building" as never },
-        { title: "Under a human", parentCardId: humanCard, approved: true },
+        { title: "Under a human", parentCardId: humanCard },
       ]) {
         const refused = yield* Effect.flip(
           boardHandlers.board_create_card(input).pipe(as(firstRun)),
@@ -200,7 +200,7 @@ describe("a schedule run's board tools", () => {
         .pipe(as(firstRun));
       // Filing under its own card makes it a group, which a run may do.
       yield* boardHandlers
-        .board_create_card({ title: "First child", parentCardId: group.key, approved: true })
+        .board_create_card({ title: "First child", parentCardId: group.key })
         .pipe(as(firstRun));
       // A human arms the group; a child filed under it now would inherit that.
       const engine = yield* boardStackEngine;
@@ -213,7 +213,7 @@ describe("a schedule run's board tools", () => {
       });
       const refused = yield* Effect.flip(
         boardHandlers
-          .board_create_card({ title: "Child", parentCardId: group.key, approved: true })
+          .board_create_card({ title: "Child", parentCardId: group.key })
           .pipe(as(laterRun)),
       );
       assert.include(refused.message, "was removed");
