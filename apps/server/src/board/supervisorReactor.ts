@@ -6228,6 +6228,8 @@ const make = Effect.gen(function* () {
         yield* stopCiForHuman(card, reason, fixThreadId);
         return;
       }
+      // T3o (T3O-129): the new pass replaces this run, so this is its real end.
+      yield* noteCiDeferred(card, runId);
       yield* startCiPass(card.id, { fixThreadId, flakyTitles: titles });
       yield* fileCiFlakes(card, runId, allFlakes);
     });

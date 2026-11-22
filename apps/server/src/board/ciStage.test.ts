@@ -111,6 +111,8 @@ type Script =
       readonly results?: Readonly<Record<number, BoardCiStepResult>>;
       /** Steps that passed over flaky tests, by request index. */
       readonly flaky?: Readonly<Record<number, NonNullable<BoardCiPassStep["flaky"]>>>;
+      /** T3o (T3O-129): tests each step deferred to the nightly, by request index. */
+      readonly deferred?: Readonly<Record<number, NonNullable<BoardCiPassStep["deferred"]>>>;
     })
   | "hang"
   | "drop";
@@ -158,10 +160,19 @@ const scriptedRunner = (scripts: ReadonlyArray<Script>) =>
                 ...(!failed && script.flaky?.[index] !== undefined
                   ? { flaky: script.flaky[index] }
                   : {}),
+                ...(script.deferred?.[index] === undefined
+                  ? {}
+                  : { deferred: script.deferred[index] }),
               },
             });
           }
-          const { alsoFailed: _alsoFailed, results: _results, flaky: _flaky, ...result } = script;
+          const {
+            alsoFailed: _alsoFailed,
+            results: _results,
+            flaky: _flaky,
+            deferred: _deferred,
+            ...result
+          } = script;
           return {
             ...result,
             ranAll: script.ranAll ?? (runsAll || last === request.steps.length - 1),
@@ -2267,7 +2278,12 @@ it.effect.each([
   Effect.gen(function* () {
     const failures = real ? [flakeTitle, { title: "real break" }] : [flakeTitle];
     const { runner, requests } = yield* scriptedRunner([
-      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      {
+        result: "failed",
+        failedIndex: 0,
+        results: { 0: { summary: null, failures } },
+        deferred: { 0: [{ file: "src/slow.test.ts", title: "boots" }] },
+      },
       { result: "passed", failedIndex: null },
     ]);
     const subject = card(`flaky-not-resumed-${String(worktreeDirty)}`, review);
@@ -2291,6 +2307,12 @@ it.effect.each([
           records.filter((record) => record.payload.action.kind === "start-pass").length,
           2,
         );
+        // T3o (T3O-129): the replaced run's deferrals are noted before the new pass starts.
+        const deferredNotes = (yield* h.commands).filter(
+          (command) =>
+            command.type === "board.card.record-note" && command.kind === "card-ci-deferred",
+        );
+        assert.lengthOf(deferredNotes, 1);
       }),
     ).pipe(Effect.provideService(BoardCiRunner, runner));
   }),
