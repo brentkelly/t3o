@@ -147,6 +147,7 @@ import type { BoardPickerOption } from "./BoardSearchAddPicker";
 import {
   describeBoardCheckWorktreeOutcome,
   describeBoardCommandFailure,
+  describeBoardCiSkipStepOutcome,
   describeBoardSkipCiOutcome,
   describeBoardMergeOutcome,
   // T3o: the forced re-check's answer.
@@ -303,6 +304,7 @@ export function BoardCardDetail({
   const retryCi = useAtomCommand(boardEnvironment.retryCi, { reportFailure: false });
   const sendBackCi = useAtomCommand(boardEnvironment.sendBackCi, { reportFailure: false });
   const stopCi = useAtomCommand(boardEnvironment.stopCi, { reportFailure: false });
+  const skipCiStep = useAtomCommand(boardEnvironment.skipCiStep, { reportFailure: false });
   const [skippingCi, setSkippingCi] = useState(false);
   const createCard = useAtomCommand(boardEnvironment.createCard);
   // "Remove worktree". Same reason again: a refusal is an answer.
@@ -999,6 +1001,32 @@ export function BoardCardDetail({
     });
   };
 
+  /** T3o (T3O-130): skip, mark or unmark one step of the running pass. */
+  const onSkipCiStep = (input: {
+    readonly runId: string;
+    readonly stepIndex: number;
+    readonly skip: boolean;
+    readonly stepName: string;
+  }) => {
+    void skipCiStep({
+      environmentId,
+      input: { cardId: card.id, runId: input.runId, stepIndex: input.stepIndex, skip: input.skip },
+    }).then((result) => {
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          boardToast({
+            title: `${input.stepName} could not be skipped`,
+            description: describeBoardCommandFailure(result),
+            tone: "error",
+          });
+        }
+        return;
+      }
+      const toast = describeBoardCiSkipStepOutcome(result.value, input.stepName);
+      if (toast !== null) boardToast(toast);
+    });
+  };
+
   const onSkipCi = () => {
     setSkippingCi(true);
     void skipCi({ environmentId, input: { cardId: card.id } }).then((result) => {
@@ -1553,6 +1581,7 @@ export function BoardCardDetail({
       onSkipCi={onSkipCi}
       onRetryCi={() => onCiAction("retry")}
       onStopCi={() => onCiAction("stop")}
+      onSkipCiStep={onSkipCiStep}
       onCiSendBack={() => onCiAction("send-back")}
       skipCiPending={skippingCi}
       onCreateFollowUp={onCreateFollowUp}

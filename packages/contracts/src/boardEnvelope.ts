@@ -1006,6 +1006,8 @@ export function composeBoardCiFixPrompt(input: {
   readonly triage?: boolean;
   /** A flake card's own target test, which is never flaky. */
   readonly notFlakyTitle?: string;
+  /** T3o (T3O-130): steps a human skipped this CI visit. */
+  readonly skipped?: ReadonlyArray<string>;
 }): string {
   const { failures, issues } = input;
   // Script-flagged flakes beside real failures: listed so the agent leaves them alone.
@@ -1062,6 +1064,12 @@ export function composeBoardCiFixPrompt(input: {
       ? `${failedSteps} The card's ${input.maxAttempts} fix attempts are used up; this is a flaky check.`
       : `${failedSteps} This is fix attempt ${input.attempt} of ${input.maxAttempts}.`,
     "",
+    ...(input.skipped === undefined || input.skipped.length === 0
+      ? []
+      : [
+          `Skipped by a human this visit: ${input.skipped.map((name) => `"${name}"`).join(", ")}. Failures after them may come from the skip.`,
+          "",
+        ]),
     `The issues to ${input.triage === true ? "check" : "fix"} (${issues.length}):`,
     ...issues.map(
       (issue, index) =>

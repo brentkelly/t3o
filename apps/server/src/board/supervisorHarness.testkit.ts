@@ -477,6 +477,8 @@ export type Harness = {
    * commands, so outcomes the card state does not carry (a pure report) are read here.
    */
   readonly decided: Effect.Effect<ReadonlyArray<HarnessEvent>>;
+  /** A card's CI pass rows, as the SQL projection keeps them. */
+  readonly ciPasses: (cardId: BoardCardId) => Effect.Effect<ReadonlyArray<BoardCiPass>>;
   /** Every merge the reactor asked the forge for, in order. */
   readonly mergeAttempts: Effect.Effect<ReadonlyArray<{ readonly number: number }>>;
   /** The merge method of each attempt, in the same order. */
@@ -762,12 +764,28 @@ export function withGovernor(
       }
       if (payload.started !== null) ciPassRows.set(payload.started.runId, payload.started);
       const action = payload.action;
-      if (action.kind === "step") {
-        const row = ciPassRows.get(action.runId);
+      const stepRow =
+        payload.stepRow ??
+        (action.kind === "step"
+          ? { runId: action.runId, index: action.index, step: action.step }
+          : undefined);
+      if (stepRow !== undefined) {
+        const row = ciPassRows.get(stepRow.runId);
         if (row !== undefined) {
-          ciPassRows.set(action.runId, {
+          ciPassRows.set(stepRow.runId, {
             ...row,
-            steps: row.steps.map((step, index) => (index === action.index ? action.step : step)),
+            steps: row.steps.map((step, index) =>
+              index !== stepRow.index
+                ? step
+                : "step" in stepRow
+                  ? stepRow.step
+                  : {
+                      ...step,
+                      status: stepRow.patch.status,
+                      finishedAt: stepRow.patch.finishedAt,
+                      ...(stepRow.patch.note === undefined ? {} : { note: stepRow.patch.note }),
+                    },
+            ),
           });
         }
       }
@@ -1367,6 +1385,8 @@ export function withGovernor(
           ),
           commands: Ref.get(commands),
           decided: Ref.get(decided),
+          ciPasses: (cardId) =>
+            Effect.sync(() => [...ciPassRows.values()].filter((pass) => pass.cardId === cardId)),
           mergeAttempts: Ref.get(mergeAttempts),
           mergeMethods: Ref.get(mergeMethods),
           mergeStateProbes: Ref.get(mergeStateProbes),

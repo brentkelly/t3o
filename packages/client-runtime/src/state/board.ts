@@ -26,6 +26,7 @@ import {
   type BoardCardDependencyRef,
   type BoardCardDetail,
   type BoardCardId,
+  type BoardCiSkipStepInput,
   type BoardCardPriority,
   type BoardCardShell,
   type BoardCardThreadShell,
@@ -123,6 +124,7 @@ import {
   startBoardStageThread,
   requestBoardReviewRound,
   skipBoardCardCi,
+  skipBoardCardCiStep,
   retryBoardCardCi,
   sendBackBoardCardCi,
   removeBoardCardWorktree,
@@ -1130,6 +1132,11 @@ export function createBoardEnvironmentAtoms<R, ER>(
     skipCi: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:skip-ci",
       execute: (input: { readonly cardId: BoardCardId }) => skipBoardCardCi(input),
+    }),
+    /** T3o (T3O-130): skip, mark or unmark one step of a running CI pass. */
+    skipCiStep: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:skip-ci-step",
+      execute: (input: BoardCiSkipStepInput) => skipBoardCardCiStep(input),
     }),
     /** Remove a finished card's kept worktree past the safety rule. */
     removeCardWorktree: createEnvironmentCommand(runtime, {

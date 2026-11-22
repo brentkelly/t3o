@@ -2633,6 +2633,34 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
     `,
   });
 
+  // T3o (T3O-130): a skip changes only these fields, so the row keeps its tail, log and thread.
+  const patchBoardCiPassStepRow = SqlSchema.void({
+    Request: Schema.Struct({
+      runId: Schema.String,
+      index: Schema.Int,
+      status: Schema.String,
+      finishedAt: Schema.NullOr(Schema.String),
+      note: Schema.NullOr(Schema.String),
+    }),
+    execute: (input) => sql`
+      UPDATE board_ci_passes
+      SET steps = CASE
+        WHEN ${input.note} IS NULL THEN json_set(
+          steps,
+          ${`$[${input.index}].status`}, ${input.status},
+          ${`$[${input.index}].finishedAt`}, ${input.finishedAt}
+        )
+        ELSE json_set(
+          steps,
+          ${`$[${input.index}].status`}, ${input.status},
+          ${`$[${input.index}].finishedAt`}, ${input.finishedAt},
+          ${`$[${input.index}].note`}, ${input.note}
+        )
+      END
+      WHERE run_id = ${input.runId} AND json_type(steps, ${`$[${input.index}]`}) = 'object'
+    `,
+  });
+
   const settleBoardCiPassRow = SqlSchema.void({
     Request: BoardCiPassSettle,
     execute: (settle) => sql`
@@ -2906,6 +2934,7 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
     deleteBoardCardDecisionsForCard,
     insertBoardCiPassRow,
     updateBoardCiPassStepRow,
+    patchBoardCiPassStepRow,
     settleBoardCiPassRow,
     listBoardCiPassRowsForCard,
     deleteBoardCiPassesForCard,
@@ -3522,14 +3551,28 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
       case "board.card-ci-recorded": {
         yield* upsertCard(event.payload.card);
         const { action, started, settled, activity } = event.payload;
+        // T3o (T3O-130): an event from before `stepRow` writes its step action's row as sent.
+        const stepRow =
+          event.payload.stepRow ??
+          (action.kind === "step"
+            ? { runId: action.runId, index: action.index, step: action.step }
+            : undefined);
         const ciWrites = Effect.gen(function* () {
           for (const pass of settled) yield* queries.settleBoardCiPassRow(pass);
           if (started !== null) yield* queries.insertBoardCiPassRow(started);
-          if (action.kind === "step") {
+          if (stepRow !== undefined && "step" in stepRow) {
             yield* queries.updateBoardCiPassStepRow({
-              runId: action.runId,
-              index: action.index,
-              step: encodeBoardCiPassStepJson(action.step),
+              runId: stepRow.runId,
+              index: stepRow.index,
+              step: encodeBoardCiPassStepJson(stepRow.step),
+            });
+          } else if (stepRow !== undefined) {
+            yield* queries.patchBoardCiPassStepRow({
+              runId: stepRow.runId,
+              index: stepRow.index,
+              status: stepRow.patch.status,
+              finishedAt: stepRow.patch.finishedAt,
+              note: stepRow.patch.note ?? null,
             });
           }
         });
@@ -3547,6 +3590,7 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
               ...(activity.ciFixAttempts === undefined
                 ? {}
                 : { ciFixAttempts: activity.ciFixAttempts }),
+              ...(activity.ciStepSkip === undefined ? {} : { ciStepSkip: activity.ciStepSkip }),
             },
             threadId: null,
           });

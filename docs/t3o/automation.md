@@ -53,6 +53,9 @@ included.
   attempts are used up, so a flake on the last pass doesn't stop the card. A test ruled flaky once
   in a CI entry passes with no agent after that. A verdict whose branch moved counts as a fix. The
   only stop is the loop guard: 10 flaky checks in one entry stops the card as a flake storm.
+- **A step skip is a human call, not a failure** (`T3O-130`). A pass whose other steps passed is a
+  pass, so the gates after CI, Auto-merge included, run as usual. A pass where every step was
+  skipped vouches for nothing and is held.
 - **Flake cards are the one place the board turns automation on by itself.** Each flaky test files
   a low-priority bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
   sign-off and Auto-build on, Auto-merge explicitly off (board-wide Auto-merge still locks it on,

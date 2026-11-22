@@ -24,6 +24,7 @@ const SEGMENT_CLASS: Record<BoardStepBadgeState, string> = {
   // A warning, not a hold: paler than a failure, and never green.
   flaky: "bg-warning/45",
   cancelled: "bg-muted-foreground/40",
+  skipped: "bg-muted-foreground/40",
   pending: "shadow-board-inset-faint",
 };
 

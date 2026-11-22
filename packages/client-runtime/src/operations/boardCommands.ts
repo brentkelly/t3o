@@ -11,6 +11,7 @@ import {
   type BoardDetachCardFileInput,
   type BoardClientCommand,
   type BoardCardWorkerMoveRequest,
+  type BoardCiSkipStepInput,
   type BoardProjectImportCandidatesInput,
   type BoardProjectExportInput,
   type BoardProjectImportInput,
@@ -170,6 +171,10 @@ export const retryBoardCardCi = (input: {
 
 export const sendBackBoardCardCi = (input: { readonly cardId: BoardCardId }) =>
   request(BOARD_WS_METHODS.ciSendBack, input);
+
+/** T3o (T3O-130): skip one step of a running CI pass, mark it, or unmark it. */
+export const skipBoardCardCiStep = (input: BoardCiSkipStepInput) =>
+  request(BOARD_WS_METHODS.ciSkipStep, input);
 
 /** "Remove worktree" on a finished card that kept one: removes it
     past the safety rule. The branch is kept. */

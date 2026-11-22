@@ -5,6 +5,8 @@
  * and boot reconciliation re-reads every non-terminal step because the server restarts mid-step.
  */
 import {
+  BOARD_CI_ALL_SKIPPED_REASON,
+  BOARD_CI_LAST_STEP_SKIP_REFUSAL,
   BOARD_CI_STOPPED_BY_YOU_REASON,
   BOARD_DISCARDED_REF_MAX_AGE_DAYS,
   BOARD_LOCAL_WORKER_ID,
@@ -16,6 +18,10 @@ import {
   boardCiFixIssues,
   boardCiFlakeKey,
   boardCiNextSegment,
+  boardCiStepGroups,
+  isBoardCiStepSkipped,
+  type BoardCiSkipStepInput,
+  type BoardCiSkipStepResult,
   boardCiStopsOnFailure,
   boardCiPassStepsFromSnapshot,
   type BoardCiForgeChecksReading,
@@ -684,6 +690,12 @@ export interface SupervisorReactorShape {
     cardId: BoardCardId,
     stamp: (command: BoardCommand) => Effect.Effect<void>,
   ) => Effect.Effect<BoardSkipCiResult>;
+  /** T3o (T3O-130): skip one step of a queued or running pass, mark a pending one, or unmark
+      it: a human's call, stamped like Skip CI. */
+  readonly skipCiStep: (
+    input: BoardCiSkipStepInput,
+    stamp: (command: BoardCommand) => Effect.Effect<void>,
+  ) => Effect.Effect<BoardCiSkipStepResult>;
   readonly requestReviewRound: (
     cardId: BoardCardId,
     carry?: BoardRequestReviewRoundInput["carry"] | undefined,
@@ -738,7 +750,19 @@ type SupervisorInput =
       readonly source: "forge-probe";
       readonly cardId: BoardCardId;
       readonly runId: string;
+      /** T3o (T3O-130): the step the read is for, so a stale read never settles the next one. */
+      readonly index: number;
       readonly probe: ForgeProbe;
+    }
+  // T3o (T3O-130): a human skipped running step `index`, or (`reached`) a step marked to
+  // skip started. `token` is the launch it was seen on; null for agent and forge steps.
+  | {
+      readonly source: "ci-skip";
+      readonly cardId: BoardCardId;
+      readonly runId: string;
+      readonly index: number;
+      readonly token: number | null;
+      readonly reached: boolean;
     };
 
 /** How long one forge-checks read may take before it counts as a failed read. */
@@ -4658,11 +4682,26 @@ const make = Effect.gen(function* () {
                   ),
             ),
           ),
-    dispatch: (command) => dispatch(command),
+    // T3o (T3O-130): the decider refuses reports on a skipped row as a matter of course.
+    dispatch: (command) => Effect.asVoid(dispatchOptional(command)),
     commandId: (tag) => commandId(tag).pipe(Effect.orDie),
     nowIso,
     onFinished: (finished): Effect.Effect<void> =>
       Effect.asVoid(worker.enqueue({ source: "ci", finished })),
+    // T3o (T3O-130): a marked step that slipped into a live segment is restarted past.
+    onStepStarted: (cardId, runId, token, index) =>
+      readCard(cardId).pipe(
+        Effect.flatMap((card) => {
+          const ci = card?.ci;
+          const step = ci?.runId === runId ? ci.steps[index] : undefined;
+          return ci == null || step === undefined || !isBoardCiStepSkipped(ci, step)
+            ? Effect.void
+            : Effect.asVoid(
+                worker.enqueue({ source: "ci-skip", cardId, runId, index, token, reached: true }),
+              );
+        }),
+        Effect.ignoreCause,
+      ),
   });
 
   /** Move a card out of CI to the next stage of its pipeline: the board's own
@@ -4723,7 +4762,10 @@ const make = Effect.gen(function* () {
 
   /** A held pass's reason ends by saying what to do, once. */
   const withCiRetryHint = (detail: string) =>
-    detail.includes("Retry CI") ? detail : `${detail} Retry CI, or Skip CI.`;
+    // T3o (T3O-130): a retry would only skip every step again.
+    detail.includes("Retry CI") || detail === BOARD_CI_ALL_SKIPPED_REASON
+      ? detail
+      : `${detail} Retry CI, or Skip CI.`;
 
   /**
    * T3o: CI that needs its worktree re-created and was denied room (T3O-86). Each placement
@@ -4928,6 +4970,16 @@ const make = Effect.gen(function* () {
       const board = yield* readBoard;
       const card = board.cards.find((candidate) => candidate.id === cardId);
       if (card === undefined || !isCiPassLive(card, runId)) return;
+      // T3o (T3O-130): a step a human marked is recorded skipped and never started.
+      const marked = (index: number) => {
+        const id = steps[index]?.id;
+        return id !== undefined && (card.ci.skippedSteps ?? []).includes(id);
+      };
+      if (from < steps.length && marked(from)) {
+        yield* recordCiStepSkipped(card, runId, from);
+        yield* runCiSegment(cardId, runId, steps, from + 1);
+        return;
+      }
       const segment = boardCiNextSegment(steps, from);
       if (segment.kind === "done") {
         // Fail closed. A pass whose record can't be read is held, and
@@ -4946,6 +4998,14 @@ const make = Effect.gen(function* () {
           card.ci.steps.some((step) => isBoardCiStepFailure(step.status))
         ) {
           yield* failCiPass(card, runId);
+          return;
+        }
+        // T3o (T3O-130): a pass where nothing ran vouches for nothing, so it never moves on.
+        if (
+          read.steps.some((step) => step.status === "skipped") &&
+          !read.steps.some((step) => step.status === "passed")
+        ) {
+          yield* holdCiPass(card, runId, BOARD_CI_ALL_SKIPPED_REASON);
           return;
         }
         const recorded = yield* dispatchLanded({
@@ -5010,12 +5070,21 @@ const make = Effect.gen(function* () {
       // human merges the card.
       const inconclusiveTargetAllowed =
         notFlakyTitle !== null && !(yield* cardAutoMergeArmed(fresh));
+      // A segment ends before a marked step: the runner's slice is contiguous on the worker
+      // wire (`indexOffset`), so a mark splits a parallel group in two.
+      let end = segment.end;
+      for (let index = segment.start + 1; index < segment.end; index++) {
+        if (marked(index)) {
+          end = index;
+          break;
+        }
+      }
       yield* ciPasses.start({
         cardId: card.id,
         runId,
         worktreePath: worktree.path,
         workerId,
-        steps: boardCiScriptDefinitions(steps.slice(segment.start, segment.end)),
+        steps: boardCiScriptDefinitions(steps.slice(segment.start, end)),
         indexOffset: segment.start,
         // T3o (T3O-126): a test already ruled flaky this entry passes with no agent turn.
         ...(fresh.ci.flakyTitles === undefined ? {} : { knownFlaky: fresh.ci.flakyTitles }),
@@ -5099,11 +5168,53 @@ const make = Effect.gen(function* () {
     index: number,
     step: BoardCiPassStep,
   ) {
-    return yield* dispatchLanded({
+    // A refusal is a skip race (the row was skipped), so only a fault is warned about.
+    const outcome = yield* dispatchOutcome({
       type: "board.card.record-ci",
       commandId: yield* commandId("ci-step"),
       cardId,
       action: { kind: "step", runId, index, step },
+      createdAt: yield* nowIso,
+    });
+    if (outcome.kind === "refused") {
+      yield* Effect.logDebug("board supervisor: CI step record refused", {
+        detail: outcome.detail,
+      });
+    }
+    return outcome.kind === "landed";
+  });
+
+  /** T3o (T3O-130): whether a step's landed terminal record was stored skipped: a mark that
+      landed as an agent or forge step started ends its result skipped, and the pass goes on. */
+  const ciStepEndedSkipped = Effect.fn("board-supervisor-ciStepEndedSkipped")(function* (
+    cardId: BoardCardId,
+    runId: string,
+    index: number,
+  ) {
+    const fresh = yield* readCard(cardId);
+    return fresh?.ci?.runId === runId && fresh.ci.steps[index]?.status === "skipped";
+  });
+
+  /** T3o (T3O-130): record a marked step skipped as the pass reaches it. Quiet: a row
+      already skipped is the decider's no-op, and the pass goes on either way. */
+  const recordCiStepSkipped = Effect.fn("board-supervisor-recordCiStepSkipped")(function* (
+    card: BoardCard,
+    runId: string,
+    index: number,
+  ) {
+    const { rows } = yield* ciPassSnapshot(card.id, runId);
+    const row = ciStepRow(card, rows, index);
+    if (row === undefined) return;
+    yield* dispatchOptional({
+      type: "board.card.record-ci",
+      commandId: yield* commandId("ci-step"),
+      cardId: card.id,
+      action: {
+        kind: "step",
+        runId,
+        index,
+        step: { ...row, status: "skipped", finishedAt: yield* nowIso, note: "Skipped" },
+      },
       createdAt: yield* nowIso,
     });
   });
@@ -5628,6 +5739,7 @@ const make = Effect.gen(function* () {
       const done = yield* Deferred.make<void>();
       forgeProbesInFlight.add(done);
       const runId = entry.runId;
+      const index = entry.index;
       yield* probeMergeState(card).pipe(
         // A forge that never answers counts as a failed read, so the step's own limits still apply.
         Effect.timeoutOrElse({
@@ -5638,7 +5750,9 @@ const make = Effect.gen(function* () {
               failure: "the forge did not answer within 2 minutes",
             }),
         }),
-        Effect.flatMap((probe) => worker.enqueue({ source: "forge-probe", cardId, runId, probe })),
+        Effect.flatMap((probe) =>
+          worker.enqueue({ source: "forge-probe", cardId, runId, index, probe }),
+        ),
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (exit._tag === "Failure") entry.probing = false;
@@ -5666,9 +5780,9 @@ const make = Effect.gen(function* () {
    * five failed reads in a row hold the card. A read for a pass that has moved on is dropped.
    */
   const settleCiForgeProbe = Effect.fn("board-supervisor-settleCiForgeProbe")(
-    function* (cardId: BoardCardId, runId: string, probe: ForgeProbe) {
+    function* (cardId: BoardCardId, runId: string, index: number, probe: ForgeProbe) {
       const entry = forgeSteps.get(String(cardId));
-      if (entry === undefined || entry.runId !== runId) return;
+      if (entry === undefined || entry.runId !== runId || entry.index !== index) return;
       entry.probing = false;
       const card = yield* readCard(cardId);
       if (card === null || !isCiPassLive(card, entry.runId)) {
@@ -5732,7 +5846,14 @@ const make = Effect.gen(function* () {
             note,
             tail: status === "passed" ? "" : note,
           });
-          if (status === "passed" || (recorded && card.ci?.continueOnFailure === true)) {
+          // T3o (T3O-130): a refused record is a step a human skipped, whose skip carries the
+          // pass on. A fault leaves the pass to the orphan sweep, which holds it.
+          if (!recorded) return;
+          if (
+            status === "passed" ||
+            card.ci?.continueOnFailure === true ||
+            (yield* ciStepEndedSkipped(card.id, entry.runId, entry.index))
+          ) {
             yield* runCiSegment(card.id, entry.runId, steps, entry.index + 1);
             return;
           }
@@ -5807,7 +5928,14 @@ const make = Effect.gen(function* () {
     const key = `${note}|${reading.passed}|${reading.total}|${reading.running.join(",")}`;
     if (key === entry.lastKey) return;
     entry.lastKey = key;
-    yield* recordCiStep(card.id, entry.runId, entry.index, { ...row, checks: reading, note });
+    // T3o (T3O-130): `row` is the pending template; the step is running while it waits, so a
+    // skip of it is a running skip, not a mark.
+    yield* recordCiStep(card.id, entry.runId, entry.index, {
+      ...row,
+      status: "running",
+      checks: reading,
+      note,
+    });
   });
 
   /** Poll every forge-check step in flight; on the board's sweep tick. */
@@ -5852,9 +5980,16 @@ const make = Effect.gen(function* () {
         result: { summary, failures },
         ...(threadId === null ? {} : { threadId }),
       });
+      // T3o (T3O-130): a refused record is a step a human skipped, whose skip carries the
+      // pass on. A fault leaves the pass to the orphan sweep, which holds it.
+      if (!recorded) return;
       // Without stop on failure a failed agent step is recorded and
       // the pass carries on; the end of the pass fails it.
-      if (passed || (recorded && card.ci.continueOnFailure === true)) {
+      if (
+        passed ||
+        card.ci.continueOnFailure === true ||
+        (yield* ciStepEndedSkipped(card.id, plan.runId, plan.index))
+      ) {
         yield* runCiSegment(card.id, plan.runId, steps, plan.index + 1);
         return;
       }
@@ -6334,9 +6469,44 @@ const make = Effect.gen(function* () {
       yield* runCiSegment(card.id, finished.runId, steps, finished.segmentEnd);
       return;
     }
+    let index = finished.outcome.failedIndex ?? -1;
+    let verdict = finished.outcome.headline;
+    // T3o (T3O-130): the step that failed was skipped before its job ran. Alone, it fails
+    // nothing and the pass goes on; beside a real failure, that failure is the verdict.
+    const shell = card.ci.steps[index];
+    if (index >= 0 && shell !== undefined) {
+      const read = yield* ciPassFailures(card.id, finished.runId);
+      if (
+        read !== null &&
+        (read.steps[index]?.status === "skipped" || isBoardCiStepSkipped(card.ci, shell))
+      ) {
+        const other = read.steps.findIndex(
+          (row, at) => at !== index && isBoardCiStepFailure(row.status),
+        );
+        if (other < 0) {
+          const { steps } = yield* ciPassSnapshot(card.id, finished.runId);
+          if (steps === null) {
+            yield* holdCiPass(
+              card,
+              finished.runId,
+              "CI lost track of this pass's steps. Retry CI, or Skip CI.",
+            );
+            return;
+          }
+          yield* runCiSegment(
+            card.id,
+            finished.runId,
+            steps,
+            firstUnsettledCiGroup(steps, read.steps, finished.segmentStart, finished.segmentEnd),
+          );
+          return;
+        }
+        index = other;
+        verdict = read.steps[other]!.headline;
+      }
+    }
     // A machine problem is held for a human before any failure is
     // recorded, so no fix agent starts and no fix or round trip is used.
-    const verdict = finished.outcome.headline;
     if (verdict?.machine === true) {
       const board = yield* readBoard;
       const workerId = boardCardEffectiveWorkerId(card);
@@ -6351,7 +6521,6 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    const index = finished.outcome.failedIndex ?? -1;
     const fallback: BoardCiFailure = {
       runId: finished.runId,
       stepName: card.ci.steps[index]?.name ?? "CI",
@@ -6492,12 +6661,7 @@ const make = Effect.gen(function* () {
       (parseBoardCiFixStepId(state.stepId) !== null ||
         parseBoardCiAgentStepId(state.stepId)?.runId === runId)
     ) {
-      yield* settleStep({ card, state, outcome: "abandoned" });
-      if (state.status !== "stalled" && state.status !== "paused" && state.threadId !== null) {
-        yield* interruptOrphan(state.threadId);
-        // Named so its interrupt is not read as a human Stop of the step.
-        abandonedThreads.add(String(state.threadId));
-      }
+      yield* abandonCiStepThread(card, state);
     }
     forgeSteps.delete(String(card.id));
     const held = yield* holdCiPass(card, runId, BOARD_CI_STOPPED_BY_YOU_REASON);
@@ -6509,6 +6673,196 @@ const make = Effect.gen(function* () {
       ? ({ outcome: "failed" } as const)
       : ({ outcome: "not-running" } as const);
   });
+
+  /** Abandon a CI agent or fix step and interrupt its turn. */
+  const abandonCiStepThread = Effect.fn("board-supervisor-abandonCiStepThread")(function* (
+    card: BoardCard,
+    state: NonNullable<ReturnType<typeof boardCardStepState>>,
+  ) {
+    yield* settleStep({ card, state, outcome: "abandoned" });
+    if (state.status !== "stalled" && state.status !== "paused" && state.threadId !== null) {
+      yield* interruptOrphan(state.threadId);
+      // Named so its interrupt is not read as a human Stop of the step.
+      abandonedThreads.add(String(state.threadId));
+    }
+  });
+
+  /**
+   * T3o (T3O-130): a human's step skip. The decider decides it race-free on the step rows;
+   * stopping a running step is a job on the serial worker, ordered against the pass's end.
+   */
+  const skipCiStep = Effect.fn("board-supervisor-skipCiStep")(function* (
+    input: BoardCiSkipStepInput,
+    stamp: (command: BoardCommand) => Effect.Effect<void>,
+  ) {
+    const card = yield* readCard(input.cardId);
+    if (card === null || card.archivedAt !== null) return { outcome: "unknown-card" } as const;
+    if (card.stage !== BOARD_SEED_STAGE_IDS.ci) return { outcome: "not-in-ci" } as const;
+    const ci = card.ci;
+    if (
+      ci === null ||
+      ci.runId !== input.runId ||
+      (ci.phase !== "queued" && ci.phase !== "running")
+    ) {
+      return { outcome: "not-running" } as const;
+    }
+    const { steps } = yield* ciPassSnapshot(card.id, input.runId);
+    const stepId = steps?.[input.stepIndex]?.id;
+    if (stepId === undefined) return { outcome: "not-running" } as const;
+    const command: BoardCommand = {
+      type: "board.card.record-ci",
+      commandId: yield* commandId("ci-step-skip"),
+      cardId: card.id,
+      action: {
+        kind: "set-step-skip",
+        runId: input.runId,
+        index: input.stepIndex,
+        stepId,
+        skip: input.skip,
+        actor: "You",
+      },
+      createdAt: yield* nowIso,
+    };
+    yield* stamp(command);
+    const actor = boardActivityActorFor(command.commandId);
+    const refusal = yield* dispatchRefusal({
+      ...command,
+      action: {
+        kind: "set-step-skip",
+        runId: input.runId,
+        index: input.stepIndex,
+        stepId,
+        skip: input.skip,
+        actor: actor.name ?? BOARD_HUMAN_ACTOR_FALLBACK_NAME,
+      },
+    });
+    if (refusal !== null) {
+      return refusal === BOARD_CI_LAST_STEP_SKIP_REFUSAL
+        ? ({ outcome: "last-step" } as const)
+        : ({ outcome: "not-running" } as const);
+    }
+    // A fault reads like a landing, so the card says what took.
+    const after = yield* readCard(card.id);
+    const marks = after?.ci?.runId === input.runId ? (after.ci.skippedSteps ?? []) : [];
+    if (marks.includes(stepId) !== input.skip) return { outcome: "failed" } as const;
+    if (!input.skip) return { outcome: "unskipped" } as const;
+    if (after?.ci?.steps[input.stepIndex]?.status !== "skipped") {
+      return { outcome: "marked" } as const;
+    }
+    const entry = ciPasses.entry(card.id);
+    yield* worker.enqueue({
+      source: "ci-skip",
+      cardId: card.id,
+      runId: input.runId,
+      index: input.stepIndex,
+      token: entry?.runId === input.runId ? entry.token : null,
+      reached: false,
+    });
+    return { outcome: "skipped" } as const;
+  });
+
+  /** T3o (T3O-130): the pass index a segment restarts from: the first of its groups with a
+      step not yet settled. A cancelled row counts as unsettled, so its siblings re-run. */
+  const firstUnsettledCiGroup = (
+    steps: ReadonlyArray<BoardCiStep>,
+    rows: ReadonlyArray<Pick<BoardCiPassStep, "status">>,
+    start: number,
+    end: number,
+  ) => {
+    const indexed = steps
+      .slice(start, end)
+      .map((step, offset) => ({ kind: step.kind, parallel: step.parallel, index: start + offset }));
+    for (const group of boardCiStepGroups(indexed)) {
+      const unsettled = group.some(({ index }) => {
+        const status = rows[index]?.status;
+        return status === "pending" || status === "running" || status === "cancelled";
+      });
+      if (unsettled) return group[0]!.index;
+    }
+    return end;
+  };
+
+  /**
+   * T3o (T3O-130): act on a skip, on the serial worker. A running script segment is cancelled
+   * and restarted without the step; an agent step is abandoned and a forge step stops polling,
+   * and the pass goes on from the next step. A finishing segment is the finish handler's.
+   */
+  const handleCiStepSkip = Effect.fn("board-supervisor-handleCiStepSkip")(
+    function* (input: Extract<SupervisorInput, { source: "ci-skip" }>) {
+      const card = yield* readCard(input.cardId);
+      if (card === null || !isCiPassLive(card, input.runId)) return;
+      const { steps } = yield* ciPassSnapshot(card.id, input.runId);
+      const step = steps?.[input.index];
+      const live = card.ci.steps[input.index];
+      if (steps === null || step === undefined || live === undefined) return;
+      if (!isBoardCiStepSkipped(card.ci, live)) return;
+      // The pass is between segments for a moment; the sweep must not hold it then.
+      ciSuspectPasses.delete(String(card.id));
+      if (step.kind === "agent" || step.kind === "forge-checks") {
+        if (input.reached) return;
+        if (step.kind === "agent") {
+          const state = boardCardStepState(yield* readBoard, card.id);
+          const agent = state === null ? null : parseBoardCiAgentStepId(state.stepId);
+          if (
+            state !== null &&
+            !isBoardTerminalStepStatus(state.status) &&
+            agent?.runId === input.runId &&
+            agent.index === input.index
+          ) {
+            yield* abandonCiStepThread(card, state);
+            yield* schedule();
+          }
+        } else {
+          const forge = forgeSteps.get(String(card.id));
+          if (forge?.runId === input.runId && forge.index === input.index) {
+            forgeSteps.delete(String(card.id));
+          }
+        }
+        yield* runCiSegment(card.id, input.runId, steps, input.index + 1);
+        return;
+      }
+      const entry = ciPasses.entry(card.id);
+      if (
+        entry === null ||
+        entry.runId !== input.runId ||
+        entry.state !== "running" ||
+        (input.token !== null && entry.token !== input.token) ||
+        input.index < entry.start ||
+        input.index >= entry.end
+      ) {
+        return;
+      }
+      if ((yield* cancelCiRun(card.id, input.runId)) !== null) yield* schedule();
+      const fresh = yield* readCard(card.id);
+      if (fresh === null || !isCiPassLive(fresh, input.runId)) return;
+      const read = yield* ciPassFailures(card.id, input.runId);
+      if (read === null) {
+        yield* holdCiPass(
+          fresh,
+          input.runId,
+          "CI lost track of this pass's steps. Retry CI, or Skip CI.",
+        );
+        return;
+      }
+      // A skip never carries a pass past a sibling's real failure.
+      const failed = read.steps
+        .slice(entry.start, entry.end)
+        .some((row) => isBoardCiStepFailure(row.status));
+      if (failed && fresh.ci.continueOnFailure !== true) {
+        yield* failCiPass(fresh, input.runId);
+        return;
+      }
+      yield* runCiSegment(
+        card.id,
+        input.runId,
+        steps,
+        firstUnsettledCiGroup(steps, read.steps, entry.start, entry.end),
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: CI step skip failed", { cause: Cause.pretty(cause) }),
+    ),
+  );
 
   /** A CI action's answer, with a fault answered as `failed`. */
   const answerCiAction = <E>(
@@ -14023,7 +14377,9 @@ const make = Effect.gen(function* () {
       case "ci":
         return handleCiPassFinished(input.finished);
       case "forge-probe":
-        return settleCiForgeProbe(input.cardId, input.runId, input.probe);
+        return settleCiForgeProbe(input.cardId, input.runId, input.index, input.probe);
+      case "ci-skip":
+        return handleCiStepSkip(input);
       case "workers":
         // A worker back online is reconciled before anything is
         // scheduled onto it.
@@ -14327,6 +14683,15 @@ const make = Effect.gen(function* () {
         Effect.catchCause((cause) =>
           Effect.logWarning("board supervisor: skip CI failed", {
             cardId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as({ outcome: "failed" } as const)),
+        ),
+      ),
+    skipCiStep: (input, stamp) =>
+      skipCiStep(input, stamp).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("board supervisor: skip CI step failed", {
+            cardId: input.cardId,
             cause: Cause.pretty(cause),
           }).pipe(Effect.as({ outcome: "failed" } as const)),
         ),

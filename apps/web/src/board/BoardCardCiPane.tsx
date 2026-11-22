@@ -49,6 +49,7 @@ import {
 } from "./boardCi";
 import { BOARD_CI_CHIP_CLASS } from "./BoardCardCiFace";
 import { BoardSectionHeading as SectionHeading } from "./BoardCardFields";
+import { BoardHint } from "./BoardHint";
 import { BoardShimmerText, BoardStepBadge } from "./BoardStepBadge";
 import type { BoardCiLogTarget } from "./BoardCiLogDialog";
 
@@ -196,7 +197,19 @@ const STATUS_WORD: Record<BoardCiPassStep["status"], string> = {
   failed: "Failed",
   "timed-out": "Timed out",
   cancelled: "Cancelled",
+  skipped: "Skipped",
 };
+
+/** T3o (T3O-130): skip step `stepIndex` of pass `runId`, or (`skip: false`) unmark it. */
+export type BoardCiSkipStepHandler = (input: {
+  readonly runId: string;
+  readonly stepIndex: number;
+  readonly skip: boolean;
+  readonly stepName: string;
+}) => void;
+
+/** What a live pass's step offers: Skip while it runs or waits, Unskip once marked. */
+type StepSkipControl = "skip" | "unskip" | null;
 
 function statusClass(status: BoardCiPassStep["status"], fixing: boolean): string {
   if (status === "passed") return "text-success-foreground";
@@ -215,8 +228,12 @@ function StepRow({
   onToggleTail,
   onOpenThread,
   onOpenLog,
+  skipControl = null,
+  onSkip,
 }: {
   readonly step: BoardCiPassStep;
+  readonly skipControl?: StepSkipControl | undefined;
+  readonly onSkip?: ((skip: boolean) => void) | undefined;
   /** Opens the step's log; absent when it has none to show. */
   readonly onOpenLog?: (() => void) | undefined;
   readonly onOpenThread?: ((threadId: ThreadId) => void) | undefined;
@@ -322,6 +339,24 @@ function StepRow({
             </button>
           )}
         </div>
+        {skipControl === null || onSkip === undefined ? null : (
+          <BoardHint
+            label={
+              skipControl === "skip"
+                ? "Skip until the card leaves CI"
+                : "Run this step when the pass reaches it"
+            }
+          >
+            <button
+              aria-label={`${skipControl === "skip" ? "Skip" : "Unskip"} ${step.name}`}
+              className="h-[22px] shrink-0 rounded-md border border-border bg-popover px-1.75 text-board-11 font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => onSkip(skipControl === "skip")}
+              type="button"
+            >
+              {skipControl === "skip" ? "Skip" : "Unskip"}
+            </button>
+          </BoardHint>
+        )}
         {hasTail ? (
           <button
             aria-expanded={tailOpen}
@@ -354,7 +389,9 @@ function StepRow({
             ? "Failed · fixing"
             : flakes.length > 0
               ? "Passed · flaky"
-              : STATUS_WORD[step.status]}
+              : skipControl === "unskip"
+                ? "Will be skipped"
+                : STATUS_WORD[step.status]}
           {step.exitCode !== null && failed && !stepFixing ? (
             <span className="sr-only">{` (exit ${step.exitCode})`}</span>
           ) : null}
@@ -515,8 +552,14 @@ function PassSteps({
   fixRow,
   fixThreadId,
   onOpenLog,
+  ci,
+  onSkipStep,
 }: {
   readonly pass: BoardCiPass;
+  /** The card's CI, for the steps marked to skip; only with `onSkipStep`. */
+  readonly ci?: BoardCardCi | null | undefined;
+  /** Offered on the live pass while it is queued or running. */
+  readonly onSkipStep?: BoardCiSkipStepHandler | undefined;
   readonly live: boolean;
   readonly fixing: boolean;
   readonly defaultTailOpen: boolean;
@@ -531,10 +574,28 @@ function PassSteps({
     <>
       {pass.steps.map((step, index) => {
         const open = tailOpen[index] ?? defaultTailOpen;
+        const marked =
+          ci != null && step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id);
+        const skipControl: StepSkipControl =
+          onSkipStep === undefined ||
+          ci == null ||
+          (ci.phase !== "queued" && ci.phase !== "running")
+            ? null
+            : step.status === "running"
+              ? "skip"
+              : step.status === "pending"
+                ? marked
+                  ? "unskip"
+                  : "skip"
+                : null;
         return (
           <StepRow
             fixing={fixing}
             index={index}
+            skipControl={skipControl}
+            onSkip={(skip) =>
+              onSkipStep?.({ runId: pass.runId, stepIndex: index, skip, stepName: step.name })
+            }
             // oxlint-disable-next-line react/no-array-index-key -- a step is its position in the pipeline; step names can repeat
             key={`${index}:${step.name}`}
             live={live}
@@ -649,9 +710,12 @@ export function BoardCardCiPane({
   projectId,
   onRetryCi,
   onStopCi,
+  onSkipStep,
   onSendBack,
   completions = [],
 }: {
+  /** T3o (T3O-130): skip, mark or unmark a step of the queued or running pass. Human-only. */
+  readonly onSkipStep?: BoardCiSkipStepHandler | undefined;
   /** Where the card lives, for its step logs. */
   readonly environmentId: EnvironmentId;
   readonly cardId: BoardCardId;
@@ -908,6 +972,7 @@ export function BoardCardCiPane({
               onOpenLog={setLogTarget}
               onOpenThread={onOpenThread}
               pass={current}
+              {...(live && inCi ? { ci, onSkipStep } : {})}
             />
             <div className="border-t border-border px-3 py-2 text-board-11 text-muted-foreground">
               {current.steps.length} {current.steps.length === 1 ? "step" : "steps"} from the

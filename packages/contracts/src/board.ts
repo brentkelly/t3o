@@ -1811,6 +1811,8 @@ const BOARD_CI_STEP_STATUSES = [
   "failed",
   "timed-out",
   "cancelled",
+  // T3o (T3O-130): a human skipped the step this CI visit. Neutral, never a failure.
+  "skipped",
 ] as const;
 export const BoardCiStepStatus = Schema.Literals(BOARD_CI_STEP_STATUSES);
 export type BoardCiStepStatus = typeof BoardCiStepStatus.Type;
@@ -1942,6 +1944,8 @@ export const BOARD_CI_SILENT_AFTER_MS = 10 * 60_000;
 
 /** A CI step's compact state on the card shell: no command, no output. */
 export const BoardCardCiStep = Schema.Struct({
+  /** The `BoardCiStep.id` this row runs; absent on a pass recorded before T3O-130. */
+  id: Schema.optionalKey(BoardCiStepId),
   name: TrimmedNonEmptyString,
   /** Absent is a script. */
   kind: Schema.optionalKey(Schema.Literals(["script", "agent", "forge-checks"])),
@@ -2015,8 +2019,28 @@ export const BoardCardCi = Schema.Struct({
   /** `boardCiFlakeKey` of every test ruled flaky this entry, on code unchanged since: a repeat
       passes with no agent. */
   flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** T3o (T3O-130): ids of the steps a human skipped or marked to skip this entry. They carry
+      across its passes; a fresh entry runs everything. */
+  skippedSteps: Schema.optionalKey(Schema.Array(BoardCiStepId)),
 });
 export type BoardCardCi = typeof BoardCardCi.Type;
+
+/** T3o (T3O-130): why a step skip that would leave nothing to run is refused. */
+export const BOARD_CI_LAST_STEP_SKIP_REFUSAL = "Use Skip CI to skip all of CI.";
+
+/** T3o (T3O-130): the hold for a pass that ended with every step skipped. */
+export const BOARD_CI_ALL_SKIPPED_REASON = "Every step was skipped. Use Skip CI.";
+
+/** T3o (T3O-130): whether a step of `ci` is skipped, or marked to be. */
+export function isBoardCiStepSkipped(
+  ci: Pick<BoardCardCi, "skippedSteps">,
+  step: Pick<BoardCardCiStep, "id" | "status">,
+): boolean {
+  return (
+    step.status === "skipped" ||
+    (step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id))
+  );
+}
 
 /** Most flaky titles a CI entry remembers. */
 const BOARD_CI_MAX_FLAKY_TITLES = 50;
@@ -2066,6 +2090,8 @@ export type BoardCiPassOutcome = typeof BoardCiPassOutcome.Type;
 
 /** One step of a recorded pass, with what the card detail shows. */
 export const BoardCiPassStep = Schema.Struct({
+  /** T3o (T3O-130): the `BoardCiStep.id` this row runs; absent on older passes. */
+  id: Schema.optionalKey(BoardCiStepId),
   name: TrimmedNonEmptyString,
   command: TrimmedNonEmptyString,
   timeoutMinutes: PositiveInt,
@@ -2158,6 +2184,7 @@ export function boardCiPassStepsFromSnapshot(
   steps: ReadonlyArray<BoardCiStep>,
 ): ReadonlyArray<BoardCiPassStep> {
   return steps.map((step) => ({
+    id: step.id,
     name: step.name,
     command:
       step.kind === "script" ? step.command : step.kind === "agent" ? "Agent step" : "Forge checks",
@@ -2211,6 +2238,7 @@ export function boardCardCiSteps(
   steps: ReadonlyArray<
     Pick<
       BoardCiPassStep,
+      | "id"
       | "name"
       | "status"
       | "startedAt"
@@ -2223,6 +2251,7 @@ export function boardCardCiSteps(
   >,
 ): ReadonlyArray<BoardCardCiStep> {
   return steps.map((step) => ({
+    ...(step.id === undefined ? {} : { id: step.id }),
     name:
       step.name.length > BOARD_CI_SHELL_STEP_NAME_MAX
         ? `${step.name.slice(0, BOARD_CI_SHELL_STEP_NAME_MAX - 1).trimEnd()}…`
@@ -3090,6 +3119,8 @@ const BOARD_CARD_ACTIVITY_KINDS = [
   "card-ci-pass-finished",
   "card-ci-sent-back",
   "card-ci-skipped",
+  /** T3o (T3O-130): a human skipped one CI step, marked it to skip, or unmarked it. */
+  "card-ci-step-skip",
   /** CI is holding the card until a human acts (Skip CI, or a fix). */
   "card-ci-held",
   /** CI stopped for a human at the round-trip limit. */
@@ -3225,6 +3256,8 @@ export const BoardCardActivityPayload = Schema.Struct({
   ciOutcome: Schema.optionalKey(BoardCiPassOutcome),
   ciStepName: Schema.optionalKey(TrimmedNonEmptyString),
   ciFixAttempts: Schema.optionalKey(NonNegativeInt),
+  /** card-ci-step-skip: true skipped or marked the step, false unmarked it. */
+  ciStepSkip: Schema.optionalKey(Schema.Boolean),
   /** card-edited from another worker: what kind of write it was, when there is no
       incremental edit to describe. */
   editKind: Schema.optionalKey(Schema.Literals(["regrouped", "moved", "automation", "details"])),
@@ -6478,6 +6511,16 @@ export const BoardCardCiAction = Schema.Union([
     fixThreadId: Schema.optionalKey(ThreadId),
   }),
   Schema.Struct({ kind: Schema.Literal("skip"), actor: TrimmedNonEmptyString }),
+  /** T3o (T3O-130): a human skips a running step, marks a pending one to skip, or unmarks
+      it (`skip: false`). `stepId` must be the pass snapshot's step at `index`. */
+  Schema.Struct({
+    kind: Schema.Literal("set-step-skip"),
+    runId: TrimmedNonEmptyString,
+    index: NonNegativeInt,
+    stepId: BoardCiStepId,
+    skip: Schema.Boolean,
+    actor: TrimmedNonEmptyString,
+  }),
 ]);
 export type BoardCardCiAction = typeof BoardCardCiAction.Type;
 
@@ -7490,6 +7533,23 @@ export const BoardCardCiRecordedPayload = Schema.Struct({
   action: BoardCardCiAction,
   started: Schema.NullOr(BoardCiPass),
   settled: Schema.Array(BoardCiPassSettle),
+  /** T3o (T3O-130): what the pass row's step takes: the full row the decider built, or a
+      field patch that keeps the row's tail, log and thread. Absent on older events, whose
+      `step` action's row is written as sent. */
+  stepRow: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({ runId: TrimmedNonEmptyString, index: NonNegativeInt, step: BoardCiPassStep }),
+      Schema.Struct({
+        runId: TrimmedNonEmptyString,
+        index: NonNegativeInt,
+        patch: Schema.Struct({
+          status: BoardCiStepStatus,
+          finishedAt: Schema.NullOr(IsoDateTime),
+          note: Schema.optionalKey(Schema.String),
+        }),
+      }),
+    ]),
+  ),
   /** The activity row this record writes, if any. */
   activity: Schema.NullOr(
     Schema.Struct({
@@ -7498,10 +7558,12 @@ export const BoardCardCiRecordedPayload = Schema.Struct({
         "card-ci-sent-back",
         "card-ci-skipped",
         "card-ci-stopped",
+        "card-ci-step-skip",
       ]),
       ciOutcome: Schema.optionalKey(BoardCiPassOutcome),
       ciStepName: Schema.optionalKey(TrimmedNonEmptyString),
       ciFixAttempts: Schema.optionalKey(NonNegativeInt),
+      ciStepSkip: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 });
@@ -9472,6 +9534,9 @@ export const BOARD_WS_METHODS = {
       a stopped or held CI pass, like Skip CI. */
   retryCi: "board.retryCi",
   ciSendBack: "board.ciSendBack",
+  /** T3o (T3O-130): a human skips one step of a queued or running pass, marks a pending
+      one to skip this visit, or unmarks it. */
+  ciSkipStep: "board.ciSkipStep",
   // Stage and project config, at the settings-write tier.
   dispatchSettingsCommand: "board.dispatchSettingsCommand",
   getProjectConfig: "board.projectConfig.get",
@@ -9684,6 +9749,32 @@ export const BoardCiActionInput = Schema.Struct({
   action: Schema.optionalKey(Schema.Literals(["retry", "stop"])),
 });
 export type BoardCiActionInput = typeof BoardCiActionInput.Type;
+
+/** T3o (T3O-130): skip (or, `skip: false`, unmark) step `stepIndex` of pass `runId`. */
+export const BoardCiSkipStepInput = Schema.Struct({
+  cardId: BoardCardId,
+  runId: TrimmedNonEmptyString,
+  stepIndex: NonNegativeInt,
+  skip: Schema.Boolean,
+});
+export type BoardCiSkipStepInput = typeof BoardCiSkipStepInput.Type;
+
+/** What a step skip did. `skipped` stopped a running step, `marked` will skip a pending one,
+    `unskipped` took a mark off. `not-running` is a pass no longer queued or running, a stale
+    run id, or a step that has already settled; `last-step` would leave nothing to run. */
+export const BoardCiSkipStepResult = Schema.Struct({
+  outcome: Schema.Literals([
+    "skipped",
+    "marked",
+    "unskipped",
+    "not-running",
+    "not-in-ci",
+    "unknown-card",
+    "last-step",
+    "failed",
+  ]),
+});
+export type BoardCiSkipStepResult = typeof BoardCiSkipStepResult.Type;
 
 /**
  * Its own input so merge, submit and review-round never carry `force`. `force` is a human
@@ -10347,6 +10438,11 @@ export const BOARD_RPCS = [
     success: BoardCiActionResult,
     error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(BOARD_WS_METHODS.ciSkipStep, {
+    payload: BoardCiSkipStepInput,
+    success: BoardCiSkipStepResult,
+    error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(BOARD_WS_METHODS.dispatchSettingsCommand, {
     payload: BoardSettingsClientCommand,
     success: Schema.Struct({ sequence: NonNegativeInt }),
@@ -10418,6 +10514,7 @@ export const BOARD_RPC_SCOPES = {
   [BOARD_WS_METHODS.skipCi]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.retryCi]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.ciSendBack]: AuthOrchestrationOperateScope,
+  [BOARD_WS_METHODS.ciSkipStep]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.removeCardWorktree]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.checkCardWorktree]: AuthOrchestrationOperateScope,
   // The move reads the source worker's git and then changes where the

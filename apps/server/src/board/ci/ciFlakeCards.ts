@@ -475,6 +475,8 @@ export function boardCiPassFlakes(
       ...(command === undefined ? {} : { command }),
       ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
     };
+    // T3o (T3O-130): a skipped step's output vouches for nothing, flakes included.
+    if (step.status === "skipped") return [];
     if (step.status === "passed") {
       return (step.flaky ?? []).map((entry): BoardCiFlake => {
         const reported = failures.find(

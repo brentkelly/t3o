@@ -765,6 +765,14 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
             yield* running({});
             const fileIndex = index + (request.indexOffset ?? 0);
             const resultPath = NodePath.join(request.logDir, `${fileIndex}.result.json`);
+            // T3o (T3O-130): a step re-run under the same run id never reads a killed run's result.
+            yield* Effect.sync(() => {
+              try {
+                NodeFS.rmSync(resultPath, { force: true });
+              } catch {
+                // An unremovable file is read and rejected like any stale result.
+              }
+            });
             // The reporter's scope ends with the step, before its settled row.
             const facts = new BoardCiFailureFacts();
             const { exit, progress } = yield* Effect.scoped(

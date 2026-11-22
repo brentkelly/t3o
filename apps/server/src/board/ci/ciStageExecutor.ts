@@ -16,6 +16,7 @@ import {
   decodeBoardCiFixPayload,
   isBoardCiStageExecution,
   isBoardCiStepFailure,
+  isBoardCiStepSkipped,
   parseBoardCiAgentStepId,
   parseBoardCiFixStepId,
   type BoardCardCi,
@@ -225,6 +226,7 @@ export const CiStageExecutor: BoardStageExecutor = {
         issues: runState.ciIssues ?? [],
         ...(triage ? { triage: true } : {}),
         ...(notFlakyTitle === null ? {} : { notFlakyTitle }),
+        skipped: ci.steps.filter((step) => isBoardCiStepSkipped(ci, step)).map((step) => step.name),
       }),
       model:
         config.cardOverride === null
