@@ -234,10 +234,10 @@ function boardLinkedPullRequestLines(
   ];
 }
 
-/** Regrouping needs a human: an unattended run has no one to confirm
-    it, so it never regroups. */
-export const BOARD_ENVELOPE_REGROUP_GUARD =
-  "Do not regroup cards (move them between groups, indent, outdent, group them, or change a group's settings) without a human's explicit confirmation.";
+/** Turning automation on stands in for a human approving work: an unattended run has no one
+    to confirm it, so it never does. Regrouping is free (T3O-114). */
+export const BOARD_ENVELOPE_AUTOMATION_GUARD =
+  "Do not turn a card's or group's Automation toggles on without a human's explicit confirmation.";
 
 /** An unattended run carries the `/unattended` stance. The completion sentence is the only
     place a `stepId` is named, and only on a stepped stage. */
@@ -288,7 +288,7 @@ export function boardStepPostamble(input: {
         input.role === "plan" && input.autoPlan === true
           ? BOARD_AUTO_PLAN_NO_QUESTIONS
           : boardBlockedInstruction(step.stepId),
-        BOARD_ENVELOPE_REGROUP_GUARD,
+        BOARD_ENVELOPE_AUTOMATION_GUARD,
       ];
   const deliverable =
     input.role === "plan"

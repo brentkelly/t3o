@@ -437,9 +437,12 @@ const BoardListProjectsTool = Tool.make("board_list_projects", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Idempotent, true);
 
+/** Ignored: regrouping needs no approval. Still accepted so callers on older tool text don't break. */
+const regroupApproved = Schema.optional(Schema.Boolean);
+
 const BoardCreateCardTool = Tool.make("board_create_card", {
   description:
-    "Create a new board card and return its allocated key. Use it to populate a board conversationally, e.g. one card per feature. Omit projectId to create the card in this thread's own project (the common case); pass one only to target a different project. A projectId is matched first as a project id, then leniently against a project's title or workspace-root folder name, so a name from the app usually resolves, but the id from board_list_projects is unambiguous. An unresolvable projectId is rejected with the live project list. A card may be created into ANY existing stage. Omit stage for Backlog, or, under a parent group that has already started, for Planning, which begins a planning run; pass stage 'backlog' to park a card there instead. CAUTION: creating into an auto-executing stage (e.g. Building) starts an unattended agent run immediately, with a worktree and a share of its worker's CPU, RAM and disk. Default to the early stages unless a human asked for mid-pipeline work; the build-onward dependency gate still applies. When you make a card for an existing pull request, pass pullRequest so the card tracks it (status, merge, settling) from the start: a url, or repository and number; it must be on the card's project repository, and a pull request the forge cannot find rejects the call before any card is made. NOT idempotent: a retried call creates a second card, so on a timeout list cards before retrying. Labels are named against the existing catalogue; an unknown label name is rejected with the live list rather than created, so create a new label with board_manage_labels first. dependsOn lists card ids this card waits on. parentCardId (a card key or id) creates the card inside that group. If that card is not a group yet, this turns it into one, which is regrouping: describe it to the user, get their explicit confirmation, and only then pass approved: true (the server refuses without it). A card already being built cannot become a group. Dependencies may cross groups; a dependency on a group is met when the whole group is done. A card cannot depend on a group it is inside, and a group cannot depend on a card inside it. mergeStrategy sets how this card's pull request merges (squash, merge or rebase); omit it to follow its group's strategy or the board default. An upstream-sync card must use merge, or the upstream ancestry is lost. priority (low, normal, high or urgent) decides which waiting card gets the next worker slot; set it only when the user directs it, and it defaults to normal.",
+    "Create a new board card and return its allocated key. Use it to populate a board conversationally, e.g. one card per feature. Omit projectId to create the card in this thread's own project (the common case); pass one only to target a different project. A projectId is matched first as a project id, then leniently against a project's title or workspace-root folder name, so a name from the app usually resolves, but the id from board_list_projects is unambiguous. An unresolvable projectId is rejected with the live project list. A card may be created into ANY existing stage. Omit stage for Backlog, or, under a parent group that has already started, for Planning, which begins a planning run; pass stage 'backlog' to park a card there instead. CAUTION: creating into an auto-executing stage (e.g. Building) starts an unattended agent run immediately, with a worktree and a share of its worker's CPU, RAM and disk. Default to the early stages unless a human asked for mid-pipeline work; the build-onward dependency gate still applies. When you make a card for an existing pull request, pass pullRequest so the card tracks it (status, merge, settling) from the start: a url, or repository and number; it must be on the card's project repository, and a pull request the forge cannot find rejects the call before any card is made. NOT idempotent: a retried call creates a second card, so on a timeout list cards before retrying. Labels are named against the existing catalogue; an unknown label name is rejected with the live list rather than created, so create a new label with board_manage_labels first. dependsOn lists card ids this card waits on. parentCardId (a card key or id) creates the card inside that group. If that card is not a group yet, this turns it into one. A card already being built cannot become a group. Dependencies may cross groups; a dependency on a group is met when the whole group is done. A card cannot depend on a group it is inside, and a group cannot depend on a card inside it. mergeStrategy sets how this card's pull request merges (squash, merge or rebase); omit it to follow its group's strategy or the board default. An upstream-sync card must use merge, or the upstream ancestry is lost. priority (low, normal, high or urgent) decides which waiting card gets the next worker slot; set it only when the user directs it, and it defaults to normal.",
   parameters: Schema.Struct({
     projectId: Schema.optional(ProjectId),
     title: TrimmedNonEmptyString,
@@ -450,8 +453,7 @@ const BoardCreateCardTool = Tool.make("board_create_card", {
     dependsOn: Schema.optional(Schema.Array(BoardCardId)),
     /** Card key or id of the group to create the card inside. */
     parentCardId: Schema.optional(TrimmedNonEmptyString),
-    /** Required when parentCardId is not a group yet: a human confirmed it. */
-    approved: Schema.optional(Schema.Boolean),
+    approved: regroupApproved,
     /** A pull request on the project's repository for the card to track. */
     pullRequest: Schema.optional(BoardCardPullRequestTarget),
     mergeStrategy: Schema.optional(BoardMergeStrategy),
@@ -464,7 +466,7 @@ const BoardCreateCardTool = Tool.make("board_create_card", {
 
 const BoardMoveCardTool = Tool.make("board_move_card", {
   description:
-    "Move a card to another stage, into another group, or both. A stage move obeys the same rules a human drag obeys: a blocked card (unmet dependencies) cannot cross into the build stage or beyond, and you have no privileged path around that. Set override to move to a non-adjacent stage (e.g. dragging backwards). A group's stage follows its children, so moving a group only places it before Building, or starts it at Building. CAUTION: the server does not require a human sign-off on forward moves: moving a card into an auto-executing stage starts an unattended agent run (a worktree and a share of its worker's CPU, RAM and disk). Use this for board tidying and explicitly requested moves, not to advance your own work; leave forward transitions to a human unless one asked you to make them. parentCardId (a card key or id, or null for the top level) moves the card into that group; pass afterCardId or beforeCardId to place it next to a card already there. With both, the regroup happens first and stays if the stage move is then refused. REGROUPING NEEDS A HUMAN: moving cards between groups changes how they build and where they merge, so before calling, describe the regrouping to the user, get their explicit confirmation, and only then pass approved: true. The server refuses a regroup without it. Columns order cards by priority first, so a card always shows within its own priority level: name an afterCardId or beforeCardId of the same priority, since an anchor at another level does not place it next to that card.",
+    "Move a card to another stage, into another group, or both. A stage move obeys the same rules a human drag obeys: a blocked card (unmet dependencies) cannot cross into the build stage or beyond, and you have no privileged path around that. Set override to move to a non-adjacent stage (e.g. dragging backwards). A group's stage follows its children, so moving a group only places it before Building, or starts it at Building. CAUTION: the server does not require a human sign-off on forward moves: moving a card into an auto-executing stage starts an unattended agent run (a worktree and a share of its worker's CPU, RAM and disk). Use this for board tidying and explicitly requested moves, not to advance your own work; leave forward transitions to a human unless one asked you to make them. The card may run on another machine: moving it backwards interrupts the agent working it there, and its dirty or unpushed work is kept by reclaim, or snapshotted when the card moves to Done. parentCardId (a card key or id, or null for the top level) moves the card into that group; pass afterCardId or beforeCardId to place it next to a card already there. With both, the regroup happens first and stays if the stage move is then refused. Moving a card into a group gives it that group's Automation toggles wherever it does not set its own. Columns order cards by priority first, so a card always shows within its own priority level: name an afterCardId or beforeCardId of the same priority, since an anchor at another level does not place it next to that card.",
   parameters: Schema.Struct({
     cardId: BoardCardId,
     toStage: Schema.optional(BoardStageId),
@@ -473,8 +475,7 @@ const BoardMoveCardTool = Tool.make("board_move_card", {
     parentCardId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     afterCardId: Schema.optional(TrimmedNonEmptyString),
     beforeCardId: Schema.optional(TrimmedNonEmptyString),
-    /** True only once a human confirmed this regrouping. */
-    approved: Schema.optional(Schema.Boolean),
+    approved: regroupApproved,
   }),
   success: Schema.Struct({ cardId: BoardCardId, stage: BoardStageId }),
   failure: BoardToolFailure,
@@ -529,7 +530,7 @@ const BoardCardWriteResult = Schema.Struct({
 
 const BoardArchiveCardTool = Tool.make("board_archive_card", {
   description:
-    "Archive a card: the reversible way to take it off the board. The card, its threads, its history and its dependency edges all survive; it leaves the columns, stops gating the cards that depend on it, and is still readable in the archive. Use it for cards that are done with, duplicated, or no longer wanted. Rejected on a card that is already archived, on a card whose plan cards are still unfinished (finish or archive those first), and on YOUR OWN card (archiving reclaims the worktree you are running in and unarchiving does not bring it back), so ask a human to do it from the app. Allowed on a card ANOTHER agent is working on (it is the softer route board_delete_card points at), but it is not free there: the in-flight step is settled as abandoned, so that agent's turn is orphaned, and the card's checkout is reclaimed unless it holds uncommitted or unpushed work. Wait for the step to settle if you are only tidying. Reverse it with board_unarchive_card; use board_delete_card only when nothing should survive. ARCHIVING A WHOLE GROUP: pass confirmCardKey (the group's own key) to archive the group and every card inside it, Deferred ones included, for good: every thread stops, every pull request closes, and every worktree and branch is deleted, remote copies included. Unarchiving brings back the cards, plans and history, never the branch work. Describe exactly that to the user, get their explicit confirmation, and only then pass approved: true. The server refuses without it.",
+    "Archive a card: the reversible way to take it off the board. The card, its threads, its history and its dependency edges all survive; it leaves the columns, stops gating the cards that depend on it, and is still readable in the archive. Use it for cards that are done with, duplicated, or no longer wanted. Rejected on a card that is already archived, on a card whose plan cards are still unfinished (finish or archive those first), and on YOUR OWN card (archiving reclaims the worktree you are running in and unarchiving does not bring it back), so ask a human to do it from the app. Allowed on a card ANOTHER agent is working on (it is the softer route board_delete_card points at), but it is not free there: the in-flight step is settled as abandoned, so that agent's turn is orphaned, and the card's checkout is reclaimed unless it holds uncommitted or unpushed work. Wait for the step to settle if you are only tidying. The card may run on another machine, where archiving interrupts the agent working it; its dirty or unpushed work is kept by reclaim. Reverse it with board_unarchive_card; use board_delete_card only when nothing should survive. ARCHIVING A WHOLE GROUP: pass confirmCardKey (the group's own key) to archive the group and every card inside it, Deferred ones included, for good: every thread stops, every pull request closes, and every worktree and branch is deleted, remote copies included. Unarchiving brings back the cards, plans and history, never the branch work. Describe exactly that to the user, get their explicit confirmation, and only then pass approved: true. The server refuses without it, and refuses a whole-group archive from another worker when a card inside runs elsewhere; archiving each child card separately is allowed.",
   parameters: Schema.Struct({
     cardId: BoardCardId,
     /** The group's own key, to archive its whole subtree and discard its work. */
@@ -567,11 +568,9 @@ const BoardRegroupResult = Schema.Struct({
   parentKey: Schema.NullOr(TrimmedNonEmptyString),
 });
 
-const regroupApproved = Schema.optional(Schema.Boolean);
-
 const BoardIndentCardsTool = Tool.make("board_indent_cards", {
   description:
-    "Indent cards one level: they move inside the card just above them, which becomes a group if it is not one yet. The cards must share a parent. A card already being built cannot become a group. Grouping alone never touches git. REGROUPING NEEDS A HUMAN: moving cards between groups changes how they build and where they merge, so before calling, describe the regrouping to the user, get their explicit confirmation, and only then pass approved: true. The server refuses a regroup without it.",
+    "Indent cards one level: they move inside the card just above them, which becomes a group if it is not one yet. The cards must share a parent. A card already being built cannot become a group. Grouping alone never touches git.",
   parameters: Schema.Struct({
     /** Card keys or ids, all under the same parent. */
     cardIds: Schema.Array(TrimmedNonEmptyString),
@@ -584,7 +583,7 @@ const BoardIndentCardsTool = Tool.make("board_indent_cards", {
 
 const BoardOutdentCardsTool = Tool.make("board_outdent_cards", {
   description:
-    "Outdent cards one level: they move out of their group to sit directly after it. The cards must share a parent. A group left with no cards becomes an ordinary card again, no further on than Sprint. REGROUPING NEEDS A HUMAN: moving cards between groups changes how they build and where they merge, so before calling, describe the regrouping to the user, get their explicit confirmation, and only then pass approved: true. The server refuses a regroup without it.",
+    "Outdent cards one level: they move out of their group to sit directly after it. The cards must share a parent. A group left with no cards becomes an ordinary card again, no further on than Sprint.",
   parameters: Schema.Struct({
     /** Card keys or ids, all under the same parent. */
     cardIds: Schema.Array(TrimmedNonEmptyString),
@@ -597,7 +596,7 @@ const BoardOutdentCardsTool = Tool.make("board_outdent_cards", {
 
 const BoardGroupCardsTool = Tool.make("board_group_cards", {
   description:
-    "Put cards into a new group titled title, created beside them under their shared parent. The cards must share a parent. Returns the new group's key. REGROUPING NEEDS A HUMAN: moving cards between groups changes how they build and where they merge, so before calling, describe the regrouping to the user, get their explicit confirmation, and only then pass approved: true. The server refuses a regroup without it.",
+    "Put cards into a new group titled title, created beside them under their shared parent. The cards must share a parent. Returns the new group's key.",
   parameters: Schema.Struct({
     /** Card keys or ids, all under the same parent. */
     cardIds: Schema.Array(TrimmedNonEmptyString),
@@ -615,7 +614,7 @@ const BoardGroupCardsTool = Tool.make("board_group_cards", {
 
 const BoardNewPhaseTool = Tool.make("board_new_phase", {
   description:
-    "Start the next phase of a group: its deferred cards (cardIds, each one in the group's Deferred column) move into a new group titled title, created next to the group under the same parent, and land in that new group's Backlog. Use it when the deferred work of a group is to be planned and built as its own round. Returns the new group's key. REGROUPING NEEDS A HUMAN: describe the new phase and the cards moving into it to the user, get their explicit confirmation, and only then pass approved: true. The server refuses without it.",
+    "Start the next phase of a group: its deferred cards (cardIds, each one in the group's Deferred column) move into a new group titled title, created next to the group under the same parent, and land in that new group's Backlog. Use it when the deferred work of a group is to be planned and built as its own round. Returns the new group's key.",
   parameters: Schema.Struct({
     /** Card key or id of the group whose deferred cards move. */
     groupCardId: TrimmedNonEmptyString,
@@ -635,7 +634,7 @@ const BoardNewPhaseTool = Tool.make("board_new_phase", {
 
 const BoardShareParentTool = Tool.make("board_share_parent", {
   description:
-    "Give a card that is already being built some sibling cards: a new group titled title is created where that card sits, and the card and cardIds all move into it, side by side. Use it when someone wants cards under a card whose work has started; a started card cannot become a group itself. The started card keeps its branch and where it merges. Returns the new group's key. REGROUPING NEEDS A HUMAN: describe the regrouping to the user, get their explicit confirmation, and only then pass approved: true. The server refuses without it.",
+    "Give a card that is already being built some sibling cards: a new group titled title is created where that card sits, and the card and cardIds all move into it, side by side. Use it when someone wants cards under a card whose work has started; a started card cannot become a group itself. The started card keeps its branch and where it merges. Returns the new group's key.",
   parameters: Schema.Struct({
     /** Card key or id of the started card. */
     cardId: TrimmedNonEmptyString,
@@ -675,7 +674,7 @@ const BoardCancelCardWorkTool = Tool.make("board_cancel_card_work", {
 
 const BoardSetGroupSettingsTool = Tool.make("board_set_group_settings", {
   description:
-    "Change a group's settings, which every child that does not set its own value inherits. target 'own' gives the group its own integration branch, which its children merge into and which is reviewed and merged to its own target once they are all done; 'inherit' passes the children through to wherever the group itself lands. Switching to 'own' turns autoMerge on and switching to 'inherit' turns it off, unless you pass autoMerge too. target is locked while any card inside has started building. autoBuild: ready children with their dependencies met start themselves; turning it off never stops a running child. autoMerge: children merge themselves, into the group's branch or wherever they land. autoPlan: children are planned by the agent without questions. autoSignOff: a child's finished planning is approved without a human, a single plan or a split; without it the plan waits for approval. Only the fields you pass change, and they apply at once to inheriting children already under way. These settings decide how cards build and merge, so describe the change to the user, get their explicit confirmation, and only then pass approved: true. The server refuses without it.",
+    "Change a group's settings, which every child that does not set its own value inherits. target 'own' gives the group its own integration branch, which its children merge into and which is reviewed and merged to its own target once they are all done; 'inherit' passes the children through to wherever the group itself lands. Switching to 'own' turns autoMerge on and switching to 'inherit' turns it off, unless you pass autoMerge too. target is locked while any card inside has started building. autoBuild: ready children with their dependencies met start themselves; turning it off never stops a running child. autoMerge: children merge themselves, into the group's branch or wherever they land. autoPlan: children are planned by the agent without questions. autoSignOff: a child's finished planning is approved without a human, a single plan or a split; without it the plan waits for approval. Only the fields you pass change, and they apply at once to inheriting children already under way. Turning autoPlan, autoSignOff, autoBuild or autoMerge on stands in for a human approving and starting work for every card inside, so it needs a human: confirm with the user, then pass approved: true. Switching target to 'own' turns autoMerge on too unless you pass autoMerge: false. The server refuses without approved, and refuses an unattended run. Every other change (switching to 'inherit', turning a toggle off) needs no approval.",
   parameters: Schema.Struct({
     /** Card key or id of the group. */
     cardId: TrimmedNonEmptyString,
@@ -684,7 +683,8 @@ const BoardSetGroupSettingsTool = Tool.make("board_set_group_settings", {
     autoMerge: Schema.optional(Schema.Boolean),
     autoPlan: Schema.optional(Schema.Boolean),
     autoSignOff: Schema.optional(Schema.Boolean),
-    approved: regroupApproved,
+    /** True only once a human confirmed turning an Automation flag on. */
+    approved: Schema.optional(Schema.Boolean),
   }),
   success: Schema.Struct({ cardId: BoardCardId, key: TrimmedNonEmptyString }),
   failure: BoardToolFailure,

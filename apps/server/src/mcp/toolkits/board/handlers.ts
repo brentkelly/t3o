@@ -66,6 +66,7 @@ import {
   type BoardState,
   unmetBoardCardDependencies,
   boardCardGroupOf,
+  boardGroupFlagsTurnedOn,
   boardCardAncestors,
   sortBoardCardDecisions,
   type BoardCardRecordDecisionsCommand,
@@ -526,31 +527,30 @@ const refuseOwnCard = (
 };
 
 /**
- * Refuse a relayed write for a card that runs on another worker: an agent on one worker may
- * change its own card and the cards that run there, never another worker's. Calls from this
- * server's own threads are not relayed and pass.
+ * Refuse a relayed DESTRUCTIVE act on a card that runs on another worker: delete, cancel-work and
+ * whole-group archive throw that machine's work away for good. Every other write may name a card
+ * on any worker (T3O-114). Calls from this server's own threads are not relayed and pass.
  */
-const refuseOtherWorkersCard = Effect.fn("BoardToolkit.refuseOtherWorkersCard")(function* (
-  board: BoardState,
-  scope: McpThreadInvocationScope,
-  card: BoardCard,
-): Effect.fn.Return<void, BoardToolError> {
-  const relayed = yield* Effect.serviceOption(BoardRelayInvocation);
-  if (Option.isNone(relayed)) return;
-  if (resolveBoardCardForThread(board, scope.thread.threadId)?.id === card.id) return;
-  // T3o: only a card placed on another worker is refused; an unplaced card and every group
-  // card belong to no worker, so a build agent keeps write access to them (T3O-87).
-  const target = card.group !== null ? null : boardCardPlacementTarget(card);
-  if (target === null || target === relayed.value.workerId) return;
-  // T3o: a schedule run on a worker is bound the same way until T3O-114 relaxes it (T3O-118).
-  const scheduleRun = (yield* scheduleCaller(scope.thread.threadId)) !== null;
-  return yield* new BoardToolError({
-    code: "rejected",
-    message: `'${card.key}' runs on another worker, so it cannot be changed from this one: ask a human to do it from the app.${
-      scheduleRun ? " Schedule runs can't change cards on other machines yet (T3O-114)." : ""
-    }`,
-  });
-});
+const refuseOtherWorkersDestructive = Effect.fn("BoardToolkit.refuseOtherWorkersDestructive")(
+  function* (
+    board: BoardState,
+    scope: McpThreadInvocationScope,
+    card: BoardCard,
+    act: string,
+  ): Effect.fn.Return<void, BoardToolError> {
+    const relayed = yield* Effect.serviceOption(BoardRelayInvocation);
+    if (Option.isNone(relayed)) return;
+    if (resolveBoardCardForThread(board, scope.thread.threadId)?.id === card.id) return;
+    // T3o: only a card placed on another worker is refused; an unplaced card and every group
+    // card belong to no worker (T3O-87).
+    const target = card.group !== null ? null : boardCardPlacementTarget(card);
+    if (target === null || target === relayed.value.workerId) return;
+    return yield* new BoardToolError({
+      code: "rejected",
+      message: `'${card.key}' runs on another worker, and ${act} there can't be done from this one: ask a human to do it from the app.`,
+    });
+  },
+);
 
 /**
  * Refuse a delete aimed at a card another agent is still working on: it force-reclaims the
@@ -913,28 +913,12 @@ const refuseUnattendedApproval = Effect.fn("BoardToolkit.refuseUnattendedApprova
   }
 });
 
-/**
- * Regrouping is direct but needs a human's say-so: the agent must
- * describe the change, get explicit confirmation, and pass `approved: true`.
- */
-const requireRegroupApproval = Effect.fn("BoardToolkit.requireRegroupApproval")(function* (
-  deps: BoardToolDeps,
-  approved: boolean | undefined,
-  card?: BoardCard,
-): Effect.fn.Return<void, BoardToolError> {
-  if (approved !== true) {
-    return yield* new BoardToolError({
-      code: "invalid-input",
-      message:
-        "Regrouping changes how cards build and where they merge, so it needs a human. Describe the regrouping to the user, ask them to confirm it, and once they have, call again with approved: true.",
-    });
-  }
-  yield* refuseUnattendedApproval(
-    deps,
-    "This run is unattended, so nobody can confirm a regrouping. Leave the board's grouping as it is and mention the suggestion in your summary for a human to apply.",
-    card,
-  );
-});
+const GROUP_FLAG_LABELS = {
+  autoPlan: "Auto-plan",
+  autoSignOff: "Auto sign-off",
+  autoBuild: "Auto-build",
+  autoMerge: "Auto-merge",
+} as const;
 
 /** A destructive group flow needs a human's explicit say-so. */
 const requireDestructiveApproval = (
@@ -1426,11 +1410,6 @@ const rawBoardHandlers = {
       input.parentCardId === undefined
         ? undefined
         : yield* findCardByKeyOrId(board, input.parentCardId);
-    // Creating under a leaf converts it to a group: the same regrouping
-    // board_indent_cards gates behind a human.
-    if (parent !== undefined && boardCardGroupOf(board, parent) === null) {
-      yield* requireRegroupApproval(deps, input.approved, parent);
-    }
     const cardId = BoardCardId.make(yield* mintUuid);
     // ONE atomic command: the create command carries `brief` and `dependsOn`
     // natively, so the card lands whole — no follow-up update whose
@@ -1491,7 +1470,6 @@ const rawBoardHandlers = {
     const deps = yield* boardToolDeps;
     let board = yield* readBoardState(deps);
     let card = board.cards.find((candidate) => candidate.id === input.cardId);
-    if (card !== undefined) yield* refuseOtherWorkersCard(board, deps.scope, card);
     if (input.toStage === undefined && input.parentCardId === undefined) {
       return yield* new BoardToolError({
         code: "invalid-input",
@@ -1500,8 +1478,7 @@ const rawBoardHandlers = {
     }
     // Regrouping first, so a stage move lands in the new group.
     if (input.parentCardId !== undefined) {
-      yield* requireRegroupApproval(deps, input.approved);
-      const target = yield* requireTargetCard(board, input.cardId);
+        const target = yield* requireTargetCard(board, input.cardId);
       const parent =
         input.parentCardId === null ? null : yield* findCardByKeyOrId(board, input.parentCardId);
       const after =
@@ -1563,7 +1540,6 @@ const rawBoardHandlers = {
     const board = yield* readBoardState(deps);
     // The target takes a key as readily as its dependency fields do.
     const target = yield* findCardByKeyOrId(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, target);
     const cardId = target.id;
     const labels =
       input.labels === undefined ? undefined : yield* resolveLabelIds(board, input.labels);
@@ -1686,10 +1662,8 @@ const rawBoardHandlers = {
 
   board_indent_cards: Effect.fn("BoardToolkit.board_indent_cards")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of cards) yield* refuseOtherWorkersCard(board, deps.scope, card);
     const plan = boardIndentPlan(
       board,
       cards.map((card) => card.id),
@@ -1700,10 +1674,8 @@ const rawBoardHandlers = {
 
   board_outdent_cards: Effect.fn("BoardToolkit.board_outdent_cards")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of cards) yield* refuseOtherWorkersCard(board, deps.scope, card);
     const plan = boardOutdentPlan(
       board,
       cards.map((card) => card.id),
@@ -1714,10 +1686,8 @@ const rawBoardHandlers = {
 
   board_group_cards: Effect.fn("BoardToolkit.board_group_cards")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of cards) yield* refuseOtherWorkersCard(board, deps.scope, card);
     const plan = boardGroupIntoNewPlan(
       board,
       cards.map((card) => card.id),
@@ -1748,13 +1718,9 @@ const rawBoardHandlers = {
 
   board_share_parent: Effect.fn("BoardToolkit.board_share_parent")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const started = yield* findCardByKeyOrId(board, input.cardId);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of [started, ...cards]) {
-      yield* refuseOtherWorkersCard(board, deps.scope, card);
-    }
     const plan = boardSharedParentPlan(
       board,
       started.id,
@@ -1785,13 +1751,9 @@ const rawBoardHandlers = {
 
   board_new_phase: Effect.fn("BoardToolkit.board_new_phase")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const group = yield* findCardByKeyOrId(board, input.groupCardId);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of [group, ...cards]) {
-      yield* refuseOtherWorkersCard(board, deps.scope, card);
-    }
     const plan = boardNewPhasePlan(
       board,
       group.id,
@@ -1832,7 +1794,7 @@ const rawBoardHandlers = {
     );
     const board = yield* readBoardState(deps);
     const card = yield* findCardByKeyOrId(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
+    yield* refuseOtherWorkersDestructive(board, deps.scope, card, "cancelling its work");
     yield* refuseOwnCard(
       board,
       deps.scope,
@@ -1840,7 +1802,6 @@ const rawBoardHandlers = {
       "Cancelling its work stops this thread and reclaims the worktree you are running in",
     );
     const cards = yield* resolveCardRefs(board, input.cardIds ?? []);
-    for (const moving of cards) yield* refuseOtherWorkersCard(board, deps.scope, moving);
     const command: BoardCardCancelWorkCommand = {
       type: "board.card.cancel-work",
       commandId: yield* mintCommandId,
@@ -1856,10 +1817,32 @@ const rawBoardHandlers = {
 
   board_set_group_settings: Effect.fn("BoardToolkit.board_set_group_settings")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const card = yield* findCardByKeyOrId(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
+    // Regrouping is free; only turning a group's Automation flag on stands in for a human,
+    // since every card in the group inherits it. Not a group: the decider says so.
+    const group = boardCardGroupOf(board, card);
+    const turnedOn =
+      group === null
+        ? []
+        : boardGroupFlagsTurnedOn({
+            group,
+            change: input,
+            boardWideAutoMerge: yield* boardWideAutoMergeNow(board),
+          });
+    if (turnedOn.length > 0) {
+      if (input.approved !== true) {
+        return yield* new BoardToolError({
+          code: "invalid-input",
+          message: `This turns the group's ${turnedOn.map((flag) => GROUP_FLAG_LABELS[flag]).join(", ")} on for every card inside it, which stands in for a human approving and starting work. Ask the user to confirm it, and once they have, call again with approved: true.`,
+        });
+      }
+      yield* refuseUnattendedApproval(
+        deps,
+        "This run is unattended, so nobody can confirm turning a group's automation on. Leave the group as it is and mention the suggestion in your summary for a human to apply.",
+        card,
+      );
+    }
     const command: BoardCardSetGroupSettingsCommand = {
       type: "board.card.set-group-settings",
       commandId: yield* mintCommandId,
@@ -1879,7 +1862,6 @@ const rawBoardHandlers = {
     const deps = yield* boardToolDeps;
     const board = yield* readBoardState(deps);
     const card = yield* requireTargetCard(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
     yield* refuseOwnCard(
       board,
       deps.scope,
@@ -1893,7 +1875,7 @@ const rawBoardHandlers = {
         "Archiving a whole group stops its threads, closes its pull requests and deletes its branches, which",
       );
       for (const descendant of boardCardLiveDescendants(board, card.id)) {
-        yield* refuseOtherWorkersCard(board, deps.scope, descendant);
+        yield* refuseOtherWorkersDestructive(board, deps.scope, descendant, "archiving its group");
         yield* refuseOwnCard(
           board,
           deps.scope,
@@ -1917,7 +1899,6 @@ const rawBoardHandlers = {
     const deps = yield* boardToolDeps;
     const board = yield* readBoardState(deps);
     const card = yield* requireTargetCard(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
     const command: BoardCardUnarchiveCommand = {
       type: "board.card.unarchive",
       commandId: yield* mintCommandId,
@@ -1935,7 +1916,7 @@ const rawBoardHandlers = {
     // card left to read one off, and "deleted card-4f3a…" is not an answer a
     // human can check.
     const card = yield* requireTargetCard(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
+    yield* refuseOtherWorkersDestructive(board, deps.scope, card, "deleting it");
     yield* refuseOwnCard(
       board,
       deps.scope,
@@ -2291,7 +2272,6 @@ const rawBoardHandlers = {
         "Turning its automation on would authorise your own work and can interrupt this very turn",
       );
     }
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
     const command: BoardCardSetAutomationCommand = {
       type: "board.card.set-automation",
       commandId: yield* mintCommandId,

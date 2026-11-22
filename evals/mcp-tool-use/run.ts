@@ -18,7 +18,7 @@ import {
   boardAutoPlanInstruction,
   BOARD_ENVELOPE_BUILD_DELIVERABLE,
   BOARD_ENVELOPE_PLAN_DELIVERABLE,
-  BOARD_ENVELOPE_REGROUP_GUARD,
+  BOARD_ENVELOPE_AUTOMATION_GUARD,
   boardStepPostamble,
   composeBoardReviewPhasePrompt,
   composePlanReviewInstructions,
@@ -355,7 +355,7 @@ const CASE_TEXT: Record<string, string> = {
   BOARD_AUTO_PLAN_REOPENED_APPROVED_INSTRUCTION: boardAutoPlanInstruction(true, { reopened: true }),
   BOARD_ENVELOPE_BUILD_DELIVERABLE,
   BOARD_ENVELOPE_PLAN_DELIVERABLE,
-  BOARD_ENVELOPE_REGROUP_GUARD,
+  BOARD_ENVELOPE_AUTOMATION_GUARD,
   BOARD_PLAN_REVIEW_INSTRUCTIONS: composePlanReviewInstructions({
     prompt: DEFAULT_BOARD_PLAN_REVIEW_PROMPT,
     rounds: 2,
