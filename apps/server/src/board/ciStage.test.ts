@@ -2792,6 +2792,48 @@ it.effect("T3O-130: skipping a parallel member restarts its group without it", (
   }),
 );
 
+// The runner's slice is contiguous (`indexOffset` on the worker wire), so a mark splits its group.
+it.effect("T3O-130: a step marked mid-group splits the group at the mark", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-mid-group", review);
+    const typecheck: BoardCiStep = { ...SCRIPT_B, id: "tc", name: "Typecheck", parallel: true };
+    const format: BoardCiStep = { ...SCRIPT_B, id: "fmt", name: "Format", parallel: true };
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B, typecheck, format]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 2), { outcome: "marked" });
+        yield* gated.settle("Lint", "passed");
+        yield* gated.started("Typecheck");
+        yield* h.reactor.drain;
+        yield* gated.settle("Test", "passed", 1);
+        yield* gated.settle("Format", "passed", 1);
+        yield* h.reactor.drainCi;
+        // The restart runs Test alone, then Format: the mark splits its group for the visit.
+        assert.deepStrictEqual(
+          gated
+            .requests()
+            .map((request) => [request.indexOffset ?? 0, request.steps.map((step) => step.name)]),
+          [
+            [0, ["Lint", "Test", "Typecheck", "Format"]],
+            [1, ["Test"]],
+            [3, ["Format"]],
+          ],
+        );
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+          "passed",
+          "passed",
+          "skipped",
+          "passed",
+        ]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
 it.effect("T3O-130: a skip never carries a pass past a parallel sibling's real failure", () =>
   Effect.gen(function* () {
     const gated = gatedRunner();

@@ -5070,7 +5070,8 @@ const make = Effect.gen(function* () {
       // human merges the card.
       const inconclusiveTargetAllowed =
         notFlakyTitle !== null && !(yield* cardAutoMergeArmed(fresh));
-      // A segment ends before a marked step, so the runner's slice stays contiguous.
+      // A segment ends before a marked step: the runner's slice is contiguous on the worker
+      // wire (`indexOffset`), so a mark splits a parallel group in two.
       let end = segment.end;
       for (let index = segment.start + 1; index < segment.end; index++) {
         if (marked(index)) {
