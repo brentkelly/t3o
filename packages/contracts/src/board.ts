@@ -3072,7 +3072,7 @@ export const BoardActivityActor = Schema.Struct({
   /** The agent's thread, so the rail can link back to the conversation. */
   threadId: Schema.NullOr(ThreadId),
   /** An agent writing to a card other than its own: its card's key, frozen at write time.
-      Absent for a schedule run, which has no card. */
+      Absent for a schedule run, which has no card, so its source shows only across workers. */
   sourceCardKey: Schema.optionalKey(TrimmedNonEmptyString),
   /** Present only when the writing agent ran on a different worker than the card. */
   sourceWorkerId: Schema.optionalKey(BoardWorkerId),

@@ -94,7 +94,8 @@ function ActorName({
 }
 
 /** Where an agent's write to this card came from: its own card, and the worker it ran on
-    when that differs from this card's. A schedule run has no card. */
+    when that differs from this card's. A schedule run has no card, so it is named only from
+    another worker; on the card's own machine its row is a plain agent row. */
 function ActorSource({
   actor,
   workerName,

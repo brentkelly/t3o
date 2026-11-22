@@ -27,7 +27,8 @@ const stamps = new Map<string, BoardActivityActor>();
  * cascade onto descendants or ancestors, and the caller's own card, carry no source.
  */
 export interface BoardActivitySource {
-  /** The caller's own card; null for a schedule run. */
+  /** The caller's own card; null for a schedule run, whose source therefore reaches a row
+      only through `sourceWorkerId`, i.e. only on a cross-worker target. */
   readonly sourceCardId: BoardCardId | null;
   readonly sourceCardKey: string | null;
   readonly sourceWorkerId: BoardWorkerId;
