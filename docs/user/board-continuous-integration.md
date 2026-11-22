@@ -214,12 +214,29 @@ space, then press **Retry CI**.
 steps and any CI agent are stopped, and the card waits with "Stopped by you" until you press Retry
 CI.
 
-Retry CI, Stop CI, Send back to review anyway and Skip CI are for people only; agents can't press
-them.
+Retry CI, Stop CI, Send back to review anyway, Skip CI and skipping a step are for people only;
+agents can't press them.
 
 Turning **Run CI for this project** off asks first when cards are in CI: they move on to Ready for
 merge with auto-merge off. Removing every step does not turn CI off: cards already in CI wait until
 you add a step and retry, and new cards skip CI.
+
+## Skipping a step
+
+While a pass is queued or running, each step that hasn't finished has a **Skip** button in the CI
+tab. On a running step it stops the step and the pass carries on from the next one. On a step that
+hasn't started, it marks the step "Will be skipped", and the pass skips it when it gets there;
+**Unskip** takes the mark off any time before then.
+
+- A skip lasts until the card leaves CI: the re-run after a fix, and Retry CI on a held pass, skip
+  it too. Retry CI on a stopped card, or the card's next time through CI, runs every step again. A
+  step skipped while it ran can be unskipped on the next re-run.
+- A skipped step is not a failure. A pass whose other steps pass is a pass, shown as "Passed · 1
+  skipped", and Auto-merge still runs.
+- You can't skip every step: use Skip CI for that.
+- Skipping a step that runs in parallel with others restarts the others in its group.
+- Skipping a step later steps depend on, such as an install or a build, can make them fail. That's
+  a real failure, and the fix agent sees it, along with which steps you skipped.
 
 ## Moving cards by hand
 
