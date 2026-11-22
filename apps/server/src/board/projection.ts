@@ -677,6 +677,9 @@ const BoardCardShellDbRow = Schema.Struct({
   autoPlanPending: Schema.Int,
   // T3o: the card's last blocked gate attempt (T3O-115), carried as it is stored.
   gateBlock: Schema.NullOr(Schema.fromJsonString(BoardCardGateBlock)),
+  /** T3o: queued in its base's merge queue this stay (T3O-128); the JS twin is
+      `boardCardMergeStayCounts(card).queuedAt !== null`. */
+  mergeQueued: Schema.Int,
   /** The card's auto-merge hold, flattened to the facts the shell carries:
       when the hold started and whether its ladder is spent.
       Derived in SQL here and in JS on the delta path;
@@ -1306,6 +1309,12 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         -- would appear
         -- after an edit and vanish on reconnect (cardMetaShellFields.test.ts
         -- asserts the pair).
+        -- T3o: the SECOND producer of mergeQueued (T3O-128): only this stay's queue place counts.
+        CASE
+          WHEN json_extract(merge_stay, '$.queuedAt') IS NOT NULL
+            AND json_extract(merge_stay, '$.stageEnteredAt') IS stage_entered_at THEN 1
+          ELSE 0
+        END AS "mergeQueued",
         json_extract(auto_merge_hold, '$.heldSince') AS "autoMergeHeldSince",
         -- Gave up is exactly "a hold with no next rung": an exhausted hold is
         -- KEPT (D10) so the card goes on saying why it stopped.
@@ -1413,6 +1422,12 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         -- would appear
         -- after an edit and vanish on reconnect (cardMetaShellFields.test.ts
         -- asserts the pair).
+        -- T3o: the SECOND producer of mergeQueued (T3O-128): only this stay's queue place counts.
+        CASE
+          WHEN json_extract(merge_stay, '$.queuedAt') IS NOT NULL
+            AND json_extract(merge_stay, '$.stageEnteredAt') IS stage_entered_at THEN 1
+          ELSE 0
+        END AS "mergeQueued",
         json_extract(auto_merge_hold, '$.heldSince') AS "autoMergeHeldSince",
         -- Gave up is exactly "a hold with no next rung": an exhausted hold is
         -- KEPT (D10) so the card goes on saying why it stopped.
@@ -4416,6 +4431,7 @@ function boardShellCards(
           autoMergeSetting: settingFromInt(row.autoMergeSetting),
           autoPlanPending: row.autoPlanPending !== 0,
           gateBlock: row.gateBlock,
+          mergeQueued: row.mergeQueued !== 0,
           autoMergeHeldSince: row.autoMergeHeldSince,
           autoMergeGaveUp: row.autoMergeGaveUp !== 0,
           prDraft: row.prDraft !== 0,
@@ -4513,6 +4529,7 @@ function boardArchivedShellCards(
             autoMergeSetting: settingFromInt(row.autoMergeSetting),
             autoPlanPending: row.autoPlanPending !== 0,
             gateBlock: row.gateBlock,
+            mergeQueued: row.mergeQueued !== 0,
             autoMergeHeldSince: row.autoMergeHeldSince,
             autoMergeGaveUp: row.autoMergeGaveUp !== 0,
             prDraft: row.prDraft !== 0,

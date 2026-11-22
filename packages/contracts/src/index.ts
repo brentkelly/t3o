@@ -54,6 +54,8 @@ export * from "./board.ts";
 export * from "./boardGroups.ts";
 // T3o: the automation gate-due model (T3O-115).
 export * from "./boardGates.ts";
+// T3o: the merge queue (T3O-128).
+export * from "./boardMergeQueue.ts";
 export * from "./boardUsage.ts";
 export * from "./boardEvent.ts";
 export * from "./boardWorkers.ts";

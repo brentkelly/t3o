@@ -102,6 +102,16 @@ import {
   applyBoardRetryJitter,
   boardCardAutoMergeArmed,
   boardCardMergeStayCounts,
+  // T3o: the merge queue (T3O-128).
+  BOARD_MERGE_BASE_FIX_PROMPT_SEGMENT,
+  BOARD_MERGE_BASE_FOLLOW_UP_HANDOFF,
+  BOARD_MERGE_QUEUE_FOLLOW_UP_LIMIT,
+  boardMergeQueueHeads,
+  boardMergeQueueKeyOf,
+  boardMergeQueueKeyString,
+  boardMergeQueueOrder,
+  emptyBoardCardMergeStay,
+  type BoardMergeQueueKey,
   type BoardCardAutoMergeHold,
   type BoardCardAutoMergeStop,
   BOARD_AUTO_MERGE_RETRY_DELAYS_MS,
@@ -198,6 +208,7 @@ import * as Random from "effect/Random";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -354,6 +365,8 @@ export type BoardMergeAttemptResult =
   | { readonly outcome: "conflict"; readonly detail: string }
   /** T3o: the checks failed and a CI-fix step has been started. */
   | { readonly outcome: "checks-fix"; readonly detail: string }
+  /** T3o: another card's fix on the same base runs first; this one waits its turn (T3O-128). */
+  | { readonly outcome: "queued"; readonly behindCardId: BoardCardId | null }
   | {
       readonly outcome: "refused";
       readonly detail: string;
@@ -380,6 +393,18 @@ export type BoardMergeAttemptResult =
       merging an unreviewed combined diff. */
   | { readonly outcome: "stale-base" }
   | { readonly outcome: "unknown-card" };
+
+/** T3o: who is asking for a merge attempt, for the merge queue (T3O-128). */
+interface MergeAttemptOptions {
+  /** The completion of a conflict fix rather than a fresh request: bounds conflict→merge. */
+  readonly viaConflictFix?: boolean;
+  /** The queue woke this card: it attempts, and the wake advances the queue itself. */
+  readonly fromQueue?: boolean;
+  /** Start now: fix alongside the base's head instead of queuing. */
+  readonly bypassQueue?: boolean;
+  /** The queue place to keep if the woken card has to wait again. */
+  readonly queuedAt?: string;
+}
 
 /** What a "Submit for merge — no review" click did, for the RPC
     to turn into a sentence on the card. */
@@ -639,6 +664,8 @@ export interface SupervisorReactorShape {
   ) => Effect.Effect<BoardLinkCardPullRequestResult>;
   /** Merge a card's pull request and advance it (the Merge button). */
   readonly mergePullRequest: (cardId: BoardCardId) => Effect.Effect<BoardMergeAttemptResult>;
+  /** T3o: a queued card's Start now (T3O-128). */
+  readonly mergeQueueStartNow: (cardId: BoardCardId) => Effect.Effect<BoardMergeAttemptResult>;
   /** Open the card's pull request from Building and route it past Code review
       ("Submit for merge — no review"). */
   readonly submitForMerge: (cardId: BoardCardId) => Effect.Effect<BoardSubmitAttemptResult>;
@@ -734,6 +761,21 @@ const MERGE_FIX_DOING: Record<BoardMergeFixKind, string> = {
   checks: "fixing the failing checks",
   update: "bringing the branch up to date with its base",
 };
+
+/** T3o: a conflict fix's or branch update's prompt, with the moving-base segment (T3O-128). */
+function mergeBaseFixPrompt(prompt: string, followUp: boolean): string {
+  return [
+    prompt,
+    followUp ? BOARD_MERGE_BASE_FOLLOW_UP_HANDOFF : null,
+    BOARD_MERGE_BASE_FIX_PROMPT_SEGMENT,
+  ]
+    .filter((part) => part !== null && part.length > 0)
+    .join("\n\n");
+}
+
+/** T3o: what a stay records when the base tip could not be measured: still a head, never a
+    follow-up, since a move cannot be told from an unknown (T3O-128). */
+const UNMEASURED_BASE_TIP = "";
 
 /** The card note for a merge a finished fix retried and the forge still refused. */
 function mergeFixRefusedNote(
@@ -4401,9 +4443,13 @@ const make = Effect.gen(function* () {
         prompt:
           armedFix === "checks"
             ? DEFAULT_BOARD_CHECKS_FIX_PROMPT
-            : armedFix === "update"
-              ? DEFAULT_BOARD_BRANCH_UPDATE_PROMPT
-              : exec.prompt,
+            : armedFix === null
+              ? exec.prompt
+              : // T3o: a base fix keeps up with a moving base (T3O-128).
+                mergeBaseFixPrompt(
+                  armedFix === "update" ? DEFAULT_BOARD_BRANCH_UPDATE_PROMPT : exec.prompt,
+                  boardCardMergeStayCounts(card).baseFollowUps > 0,
+                ),
         model,
         timeoutMs: exec.timeoutMs,
         maxAttempts: exec.maxAttempts,
@@ -6642,6 +6688,7 @@ const make = Effect.gen(function* () {
     if (card.blocked) return;
     const outcome = yield* mergeCardPullRequest(card.id);
     yield* recordAutoMergeOutcome(card.id, outcome, { resetLadder: false });
+    yield* hintMergeQueue(card.id);
   });
 
   /** T3o: the merge gate's action (T3O-116). The predicate already checked the hold and the stage. */
@@ -6678,17 +6725,24 @@ const make = Effect.gen(function* () {
     return moved.kind === "landed" ? gateActed : gateBlockedBy(moved);
   });
 
-  /** T3o: spend one of this stay's automatic merge fixes (T3O-116), before the fix starts. */
+  /** T3o: spend one of this stay's automatic merge fixes (T3O-116), before the fix starts. The
+      base tip it starts from makes the card its base's merge-queue head (T3O-128). */
   const spendMergeFix = Effect.fn("board-supervisor-spendMergeFix")(function* (
     card: BoardCard,
     fix: "conflictFixes" | "branchUpdates",
   ) {
     const counts = boardCardMergeStayCounts(card);
+    const tip = yield* measureBaseTip(card);
     yield* dispatch({
       type: "board.card.update",
       commandId: yield* commandId("merge-stay"),
       cardId: card.id,
-      mergeStay: { ...counts, [fix]: counts[fix] + 1 },
+      mergeStay: {
+        ...counts,
+        [fix]: counts[fix] + 1,
+        fixBaseTip: tip ?? UNMEASURED_BASE_TIP,
+        queuedAt: null,
+      },
       createdAt: yield* nowIso,
     });
   });
@@ -6704,16 +6758,29 @@ const make = Effect.gen(function* () {
     });
   });
 
-  /** T3o: a human's Merge click or someone else's push grants the fixes again (T3O-116). */
+  /**
+   * T3o: a human's Merge click or someone else's push grants the fixes again (T3O-116). The base a
+   * fix started from and the queue place survive it, so a pushed head still holds its base, and
+   * only a click restarts the follow-up count (T3O-128).
+   */
   const resetMergeFixes = Effect.fn("board-supervisor-resetMergeFixes")(function* (
     card: BoardCard,
+    by: "click" | "push",
   ) {
     if (card.mergeStay === undefined) return;
+    const counts = boardCardMergeStayCounts(card);
+    const kept = {
+      ...emptyBoardCardMergeStay(counts.stageEnteredAt),
+      fixBaseTip: counts.fixBaseTip,
+      queuedAt: counts.queuedAt,
+      baseFollowUps: by === "click" ? 0 : counts.baseFollowUps,
+    };
+    const empty = kept.fixBaseTip === null && kept.queuedAt === null && kept.baseFollowUps === 0;
     yield* dispatch({
       type: "board.card.update",
       commandId: yield* commandId("merge-stay-reset"),
       cardId: card.id,
-      mergeStay: null,
+      mergeStay: empty ? null : kept,
       createdAt: yield* nowIso,
     });
   });
@@ -6741,6 +6808,8 @@ const make = Effect.gen(function* () {
       case "conflict":
       case "checks-fix":
       case "stale-base":
+      // T3o: the merge queue owns it until its turn (T3O-128).
+      case "queued":
         yield* clearAutoMergeHold(fresh);
         return;
       // Not where it thought it was: no merge stage to show a hold on.
@@ -6832,14 +6901,18 @@ const make = Effect.gen(function* () {
    * records nothing: the refusal goes back to the waiting human.
    */
   const mergeCardPullRequestByHand = Effect.fn("board-supervisor-mergeCardPullRequestByHand")(
-    function* (cardId: BoardCardId) {
+    function* (
+      cardId: BoardCardId,
+      /** T3o: Start now on a queued card: merge, and fix, alongside the head (T3O-128). */
+      options: { readonly bypassQueue?: boolean } = {},
+    ) {
       // A human's click buys one more automatic CI fix, and is a
       // fresh decision: an unarmed card's wait on its last fix's checks ends.
       checksFixSpent.delete(String(cardId));
       mergeAwaitingChecks.delete(String(cardId));
       // T3o: and the stay's conflict fix and branch update (T3O-116).
       const clicked = yield* readCard(cardId);
-      if (clicked !== null) yield* resetMergeFixes(clicked);
+      if (clicked !== null) yield* resetMergeFixes(clicked, "click");
       // A pull request readied within the ladder's first rung has CI that may
       // not have registered its checks yet, so the click waits on the ladder
       // just as the arrival and merge-path readies do.
@@ -6856,7 +6929,10 @@ const make = Effect.gen(function* () {
         mergeAwaitingChecks.add(String(cardId));
         outcome = justReadiedRefusal(recentPullRequest.number);
       } else {
-        outcome = yield* mergeCardPullRequest(cardId);
+        outcome = yield* mergeCardPullRequest(
+          cardId,
+          options.bypassQueue === true ? { bypassQueue: true } : {},
+        );
       }
       const card = yield* readCard(cardId);
       if (
@@ -6867,6 +6943,7 @@ const make = Effect.gen(function* () {
       ) {
         yield* recordAutoMergeOutcome(cardId, outcome, { resetLadder: true });
       }
+      yield* hintMergeQueue(cardId);
       return outcome;
     },
   );
@@ -8950,7 +9027,7 @@ const make = Effect.gen(function* () {
         continue;
       }
       yield* clearAutoMergeHold(now);
-      yield* resetMergeFixes(now);
+      yield* resetMergeFixes(now, "push");
     }
   });
 
@@ -9090,6 +9167,192 @@ const make = Effect.gen(function* () {
    */
   const mergeAwaitingChecks = new Set<string>();
 
+  /**
+   * T3o: the merge queue (T3O-128). The card each key is waking right now, which holds the base
+   * while its merge attempt runs; the lock covers only picking it and joining, never the attempt.
+   */
+  const mergeQueueWaking = new Map<string, BoardCardId>();
+  const mergeQueueLock = yield* Semaphore.make(1);
+
+  /** The cards holding a key's base: the board's heads plus what only this process knows. */
+  const mergeQueueHolders = Effect.fn("board-supervisor-mergeQueueHolders")(function* (
+    key: BoardMergeQueueKey,
+  ) {
+    const board = yield* readBoard;
+    const paused = yield* workerPausedNow;
+    const onKey = (card: BoardCard) =>
+      card.projectId === key.projectId && card.worktree?.baseRefName === key.baseRefName;
+    const pending = new Set<string>();
+    for (const card of board.cards) {
+      if (!onKey(card) || boardCardMergeStayCounts(card).fixBaseTip === null) continue;
+      if (mergeAwaitingChecks.has(String(card.id)) || (yield* cardAutoMergeArmed(card))) {
+        pending.add(String(card.id));
+      }
+    }
+    const holders = new Set<BoardCardId>(
+      boardMergeQueueHeads(board, key, {
+        workerUnreachable: paused,
+        mergeStillPending: (card) => pending.has(String(card.id)),
+      }).map((card) => card.id),
+    );
+    // Between `start-stage-thread` landing and the step row appearing, only the arm says so.
+    // Once the row is live it speaks for itself: a step waiting on a human lets go.
+    const mergeStageId = boardStageWithRole(board, "merge")?.stageId ?? null;
+    for (const [cardId, kind] of mergeAwaitingConflictFix) {
+      if (kind === "checks") continue;
+      const card = board.cards.find((candidate) => String(candidate.id) === cardId);
+      if (card === undefined || card.stage !== mergeStageId || !onKey(card)) continue;
+      const step = boardCardStepState(board, card.id);
+      if (step === null || isBoardTerminalStepStatus(step.status)) holders.add(card.id);
+    }
+    const waking = mergeQueueWaking.get(boardMergeQueueKeyString(key));
+    if (waking !== undefined) holders.add(waking);
+    return [...holders];
+  });
+
+  /**
+   * Claim the card's base for its fix, or queue it behind the card already holding it. Null when
+   * claimed (the arm is set, so the card holds the base from here), else the `queued` outcome.
+   */
+  const claimBaseOrQueue = Effect.fn("board-supervisor-claimBaseOrQueue")(function* (
+    card: BoardCard,
+    kind: "conflict" | "update",
+    options: MergeAttemptOptions,
+  ) {
+    const key = boardMergeQueueKeyOf(card);
+    if (key === null || options.bypassQueue === true) {
+      mergeAwaitingConflictFix.set(String(card.id), kind);
+      return null;
+    }
+    return yield* mergeQueueLock.withPermits(1)(
+      Effect.gen(function* () {
+        const blocker = (yield* mergeQueueHolders(key)).find((id) => id !== card.id);
+        if (blocker === undefined) {
+          mergeAwaitingConflictFix.set(String(card.id), kind);
+          return null;
+        }
+        const live = (yield* readCard(card.id)) ?? card;
+        const counts = boardCardMergeStayCounts(live);
+        yield* dispatch({
+          type: "board.card.update",
+          commandId: yield* commandId("merge-queue-join"),
+          cardId: card.id,
+          mergeStay: {
+            ...counts,
+            queuedAt: counts.queuedAt ?? options.queuedAt ?? (yield* nowIso),
+          },
+          createdAt: yield* nowIso,
+        });
+        return { outcome: "queued" as const, behindCardId: blocker };
+      }),
+    );
+  });
+
+  /**
+   * Wake the next queued card on a key when nothing holds its base, and keep going until one
+   * does. Every event that may release a base only hints this; it decides.
+   */
+  const advanceMergeQueue: (key: BoardMergeQueueKey) => Effect.Effect<void> = Effect.fn(
+    "board-supervisor-advanceMergeQueue",
+  )(function* (key: BoardMergeQueueKey) {
+    const keyString = boardMergeQueueKeyString(key);
+    const woken = yield* mergeQueueLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (mergeQueueWaking.has(keyString)) return null;
+        const next = boardMergeQueueOrder(yield* readBoard, key)[0];
+        if (next === undefined) return null;
+        if ((yield* mergeQueueHolders(key)).length > 0) return null;
+        const counts = boardCardMergeStayCounts(next);
+        mergeQueueWaking.set(keyString, next.id);
+        yield* dispatch({
+          type: "board.card.update",
+          commandId: yield* commandId("merge-queue-wake"),
+          cardId: next.id,
+          mergeStay: { ...counts, queuedAt: null },
+          createdAt: yield* nowIso,
+        });
+        return { cardId: next.id, queuedAt: counts.queuedAt };
+      }),
+    );
+    if (woken === null) return;
+    const outcome = yield* mergeCardPullRequest(woken.cardId, {
+      fromQueue: true,
+      ...(woken.queuedAt === null ? {} : { queuedAt: woken.queuedAt }),
+    }).pipe(Effect.ensuring(Effect.sync(() => mergeQueueWaking.delete(keyString))));
+    const fresh = yield* readCard(woken.cardId);
+    if (fresh !== null) {
+      if (
+        fresh.autoMergeHold !== null ||
+        mergeAwaitingChecks.has(String(fresh.id)) ||
+        (yield* cardAutoMergeArmed(fresh))
+      ) {
+        yield* recordAutoMergeOutcome(fresh.id, outcome, { resetLadder: false });
+      } else if (outcome.outcome === "refused") {
+        // A human's queued merge never vanishes silently.
+        yield* dispatch({
+          type: "board.card.record-note",
+          commandId: yield* commandId("merge-queue-refused"),
+          cardId: fresh.id,
+          kind: "card-merge-refused",
+          detail: `Its turn in the merge queue came, but the merge was refused: ${outcome.detail}`,
+          createdAt: yield* nowIso,
+        });
+      }
+    }
+    yield* advanceMergeQueue(key);
+  });
+
+  /** Let a card's base's merge queue move on, if something released it. Total. */
+  const hintMergeQueue = Effect.fn("board-supervisor-hintMergeQueue")(
+    function* (cardId: BoardCardId) {
+      const card = yield* readCard(cardId);
+      const key = card === null ? null : boardMergeQueueKeyOf(card);
+      if (key !== null) yield* advanceMergeQueue(key);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: merge queue advance failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
+  /** The tick's and boot pass's sweep over every key that has queued cards. */
+  const sweepMergeQueues = Effect.gen(function* () {
+    const board = yield* readBoard;
+    const keys = new Map<string, BoardMergeQueueKey>();
+    for (const card of board.cards) {
+      if (card.archivedAt !== null || boardCardMergeStayCounts(card).queuedAt === null) continue;
+      const key = boardMergeQueueKeyOf(card);
+      if (key !== null) keys.set(boardMergeQueueKeyString(key), key);
+    }
+    for (const key of keys.values()) yield* advanceMergeQueue(key);
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: merge queue sweep failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
+  /** T3o: Start now on a queued card (T3O-128): it leaves the queue and merges, or fixes, now. */
+  const startMergeQueueCardNow = Effect.fn("board-supervisor-startMergeQueueCardNow")(function* (
+    cardId: BoardCardId,
+  ) {
+    const card = yield* readCard(cardId);
+    if (card === null) return { outcome: "unknown-card" } as const;
+    const counts = boardCardMergeStayCounts(card);
+    if (counts.queuedAt !== null) {
+      yield* dispatch({
+        type: "board.card.update",
+        commandId: yield* commandId("merge-queue-start-now"),
+        cardId: card.id,
+        mergeStay: { ...counts, queuedAt: null },
+        createdAt: yield* nowIso,
+      });
+    }
+    return yield* mergeCardPullRequestByHand(cardId, { bypassQueue: true });
+  });
+
   /** When the board last readied each card's draft, so a Merge click
       inside the ladder's first rung waits for the CI that readying started.
       In-memory: after a restart the window has long passed anyway. */
@@ -9131,6 +9394,7 @@ const make = Effect.gen(function* () {
       headSha: probe.state?.headSha ?? previous?.headSha ?? null,
       stop: "fix-failed",
     });
+    yield* hintMergeQueue(fresh.id);
   });
 
   /**
@@ -9211,12 +9475,13 @@ const make = Effect.gen(function* () {
    * the merge stage's conflict step, whose success finishes this merge; any other refusal reports
    * the forge's reason and stops, with no automatic retry.
    */
-  const mergeCardPullRequest = Effect.fn("board-supervisor-mergeCardPullRequest")(function* (
+  const attemptCardMerge = Effect.fn("board-supervisor-attemptCardMerge")(function* (
     cardId: BoardCardId,
+    options: MergeAttemptOptions,
+  ) {
     /** True when this call is the completion of a conflict fix rather than a
         fresh Merge click. Bounds the conflict→merge cycle (see below). */
-    viaConflictFix = false,
-  ) {
+    const viaConflictFix = options.viaConflictFix === true;
     const card = yield* readCard(cardId);
     if (card === null) return { outcome: "unknown-card" } as const;
 
@@ -9239,6 +9504,21 @@ const make = Effect.gen(function* () {
     const mergeStage = boardStageWithRole(stages, "merge");
     if (mergeStage === null || fresh.stage !== mergeStage.stageId) {
       return { outcome: "wrong-stage" as const };
+    }
+
+    // T3o: a queued card keeps its place; only its turn or Start now attempts it (T3O-128).
+    const queueKey = boardMergeQueueKeyOf(fresh);
+    if (
+      queueKey !== null &&
+      boardCardMergeStayCounts(fresh).queuedAt !== null &&
+      options.fromQueue !== true &&
+      options.bypassQueue !== true
+    ) {
+      const holders = yield* mergeQueueHolders(queueKey);
+      return {
+        outcome: "queued" as const,
+        behindCardId: holders.find((id) => id !== fresh.id) ?? null,
+      };
     }
 
     // The merge-click staleness gate: a sibling may have merged while the card sat here, so a stale
@@ -9378,6 +9658,68 @@ const make = Effect.gen(function* () {
       // T3o: one automatic conflict fix and one branch update per stay, counted on the card so
       // neither the fix's own push (which resets the ladder) nor a restart grants another (T3O-116).
       const spent = boardCardMergeStayCounts(fresh);
+      // T3o: a fix the base moved under keeps the head and runs again, before any spent-fix
+      // refusal and whoever is asking (T3O-128).
+      const baseFix =
+        state?.blockedReason === "conflict"
+          ? ("conflict" as const)
+          : state?.blockedReason === "behind" &&
+              state.updateRequired === true &&
+              state.checks.pending === 0
+            ? ("update" as const)
+            : null;
+      if (
+        baseFix !== null &&
+        spent.fixBaseTip !== null &&
+        spent.fixBaseTip !== UNMEASURED_BASE_TIP &&
+        pullRequest.headBranch === fresh.worktree?.branch
+      ) {
+        const tip = yield* measureBaseTip(fresh);
+        if (tip !== null && tip !== spent.fixBaseTip) {
+          if (spent.baseFollowUps >= BOARD_MERGE_QUEUE_FOLLOW_UP_LIMIT) {
+            return {
+              outcome: "refused" as const,
+              detail: `The base kept moving while this card resolved conflicts (${BOARD_MERGE_QUEUE_FOLLOW_UP_LIMIT} follow-ups), so the merge waits for you.`,
+              mergeState: state,
+              permanent: true,
+            };
+          }
+          const liveStep = boardCardStepState(stages, fresh.id);
+          if (
+            !hasLiveStageThread(fresh, fresh.stage) &&
+            (liveStep === null || isBoardTerminalStepStatus(liveStep.status))
+          ) {
+            mergeAwaitingConflictFix.set(String(fresh.id), baseFix);
+            yield* dispatch({
+              type: "board.card.update",
+              commandId: yield* commandId("merge-stay-follow-up"),
+              cardId: fresh.id,
+              mergeStay: {
+                ...spent,
+                baseFollowUps: spent.baseFollowUps + 1,
+                fixBaseTip: tip,
+                queuedAt: null,
+              },
+              createdAt: yield* nowIso,
+            });
+            const started = yield* dispatchLanded({
+              type: "board.card.start-stage-thread",
+              commandId: yield* commandId("merge-base-follow-up"),
+              cardId: fresh.id,
+              createdAt: yield* nowIso,
+            });
+            if (started) {
+              return {
+                outcome: "conflict" as const,
+                detail: `${detail} The base moved while the last fix ran, so the board is merging it in again.`,
+              };
+            }
+            disarmPendingMerge(fresh.id);
+            yield* refundMergeFix(fresh);
+            return { outcome: "refused" as const, detail, mergeState: state };
+          }
+        }
+      }
       if (state?.blockedReason === "conflict" && !viaConflictFix && spent.conflictFixes > 0) {
         return {
           outcome: "refused" as const,
@@ -9400,7 +9742,9 @@ const make = Effect.gen(function* () {
             detail: `${detail} A thread is already open on this stage; close it before merging.`,
           };
         }
-        mergeAwaitingConflictFix.set(String(fresh.id), "conflict");
+        // T3o: one base fix at a time per base; the rest wait their turn (T3O-128).
+        const queued = yield* claimBaseOrQueue(fresh, "conflict", options);
+        if (queued !== null) return queued;
         yield* spendMergeFix(fresh, "conflictFixes");
         const started = yield* dispatchLanded({
           type: "board.card.start-stage-thread",
@@ -9430,7 +9774,8 @@ const make = Effect.gen(function* () {
           hasLiveStageThread(fresh, fresh.stage) ||
           (liveStep !== null && !isBoardTerminalStepStatus(liveStep.status));
         if (!stageBusy) {
-          mergeAwaitingConflictFix.set(String(fresh.id), "update");
+          const queued = yield* claimBaseOrQueue(fresh, "update", options);
+          if (queued !== null) return queued;
           yield* spendMergeFix(fresh, "branchUpdates");
           const started = yield* dispatchLanded({
             type: "board.card.start-stage-thread",
@@ -9528,8 +9873,61 @@ const make = Effect.gen(function* () {
         createdAt: yield* nowIso,
       });
     }
+    yield* steerBaseMovedFixes(merged);
     return { outcome: "merged" as const, number: pullRequest.number };
   });
+
+  /**
+   * Merge a card's pull request, then advance it, and let its base's merge queue move on: a merge
+   * or a refusal may have released the base (T3O-128). A queue's own wake advances itself.
+   */
+  const mergeCardPullRequest = (
+    cardId: BoardCardId,
+    options: MergeAttemptOptions = {},
+  ): Effect.Effect<BoardMergeAttemptResult> =>
+    attemptCardMerge(cardId, options).pipe(
+      Effect.tap(() => (options.fromQueue === true ? Effect.void : hintMergeQueue(cardId))),
+    );
+
+  /**
+   * T3o: when the board merges into a base, tell every running conflict fix or branch update on
+   * that base to merge it in again (T3O-128). Best-effort: a steer that fails is logged.
+   */
+  const steerBaseMovedFixes = Effect.fn("board-supervisor-steerBaseMovedFixes")(
+    function* (merged: BoardCard) {
+      const key = boardMergeQueueKeyOf(merged);
+      if (key === null) return;
+      const board = yield* readBoard;
+      const mergeStageId = boardStageWithRole(board, "merge")?.stageId ?? null;
+      for (const card of board.cards) {
+        if (
+          card.id === merged.id ||
+          card.archivedAt !== null ||
+          card.stage !== mergeStageId ||
+          card.projectId !== key.projectId ||
+          card.worktree?.baseRefName !== key.baseRefName
+        ) {
+          continue;
+        }
+        const kind = mergeAwaitingConflictFix.get(String(card.id));
+        if (kind === "checks") continue;
+        if (kind === undefined && boardCardMergeStayCounts(card).fixBaseTip === null) continue;
+        const step = boardCardStepState(board, card.id);
+        if (step?.status !== "running" || step.threadId === null) continue;
+        yield* sendTurn({
+          threadId: step.threadId,
+          text: `The base branch \`${key.baseRefName}\` just moved (${merged.key} merged). Fetch it and merge it in again, resolving any new conflicts, before you finish.`,
+          runtimeMode: step.runtimeMode,
+          delivery: "steer",
+        });
+      }
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: base-moved steer failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
 
   /**
    * "Submit for merge, no review": selects a short unattended step that pushes the branch and
@@ -10974,14 +11372,15 @@ const make = Effect.gen(function* () {
             });
           }
           yield* schedule();
-          // Only a conflict fix passes the `viaConflictFix` bound (a CI fix's or branch update's
-          // re-attempt may still need a conflict fix; their bounds are `checksFixSpent` and the
-          // stay's `branchUpdates`). An unarmed card's CI fix or branch update hands its merge to
-          // the ladder to wait out the checks its push re-ran.
-          if (finishedFix === "checks" || finishedFix === "update") {
+          // Only a conflict fix passes the `viaConflictFix` bound. An unarmed card's fix hands its
+          // merge to the ladder to wait out the checks its push re-ran; T3o: a conflict fix's too,
+          // so it holds its base's merge queue through that wait (T3O-128).
+          if (finishedFix !== null) {
             mergeAwaitingChecks.add(String(card.id));
           }
-          const outcome = yield* mergeCardPullRequest(card.id, finishedFix === "conflict");
+          const outcome = yield* mergeCardPullRequest(card.id, {
+            viaConflictFix: finishedFix === "conflict",
+          });
           // Record on the ladder only for armed cards. A re-conflict comes back `refused` (via
           // `viaConflictFix`), a hard stop: the fix already had its one attempt.
           const armed =
@@ -10995,6 +11394,7 @@ const make = Effect.gen(function* () {
             outcome.outcome !== "merged" &&
             outcome.outcome !== "conflict" &&
             outcome.outcome !== "checks-fix" &&
+            outcome.outcome !== "queued" &&
             !mergeAwaitingChecks.has(String(card.id))
           ) {
             yield* dispatch({
@@ -11008,6 +11408,8 @@ const make = Effect.gen(function* () {
               createdAt: yield* nowIso,
             });
           }
+          // T3o: after the outcome is recorded, so a hard hold it wrote releases the base (T3O-128).
+          yield* hintMergeQueue(card.id);
           return;
         }
         // T3o: a finished plan is the gates' (split, review start, sign-off), whoever planned it
@@ -12731,6 +13133,8 @@ const make = Effect.gen(function* () {
     // Last: it is the only sweep that may call the forge, and a card it merges moves to Done, which
     // the armed-card pass above must not see first.
     yield* sweepAutoMergeHolds;
+    // T3o: a persisted queue place is woken once its base has no head (T3O-128).
+    yield* sweepMergeQueues;
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("board supervisor: reconciliation failed", { cause: Cause.pretty(cause) }),
@@ -13488,6 +13892,8 @@ const make = Effect.gen(function* () {
       Effect.andThen(sweepGates),
       Effect.andThen(sweepRetries),
       Effect.andThen(sweepAutoMergeHolds),
+      // T3o: and wake merge queues whose base nothing holds (T3O-128).
+      Effect.andThen(sweepMergeQueues),
       // T3o: queued off the worker at its own cadence; the next tick's gates act on it (T3O-116).
       Effect.andThen(requestMergeStageRefresh()),
       // Forge-check CI steps poll on the same cadence.
@@ -13898,6 +14304,20 @@ const make = Effect.gen(function* () {
             Effect.as({
               outcome: "lookup-failed",
               detail: "The pull request could not be looked up. See the server log for details.",
+            } as const),
+          ),
+        ),
+      ),
+    mergeQueueStartNow: (cardId) =>
+      startMergeQueueCardNow(cardId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("board supervisor: start now failed", {
+            cardId,
+            cause: Cause.pretty(cause),
+          }).pipe(
+            Effect.as({
+              outcome: "refused",
+              detail: "The merge could not be attempted. See the server log for details.",
             } as const),
           ),
         ),

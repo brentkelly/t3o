@@ -635,7 +635,13 @@ export function withGovernor(
     /** T3o: the same answer, read afresh on every probe, for a test
         whose checks CHANGE between two probes — a failed check a CI fix's
         push turned into a pending one. Takes precedence over `mergeState`. */
-    readonly mergeStateOf?: () => BoardMergeState;
+    readonly mergeStateOf?: (request: { readonly number: number }) => BoardMergeState;
+    /** T3o: each branch's own pull request, for tests with several cards (T3O-128). Takes
+        precedence over `pullRequest` for a branch it names, and answers number lookups. */
+    readonly pullRequestsByBranch?: ReadonlyMap<string, BoardFoundPullRequest>;
+    /** T3o: what a merge of this number answers, read afresh: `undefined` succeeds, a string is
+        the host's refusal. Takes precedence over `mergeFailure` and `mergeOutcomes`. */
+    readonly mergeFailureOf?: (number: number) => string | undefined;
     /** Awaited before each merge-state read answers: a forge that is slow, or never answers. */
     readonly mergeStateGate?: Effect.Effect<void>;
     /**
@@ -1131,6 +1137,8 @@ export function withGovernor(
         ]).pipe(
           Effect.andThen(input.onPullRequestLookup ?? Effect.void),
           Effect.andThen(() => {
+            const byBranch = input.pullRequestsByBranch?.get(request.branch);
+            if (byBranch !== undefined) return Effect.succeed(byBranch);
             const configured = input.pullRequestOf?.() ?? input.pullRequest;
             if (configured !== undefined && configured !== null && "failWith" in configured) {
               return Effect.fail(
@@ -1149,6 +1157,10 @@ export function withGovernor(
           { number: request.number, forced: request.force === true },
         ]).pipe(
           Effect.andThen(() => {
+            const byNumber = [...(input.pullRequestsByBranch?.values() ?? [])].find(
+              (candidate) => candidate.number === request.number,
+            );
+            if (byNumber !== undefined) return Effect.succeed(byNumber);
             const configured =
               input.pullRequestByNumber !== undefined
                 ? input.pullRequestByNumber
@@ -1176,7 +1188,12 @@ export function withGovernor(
           ),
           Effect.andThen((attempts) => {
             const scripted = input.mergeOutcomes?.[attempts.length - 1];
-            const detail = scripted === undefined ? input.mergeFailure : (scripted ?? undefined);
+            const detail =
+              input.mergeFailureOf !== undefined
+                ? input.mergeFailureOf(request.number)
+                : scripted === undefined
+                  ? input.mergeFailure
+                  : (scripted ?? undefined);
             return detail === undefined
               ? Effect.void
               : Effect.fail(
@@ -1192,7 +1209,7 @@ export function withGovernor(
         Ref.update(mergeStateProbes, (probes) => [...probes, { number: request.number }]).pipe(
           Effect.andThen(input.mergeStateGate ?? Effect.void),
           Effect.andThen(() => {
-            const configured = input.mergeStateOf?.() ?? input.mergeState;
+            const configured = input.mergeStateOf?.(request) ?? input.mergeState;
             return configured === undefined
               ? Effect.fail(
                   new BoardPullRequestGatewayError({

@@ -519,6 +519,13 @@ function makeBoardRpcHandlers(
         deps.boardSupervisor.mergePullRequest(input.cardId),
       ),
 
+    /** T3o: a queued card's Start now (T3O-128): merge, and fix, alongside its base's head. */
+    [BOARD_WS_METHODS.mergeQueueStartNow]: (input: BoardCardPullRequestActionInput) =>
+      authorized(
+        BOARD_WS_METHODS.mergeQueueStartNow,
+        deps.boardSupervisor.mergeQueueStartNow(input.cardId),
+      ),
+
     /**
      * Open the card's pull request from Building and route it past Code review. The result is
      * a value rather than an error channel: each refusal is the system working, and the

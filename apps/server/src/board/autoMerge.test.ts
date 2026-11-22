@@ -8,6 +8,7 @@ import {
   BOARD_SEED_STAGE_IDS,
   BoardCardId,
   defaultBoardCardGroup,
+  emptyBoardCardMergeStay,
   EMPTY_BOARD_STATE,
   ProviderInstanceId,
   ThreadId,
@@ -1473,7 +1474,7 @@ it.effect("one conflict fix per stay: a second conflict after a restart is a har
           ...cardAtMerge({ autoMerge: true }),
           // The stay's fix already ran before the restart. Its push made a new head, which reset
           // the ladder's attempt, so only the per-stay count remembers it.
-          mergeStay: { stageEnteredAt: null, conflictFixes: 1, branchUpdates: 0 },
+          mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1 },
         },
       ],
       mergeFailure: "the host refused",
@@ -1570,7 +1571,7 @@ it.effect("a fix that starts while the refresh reads the head keeps its spent fi
             ...cardAtMerge({ autoMerge: true }),
             pullRequest: openLink,
             autoMergeHold: hardHold(),
-            mergeStay: { stageEnteredAt: null, conflictFixes: 1, branchUpdates: 0 },
+            mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1 },
           },
         ],
         mergeFailure: "Required status check 'test' has not passed.",
@@ -1677,5 +1678,537 @@ it.effect("the board-wide setting turned on late picks up a card already waiting
       assert.deepStrictEqual(yield* h.mergeAttempts, [{ number: 284 }]);
       assert.strictEqual(stageOf(yield* h.board), DONE);
     }),
+  ),
+);
+
+// ── The merge queue (T3O-128) ─────────────────────────────────────────────
+
+const QUEUED_AT = "2026-01-01T00:00:00.000Z";
+
+/** Each card's own open pull request, numbered from 284, all into `main` unless named. */
+const queuePullRequest = (id: string, number: number, baseRef = "main") => ({
+  number,
+  title: `Card ${id}`,
+  url: `https://example.test/pull/${number}`,
+  baseRef,
+  headRef: `board/${id}`,
+  state: "open" as const,
+});
+
+const QUEUE_CARDS = ["card-one", "card-two", "card-three"] as const;
+const numberOf = (id: string) => 284 + QUEUE_CARDS.indexOf(id as (typeof QUEUE_CARDS)[number]);
+
+/** Several armed cards in Ready for merge, each refused for whatever `states` says of its number:
+    absent merges cleanly. Mutate `states` to change the forge's mind mid-test. */
+const queueSetup = (input: {
+  readonly cards: ReadonlyArray<BoardCard>;
+  readonly states: Map<number, BoardMergeState>;
+  readonly bases?: ReadonlyMap<string, string>;
+}) => ({
+  ...setup({ cards: input.cards }),
+  pullRequestsByBranch: new Map(
+    input.cards.map((card) => [
+      `board/${card.id}`,
+      queuePullRequest(
+        String(card.id),
+        numberOf(String(card.id)),
+        input.bases?.get(String(card.id)),
+      ),
+    ]),
+  ),
+  mergeFailureOf: (number: number) => (input.states.has(number) ? "the host refused" : undefined),
+  mergeStateOf: (request: { readonly number: number }) =>
+    input.states.get(request.number) ?? probe({ mergeable: "mergeable", passed: 2 }),
+});
+
+const conflictState = () => probe({ blockedReason: "conflict", passed: 1 });
+const behindState = () => probe({ blockedReason: "behind", passed: 2, updateRequired: true });
+
+const queueCard = (id: string, patch: Partial<BoardCard> = {}): BoardCard => ({
+  ...cardAtMerge({ autoMerge: true, id }),
+  orderKey: `m${QUEUE_CARDS.indexOf(id as (typeof QUEUE_CARDS)[number])}`,
+  ...patch,
+});
+
+const stayOf = (board: BoardState, id: string) => {
+  const card = cardOf(board, id);
+  return card?.mergeStay ?? null;
+};
+
+const fixesStartedFor = (commands: ReadonlyArray<HarnessCommand>, id: string) =>
+  startedFixes(commands).filter((command) => String(command.cardId) === id);
+
+const attemptsOn = (attempts: ReadonlyArray<{ readonly number: number }>, id: string) =>
+  attempts.filter((attempt) => attempt.number === numberOf(id)).length;
+
+/** A live fix step on one card, as `withRunningFix` puts one on card-one. */
+const withFixStep = (h: Harness, id: string, status: BoardCardStepState["status"] = "running") =>
+  Ref.update(h.model, (model) => {
+    const board = model.board ?? EMPTY_BOARD_STATE;
+    return {
+      ...model,
+      board: {
+        ...board,
+        stepStates: [
+          ...(board.stepStates ?? []).filter((state) => String(state.cardId) !== id),
+          runningMergeFix({
+            cardId: BoardCardId.make(id),
+            threadId: ThreadId.make(`thread-${id}`),
+            status,
+          }),
+        ],
+      },
+    };
+  });
+
+const fixCompletedOn = (id: string, sequence: number) =>
+  ({
+    type: "board.card-step-completed",
+    sequence,
+    payload: {
+      cardId: BoardCardId.make(id),
+      completion: {
+        cardId: BoardCardId.make(id),
+        stepId: MERGE,
+        outcome: "succeeded",
+        summary: "merged the base in",
+        payload: null,
+        threadId: ThreadId.make(`thread-${id}`),
+        completedAt: NOW,
+      },
+    },
+  }) as unknown as HarnessEvent;
+
+const queueShells = (ids: ReadonlyArray<string>) =>
+  new Map(
+    ids.map((id) => [`thread-${id}`, fakeThreadState(`thread-${id}`, { sessionStatus: "none" })]),
+  );
+
+it.effect(
+  "conflicts on one base resolve one at a time; the queue wakes on the head's merge",
+  () => {
+    const states = new Map<number, BoardMergeState>([
+      [284, conflictState()],
+      [285, conflictState()],
+      [286, conflictState()],
+    ]);
+    return withGovernor(
+      {
+        ...queueSetup({ cards: QUEUE_CARDS.map((id) => queueCard(id)), states }),
+        initialShells: queueShells(QUEUE_CARDS),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.reactor.drain;
+          let board = yield* h.board;
+          // The head is card-one, board order. The others wait: no fix, nothing spent, no hold.
+          assert.strictEqual(fixesStartedFor(yield* h.commands, "card-one").length, 1);
+          assert.strictEqual(stayOf(board, "card-one")?.conflictFixes, 1);
+          assert.strictEqual(stayOf(board, "card-one")?.fixBaseTip, "main");
+          for (const id of ["card-two", "card-three"]) {
+            assert.strictEqual(fixesStartedFor(yield* h.commands, id).length, 0, id);
+            assert.strictEqual(stayOf(board, id)?.conflictFixes ?? 0, 0, id);
+            assert.isNotNull(stayOf(board, id)?.queuedAt ?? null, id);
+            assert.strictEqual(holdOf(board, id), null, id);
+          }
+
+          // The head's fix pushes; its merge now waits on the CI that push re-ran. Still the head.
+          yield* withFixStep(h, "card-one");
+          states.set(284, probe({ pending: 1, passed: 1 }));
+          yield* h.pumpDomain(fixCompletedOn("card-one", 2));
+          assert.notStrictEqual(holdOf(yield* h.board, "card-one")?.retryAt ?? null, null);
+          yield* h.reactor.tick;
+          yield* h.reactor.drain;
+          assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-two"), 1);
+          assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 0);
+
+          // CI passes on the ladder's next rung: the head merges and exactly one card wakes.
+          states.delete(284);
+          yield* TestClock.adjust(RUNG_ONE);
+          yield* h.reactor.drain;
+          board = yield* h.board;
+          assert.strictEqual(stageOf(board, "card-one"), DONE);
+          assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 1);
+          assert.strictEqual(stayOf(board, "card-two")?.queuedAt, null);
+          assert.strictEqual(fixesStartedFor(yield* h.commands, "card-three").length, 0);
+          assert.isNotNull(stayOf(board, "card-three")?.queuedAt ?? null);
+        }),
+    );
+  },
+);
+
+it.effect("cards on different bases fix their conflicts at once", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        queueCard("card-one"),
+        queueCard("card-two", {
+          worktree: { ...readyWorktree("card-two"), baseRefName: "develop" },
+          baseBranch: "develop",
+        }),
+      ],
+      states: new Map([
+        [284, conflictState()],
+        [285, conflictState()],
+      ]),
+      bases: new Map([["card-two", "develop"]]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(startedFixes(yield* h.commands).length, 2);
+        assert.strictEqual(stayOf(yield* h.board, "card-two")?.queuedAt, null);
+      }),
+  ),
+);
+
+it.effect("a branch update queues like a conflict fix; a CI fix never queues", () =>
+  withGovernor(
+    queueSetup({
+      cards: [queueCard("card-one"), queueCard("card-two"), queueCard("card-three")],
+      states: new Map([
+        [284, behindState()],
+        [285, behindState()],
+        [286, probe({ passed: 1, failed: 1 })],
+      ]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        const commands = yield* h.commands;
+        assert.include(
+          String(fixesStartedFor(commands, "card-one")[0]?.commandId),
+          "branch-update",
+        );
+        assert.strictEqual(fixesStartedFor(commands, "card-two").length, 0);
+        assert.isNotNull(stayOf(yield* h.board, "card-two")?.queuedAt ?? null);
+        assert.include(String(fixesStartedFor(commands, "card-three")[0]?.commandId), "checks-fix");
+      }),
+  ),
+);
+
+it.effect(
+  "Start now fixes alongside the head, and its merge wakes nobody while the head holds",
+  () => {
+    const states = new Map<number, BoardMergeState>([
+      [284, conflictState()],
+      [285, conflictState()],
+      [286, conflictState()],
+    ]);
+    return withGovernor(
+      {
+        ...queueSetup({ cards: QUEUE_CARDS.map((id) => queueCard(id)), states }),
+        initialShells: queueShells(QUEUE_CARDS),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.reactor.drain;
+          const result = yield* h.reactor.mergeQueueStartNow(BoardCardId.make("card-two"));
+          assert.strictEqual(result.outcome, "conflict");
+          assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 1);
+          assert.strictEqual(stayOf(yield* h.board, "card-two")?.queuedAt, null);
+
+          yield* withFixStep(h, "card-two");
+          states.delete(285);
+          yield* h.pumpDomain(fixCompletedOn("card-two", 2));
+          assert.strictEqual(stageOf(yield* h.board, "card-two"), DONE);
+          // card-one still holds the base, so card-three keeps waiting.
+          assert.strictEqual(fixesStartedFor(yield* h.commands, "card-three").length, 0);
+          assert.isNotNull(stayOf(yield* h.board, "card-three")?.queuedAt ?? null);
+        }),
+    );
+  },
+);
+
+it.effect("a Merge click on a queued card keeps its place and restarts its follow-up count", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        // The head: its fix ran this stay, and its merge waits on CI.
+        queueCard("card-one", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1, fixBaseTip: "main" },
+        }),
+        queueCard("card-two", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), baseFollowUps: 3, queuedAt: QUEUED_AT },
+        }),
+      ],
+      states: new Map([
+        [284, probe({ pending: 1, passed: 1 })],
+        [285, conflictState()],
+      ]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        const result = yield* h.reactor.mergePullRequest(BoardCardId.make("card-two"));
+        assert.deepStrictEqual(result, {
+          outcome: "queued",
+          behindCardId: BoardCardId.make("card-one"),
+        });
+        const stay = stayOf(yield* h.board, "card-two");
+        assert.strictEqual(stay?.queuedAt, QUEUED_AT);
+        assert.strictEqual(stay?.baseFollowUps, 0);
+        assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-two"), 0);
+      }),
+  ),
+);
+
+it.effect("a fix the base moved under runs again, without spending a fix", () => {
+  const states = new Map<number, BoardMergeState>([[284, conflictState()]]);
+  return withGovernor(
+    {
+      ...queueSetup({ cards: [queueCard("card-one")], states }),
+      initialShells: queueShells(["card-one"]),
+    },
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(startedFixes(yield* h.commands).length, 1);
+        // Another merge landed on the base while the fix ran, and it conflicts again.
+        h.setBaseTip("main", "tip-two");
+        yield* withFixStep(h, "card-one");
+        yield* h.pumpDomain(fixCompletedOn("card-one", 2));
+        const started = startedFixes(yield* h.commands);
+        assert.strictEqual(started.length, 2);
+        assert.include(String(started[1]?.commandId), "merge-base-follow-up");
+        const stay = stayOf(yield* h.board, "card-one");
+        assert.strictEqual(stay?.conflictFixes, 1);
+        assert.strictEqual(stay?.baseFollowUps, 1);
+        assert.strictEqual(stay?.fixBaseTip, "tip-two");
+        assert.strictEqual(holdOf(yield* h.board), null);
+      }),
+  );
+});
+
+it.effect("a moved base with no proven conflict runs no follow-up", () => {
+  const states = new Map<number, BoardMergeState>([[284, conflictState()]]);
+  return withGovernor(
+    {
+      ...queueSetup({ cards: [queueCard("card-one")], states }),
+      initialShells: queueShells(["card-one"]),
+    },
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        h.setBaseTip("main", "tip-two");
+        // A stale refusal right after the agent's push: the probe no longer says conflict.
+        states.set(284, probe({ passed: 2 }));
+        yield* withFixStep(h, "card-one");
+        yield* h.pumpDomain(fixCompletedOn("card-one", 2));
+        assert.strictEqual(startedFixes(yield* h.commands).length, 1);
+        assert.strictEqual(stayOf(yield* h.board, "card-one")?.baseFollowUps, 0);
+      }),
+  );
+});
+
+it.effect("after 10 follow-ups the merge holds for a human, and the queue moves on", () =>
+  withGovernor(
+    {
+      ...queueSetup({
+        cards: [
+          queueCard("card-one", {
+            mergeStay: {
+              ...emptyBoardCardMergeStay(null),
+              conflictFixes: 1,
+              fixBaseTip: "tip-before",
+              baseFollowUps: 10,
+            },
+          }),
+          queueCard("card-two", {
+            mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+          }),
+        ],
+        states: new Map([
+          [284, conflictState()],
+          [285, conflictState()],
+        ]),
+      }),
+    },
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        const hold = holdOf(yield* h.board, "card-one");
+        assert.strictEqual(hold?.retryAt, null);
+        assert.include(hold?.reason ?? "", "10 follow-ups");
+        assert.strictEqual(fixesStartedFor(yield* h.commands, "card-one").length, 0);
+        assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 1);
+      }),
+  ),
+);
+
+it.effect(
+  "a board merge steers a running fix on the same base, and a steer failure is harmless",
+  () =>
+    withGovernor(
+      {
+        ...queueSetup({
+          cards: [
+            queueCard("card-one"),
+            // Unarmed and clean: it merges only when clicked.
+            { ...cardAtMerge({ id: "card-two" }), orderKey: "card-two" },
+            queueCard("card-three", {
+              worktree: { ...readyWorktree("card-three"), baseRefName: "develop" },
+              baseBranch: "develop",
+            }),
+          ],
+          states: new Map([
+            [284, conflictState()],
+            [286, conflictState()],
+          ]),
+          bases: new Map([["card-three", "develop"]]),
+        }),
+        // card-one's thread is gone, so the steer itself fails.
+        initialShells: queueShells(["card-three"]),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.reactor.drain;
+          yield* withFixStep(h, "card-one");
+          yield* withFixStep(h, "card-three");
+          const result = yield* h.reactor.mergePullRequest(BoardCardId.make("card-two"));
+          assert.strictEqual(result.outcome, "merged");
+          const steers = (yield* h.commands).filter(
+            (command) => command.type === "thread.send" && command.delivery === "steer",
+          );
+          assert.deepStrictEqual(
+            steers.map((command) => String(command.threadId)),
+            ["thread-card-one"],
+          );
+          assert.include(String(steers[0]?.text), "just moved (CARD-TWO merged)");
+        }),
+    ),
+);
+
+it.effect("a fix waiting on a human does not get the base-moved steer", () =>
+  withGovernor(
+    queueSetup({
+      cards: [queueCard("card-one"), { ...cardAtMerge({ id: "card-two" }), orderKey: "card-two" }],
+      states: new Map([[284, conflictState()]]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        yield* withFixStep(h, "card-one", "awaiting-input");
+        yield* h.reactor.mergePullRequest(BoardCardId.make("card-two"));
+        assert.isFalse(
+          (yield* h.commands).some(
+            (command) => command.type === "thread.send" && command.delivery === "steer",
+          ),
+        );
+      }),
+  ),
+);
+
+it.effect("a head waiting on a human lets the next card start", () =>
+  withGovernor(
+    queueSetup({
+      cards: [queueCard("card-one"), queueCard("card-two")],
+      states: new Map([
+        [284, conflictState()],
+        [285, conflictState()],
+      ]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 0);
+        // The fix step landed and then stopped to ask: `beginStageRun` consumed the arm.
+        yield* withFixStep(h, "card-one", "awaiting-input");
+        yield* h.reactor.tick;
+        yield* h.reactor.drain;
+        assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 1);
+      }),
+  ),
+);
+
+it.effect("a queue place survives a restart and is woken on boot when nothing holds the base", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        queueCard("card-two", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+        }),
+      ],
+      states: new Map(),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-two"), 1);
+        assert.strictEqual(stageOf(yield* h.board, "card-two"), DONE);
+      }),
+  ),
+);
+
+it.effect("a queue place left from an earlier stay is not a queue place", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        queueCard("card-two", {
+          stageEnteredAt: NOW,
+          mergeStay: {
+            ...emptyBoardCardMergeStay("1999-01-01T00:00:00.000Z"),
+            fixBaseTip: "main",
+            queuedAt: QUEUED_AT,
+          },
+        }),
+      ],
+      states: new Map(),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        // The merge gate attempts it like any armed card: the old stay neither queues it nor
+        // makes it a head.
+        yield* h.reactor.drain;
+        assert.strictEqual(stageOf(yield* h.board, "card-two"), DONE);
+      }),
+  ),
+);
+
+it.effect("a queued card whose pull request merged elsewhere moves on to Done", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        queueCard("card-one", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1, fixBaseTip: "main" },
+        }),
+        queueCard("card-two", {
+          pullRequest: { ...mergedLink, number: 285, headBranch: "board/card-two" },
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+        }),
+      ],
+      states: new Map([[284, probe({ pending: 1, passed: 1 })]]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(stageOf(yield* h.board, "card-two"), DONE);
+        assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-two"), 0);
+      }),
+  ),
+);
+
+it.effect("an unarmed card refused when its turn comes says so on the card", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        {
+          ...cardAtMerge({ id: "card-two" }),
+          orderKey: "card-two",
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+        },
+      ],
+      states: new Map([[285, probe({ passed: 2 })]]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-two"), 1);
+        assert.isTrue(
+          mergeRefusedNotes(yield* h.commands).some((command) =>
+            String(command.detail).includes("Its turn in the merge queue came"),
+          ),
+        );
+      }),
   ),
 );

@@ -1093,10 +1093,30 @@ export const BoardCardMergeStay = Schema.Struct({
   stageEnteredAt: Schema.NullOr(IsoDateTime),
   conflictFixes: NonNegativeInt,
   branchUpdates: NonNegativeInt,
+  /** T3o: the base tip when this stay's latest conflict or branch-update fix started (T3O-128).
+      Non-null makes the card its base's merge-queue head until it merges or stops. */
+  fixBaseTip: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** T3o: fixes re-run because the base moved under the last one (T3O-128). */
+  baseFollowUps: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  /** T3o: when the card joined its base's merge queue; null when not queued (T3O-128). */
+  queuedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type BoardCardMergeStay = typeof BoardCardMergeStay.Type;
 
-/** The merge fixes this card has spent in its current stay. */
+/** A stay with nothing spent and nothing queued. */
+export function emptyBoardCardMergeStay(stageEnteredAt: string | null): BoardCardMergeStay {
+  return {
+    stageEnteredAt,
+    conflictFixes: 0,
+    branchUpdates: 0,
+    fixBaseTip: null,
+    baseFollowUps: 0,
+    queuedAt: null,
+  };
+}
+
+/** The merge fixes this card has spent in its current stay. A stay left over from an earlier
+    visit to the stage reads as empty, so it is never queued nor a queue head. */
 export function boardCardMergeStayCounts(
   card: Pick<BoardCard, "stageEnteredAt" | "mergeStay">,
 ): BoardCardMergeStay {
@@ -1104,7 +1124,7 @@ export function boardCardMergeStayCounts(
   const stageEnteredAt = card.stageEnteredAt ?? null;
   return stay !== undefined && stay.stageEnteredAt === stageEnteredAt
     ? stay
-    : { stageEnteredAt, conflictFixes: 0, branchUpdates: 0 };
+    : emptyBoardCardMergeStay(stageEnteredAt);
 }
 
 /**
@@ -7866,6 +7886,8 @@ export const BoardCardShell = Schema.Struct({
   autoPlanPending: Schema.optionalKey(Schema.Boolean),
   /** T3o: an automation gate's last attempt could not act (T3O-115); absent otherwise. */
   gateBlock: Schema.optionalKey(BoardCardGateBlock),
+  /** T3o: waiting its turn in its base's merge queue this stay (T3O-128); absent otherwise. */
+  mergeQueued: Schema.optionalKey(Schema.Boolean),
   /** When auto-merge was first refused, absent when nothing is held (key-optional for the
       byte budget). The pill's elapsed clock measures from here, so it shows the whole wait,
       not the time since the last retry. */
@@ -8266,6 +8288,7 @@ export function makeBoardCardShell(input: {
   readonly autoMergeSetting?: boolean | null | undefined;
   readonly autoPlanPending?: boolean | null | undefined;
   readonly gateBlock?: BoardCardGateBlock | null | undefined;
+  readonly mergeQueued?: boolean | undefined;
   /** The auto-merge hold's shell facts. On the card
       aggregate, so BOTH producers — the SQL snapshot query
       and the JS delta derivation — must carry them or a held card's pill
@@ -8375,6 +8398,7 @@ export function makeBoardCardShell(input: {
     ...(input.autoMergeSetting == null ? {} : { autoMergeSetting: input.autoMergeSetting }),
     ...(input.autoPlanPending === true ? { autoPlanPending: true } : {}),
     ...(input.gateBlock == null ? {} : { gateBlock: input.gateBlock }),
+    ...(input.mergeQueued === true ? { mergeQueued: true } : {}),
     // The auto-merge hold: three byte-cheap facts, each omitted
     // when it has nothing to say, so a board that has never held a merge is
     // byte-identical to an older payload.
@@ -8495,6 +8519,7 @@ export function boardCardShellFromCard(
     autoMergeSetting: card.autoMergeSetting,
     autoPlanPending: isBoardCardAutoPlanPending(card),
     gateBlock: card.gateBlock ?? null,
+    mergeQueued: boardCardMergeStayCounts(card).queuedAt !== null,
     autoMergeHeldSince: card.autoMergeHold?.heldSince ?? null,
     autoMergeGaveUp: boardCardAutoMergeGaveUp(card.autoMergeHold),
     prDraft: boardCardPullRequestIsOpenDraft(card.pullRequest),
@@ -9376,6 +9401,8 @@ export const BOARD_WS_METHODS = {
   /** An RPC rather than a board command: a human waits on the outcome, and a refresh must
       not write to the event log on every card open. */
   mergeCardPullRequest: "board.mergeCardPullRequest",
+  /** T3o: a queued card's Start now (T3O-128): attempt its merge, and start its fix, now. */
+  mergeQueueStartNow: "board.mergeQueueStartNow",
   /** Open the card's pull request from the Build stage and route it past Code
       review. An RPC for the same reason merging is one: the
       caller is a human waiting on an answer, and "there is nothing to push"
@@ -9716,6 +9743,10 @@ export const BoardMergeCardPullRequestResult = Schema.Union([
   /** The card is not in the merge-role stage. The button renders only there,
       so this answers a client that called the RPC without one. */
   Schema.Struct({ outcome: Schema.Literal("wrong-stage") }),
+  /** T3o: the branch needs a conflict fix or branch update, and another card's fix on the same
+      base runs first (T3O-128). The merge is retried when that card's merge ends; Merge stays
+      disabled and Start now jumps the queue. */
+  Schema.Struct({ outcome: Schema.Literal("queued"), behindCardId: Schema.NullOr(BoardCardId) }),
   /** The card's base branch moved since its last review round started:
       instead of merging a diff that was never reviewed against
       the base it would merge into, the card went back to the review stage to
@@ -10221,6 +10252,12 @@ export const BOARD_RPCS = [
     success: BoardMergeCardPullRequestResult,
     error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
   }),
+  // T3o: T3O-128.
+  Rpc.make(BOARD_WS_METHODS.mergeQueueStartNow, {
+    payload: BoardCardPullRequestActionInput,
+    success: BoardMergeCardPullRequestResult,
+    error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(BOARD_WS_METHODS.requestReviewRound, {
     payload: BoardRequestReviewRoundInput,
     success: BoardRequestReviewRoundResult,
@@ -10344,6 +10381,8 @@ export const BOARD_RPC_SCOPES = {
   // Merging changes the repository and moves the card: the operate tier, the
   // same one every other board mutation rides.
   [BOARD_WS_METHODS.mergeCardPullRequest]: AuthOrchestrationOperateScope,
+  // T3o: starts a merge and its fix agent now, the same tier as merging (T3O-128).
+  [BOARD_WS_METHODS.mergeQueueStartNow]: AuthOrchestrationOperateScope,
   // Submitting starts an agent that pushes a branch and opens a pull request,
   // and moves the card: the same mutation tier as merging.
   [BOARD_WS_METHODS.submitCardForMerge]: AuthOrchestrationOperateScope,
@@ -12846,6 +12885,17 @@ export const DEFAULT_BOARD_CHECKS_FIX_PROMPT =
  * Compiled in for the same reason: it starts only when the forge refuses a merge solely because
  * the branch is behind its base, once per stay in the merge stage (T3O-116).
  */
+/**
+ * T3o: appended to the conflict-fix and branch-update prompts, edited or not, so a fix keeps up
+ * with a base that moves while it runs (T3O-128). Compiled in, not editable.
+ */
+export const BOARD_MERGE_BASE_FIX_PROMPT_SEGMENT =
+  "Before you push and finish, fetch the base branch again. If it moved while you worked, merge it in again and resolve any new conflicts the same way, and repeat until the branch is up to date with its base. If the branch already merges cleanly with its base, finish without changes. If you are told mid-run that the base moved, do the same before finishing.";
+
+/** T3o: the handoff a follow-up fix gets when the base moved under the last one (T3O-128). */
+export const BOARD_MERGE_BASE_FOLLOW_UP_HANDOFF =
+  "A previous fix already resolved conflicts against an earlier base and pushed them to this branch; only merge in what has changed on the base since.";
+
 export const DEFAULT_BOARD_BRANCH_UPDATE_PROMPT =
   "This card's pull request cannot merge because its branch is behind the base branch and the repository requires it to be up to date. There are no known conflicts. Merge the base branch into this card's branch. If the merge does conflict after all, resolve each conflict on the merits: read enough of both sides to understand what each change was for and keep the intent of both, never discarding one side to make the merge go through. Then run the project's own checks and tests and fix what the merge broke. Commit and push normally. Do NOT rebase, and do NOT force-push under any circumstances: this branch has an open pull request, and rewriting its history strands the review comments anchored to it and can destroy work someone else pushed. If a conflict needs a decision you cannot make from the code alone, stop and say so rather than guessing.";
 

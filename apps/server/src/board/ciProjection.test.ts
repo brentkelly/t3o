@@ -9,6 +9,7 @@ import {
   BoardStageId,
   CommandId,
   boardCiStepsFromLegacy,
+  emptyBoardCardMergeStay,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -312,8 +313,15 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-leave-"))("a card leaving CI", (i
       });
       yield* record({ kind: "finish-pass", runId: "run-a", result: "failed" });
       yield* record({ kind: "begin-fix", runId: "run-a" });
-      // T3o: the per-stay merge fix counts persist through the projection (T3O-116).
-      const mergeStay = { stageEnteredAt: null, conflictFixes: 1, branchUpdates: 0 };
+      // T3o: the per-stay merge fix counts persist through the projection (T3O-116), and so
+      // does the merge queue's state on them (T3O-128).
+      const mergeStay = {
+        ...emptyBoardCardMergeStay(null),
+        conflictFixes: 1,
+        fixBaseTip: "tip-a",
+        baseFollowUps: 2,
+        queuedAt: at,
+      };
       yield* engine.dispatch({
         type: "board.card.update",
         commandId: id(),

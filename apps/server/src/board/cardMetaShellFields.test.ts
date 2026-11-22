@@ -9,6 +9,7 @@ import {
   BoardCardId,
   boardBriefHasImage,
   boardCardShellFromCard,
+  emptyBoardCardMergeStay,
   CommandId,
   EnvironmentId,
   ProjectId,
@@ -872,6 +873,35 @@ it.layer(makeTestLayer("t3o-card-auto-merge-"))(
         });
         const unblocked = yield* shellCard;
         assert.isFalse(unblocked !== undefined && "gateBlock" in unblocked);
+
+        // T3o: a merge queue place rides both producers; one left from an earlier stay does not
+        // (T3O-128).
+        const stay = (stageEnteredAt: string | null) => ({
+          ...emptyBoardCardMergeStay(stageEnteredAt),
+          queuedAt: createdAt,
+        });
+        const entered = heldAggregate!.stageEnteredAt ?? null;
+        for (const [label, stageEnteredAt, expected] of [
+          ["this stay", entered, true],
+          ["an earlier stay", "1999-01-01T00:00:00.000Z", false],
+        ] as const) {
+          yield* engine.dispatch({
+            type: "board.card.update",
+            commandId: CommandId.make(`cmd-merge-queue-${label}`),
+            cardId,
+            mergeStay: stay(stageEnteredAt),
+            createdAt,
+          });
+          const queuedShell = yield* shellCard;
+          assert.strictEqual(queuedShell?.mergeQueued === true, expected, label);
+          const queuedModel = yield* snapshotQuery.getCommandReadModel();
+          const queuedAggregate = queuedModel.board?.cards.find((entry) => entry.id === cardId);
+          assert.strictEqual(
+            boardCardShellFromCard(queuedAggregate!).mergeQueued === true,
+            expected,
+            label,
+          );
+        }
 
         // Disarming clears the hold and, with it, both hold keys — the
         // reverse state a one-way door would have missed.

@@ -90,6 +90,7 @@ import { useBoardAttentionSettle } from "./boardAttentionSettle";
 import { BOARD_COLUMN_CARD_CAP } from "./boardColumnCap";
 import { boardCardNoPullRequest } from "./boardCardNotice";
 import { boardQueueInfo, type BoardQueueInfo } from "./boardQueueInfo";
+import { boardMergeQueueInfo } from "./boardMergeQueueInfo";
 import type { BoardCardTodoContext } from "./BoardCardItem";
 import { boardShellAutomationNode, resolveBoardShellAutomation } from "./boardCardAutomation";
 import { BoardColumn, BOARD_CARD_GAP } from "./BoardColumn";
@@ -673,37 +674,40 @@ function useBoardPageModel({
     Object.values(byStage).flat(),
   );
 
-  const queueSlots = (() => {
-    const queue = boardBuildQueue(
-      everyCard,
-      orderedStages,
-      // oxlint-disable-next-line react/purity -- Schedule-due samples the clock when the cards change; the compiler recomputes it only then.
-      Date.now(),
-    );
-    if (queue.size === 0) return EMPTY_QUEUE_INFO;
-    const running = boardRunningStepCount(everyCard);
-    const cardKeys = new Map(everyCard.map((card) => [String(card.cardId), card.key] as const));
-    const cardsById = new Map(everyCard.map((card) => [card.cardId, card] as const));
-    const projectNames = new Map(
-      allProjects.map((project) => [project.id, project.title] as const),
-    );
-    const info = new Map<string, BoardQueueInfo>();
-    for (const [cardId, slot] of queue) {
-      const card = cardsById.get(cardId as BoardCardShell["cardId"]);
-      const reason =
-        card === undefined
-          ? null
-          : boardQueueReason({
-              card,
-              state: cardWorkersState,
-              cardKeys,
-              projectName: projectNames.get(card.projectId) ?? "this project",
-            });
-      const resolved = boardQueueInfo({ slot, running, reason });
-      if (resolved !== null) info.set(cardId, resolved);
-    }
-    return info;
-  })();
+  const queueSlots = withMergeQueueSlots(
+    everyCard,
+    (() => {
+      const queue = boardBuildQueue(
+        everyCard,
+        orderedStages,
+        // oxlint-disable-next-line react/purity -- Schedule-due samples the clock when the cards change; the compiler recomputes it only then.
+        Date.now(),
+      );
+      if (queue.size === 0) return EMPTY_QUEUE_INFO;
+      const running = boardRunningStepCount(everyCard);
+      const cardKeys = new Map(everyCard.map((card) => [String(card.cardId), card.key] as const));
+      const cardsById = new Map(everyCard.map((card) => [card.cardId, card] as const));
+      const projectNames = new Map(
+        allProjects.map((project) => [project.id, project.title] as const),
+      );
+      const info = new Map<string, BoardQueueInfo>();
+      for (const [cardId, slot] of queue) {
+        const card = cardsById.get(cardId as BoardCardShell["cardId"]);
+        const reason =
+          card === undefined
+            ? null
+            : boardQueueReason({
+                card,
+                state: cardWorkersState,
+                cardKeys,
+                projectName: projectNames.get(card.projectId) ?? "this project",
+              });
+        const resolved = boardQueueInfo({ slot, running, reason });
+        if (resolved !== null) info.set(cardId, resolved);
+      }
+      return info;
+    })(),
+  );
 
   // ── Groups ────────────────────────────────────────────────
   // A group card's face, folded once per board render over the shells the
@@ -2131,3 +2135,19 @@ function EnvironmentBoard({
 }
 
 export default BoardPage;
+
+/** T3o: the merge queue's pill on every card waiting its turn there (T3O-128). */
+function withMergeQueueSlots(
+  cards: ReadonlyArray<BoardCardShell>,
+  slots: ReadonlyMap<string, BoardQueueInfo>,
+): ReadonlyMap<string, BoardQueueInfo> {
+  const queued = cards.filter((card) => card.mergeQueued === true);
+  if (queued.length === 0) return slots;
+  const running = boardRunningStepCount(cards);
+  const merged = new Map(slots);
+  for (const card of queued) {
+    const info = boardMergeQueueInfo({ card, cards, running });
+    if (info !== null && !merged.has(String(card.cardId))) merged.set(String(card.cardId), info);
+  }
+  return merged;
+}

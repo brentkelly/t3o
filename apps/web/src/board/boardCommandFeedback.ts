@@ -45,6 +45,8 @@ export function describeBoardMergeOutcome(result: BoardMergeCardPullRequestResul
       return "The branch conflicts with its base. Resolving the conflicts, then merging.";
     case "checks-fix":
       return "The pull request's checks failed. Fixing them, then merging once CI passes.";
+    case "queued":
+      return "Another card is resolving conflicts with the same base, so this one waits its turn in the merge queue.";
     case "refused":
       return result.detail && result.detail.length > 0
         ? result.detail

@@ -7,6 +7,7 @@
 import {
   boardCardAutoMergeArmed,
   boardCardInheritedDependsOn,
+  boardCardMergeStayCounts,
   boardCardStepThisStay,
   boardNextStageId,
   boardProjectStageConfig,
@@ -248,6 +249,8 @@ function boardMergeGateDue(input: BoardGateInput, index: BoardGateIndex): BoardG
       : { gate: "merged-done" };
   }
   if (card.blocked) return null;
+  // T3o: a queued card's merge is the merge queue's to wake (T3O-128).
+  if (boardCardMergeStayCounts(card).queuedAt !== null) return null;
   if ((index.unfinishedChildCount.get(String(card.id)) ?? 0) > 0) return null;
   if (!boardCardAutoMergeOn(input)) return null;
   const step = index.stepByCard.get(String(card.id)) ?? null;

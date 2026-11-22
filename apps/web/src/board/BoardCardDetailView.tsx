@@ -640,6 +640,8 @@ export interface BoardCardDetailViewProps {
       by the container, which holds both the shell flag and the pull request's
       base branch. */
   readonly conflictFix: BoardConflictFixInfo | null;
+  /** T3o: waiting its turn in its base's merge queue (T3O-128). */
+  readonly mergeQueued?: boolean | undefined;
   /** The shell's `held`, ranked by `boardCardAttention` — the build stage's
       forward button appears only on it. */
   readonly stepHeld?: boolean;
@@ -1208,7 +1210,7 @@ function QueueSection({ props }: { readonly props: BoardCardDetailViewProps }) {
           {/* A card waiting for its worker's checkout has no limit to start
               past: nothing can run until the clone lands. */}
           {props.onQueueForceStart === undefined || info.waitingForCheckout === true ? null : (
-            <BoardHint label={forceStartHint(requested)}>
+            <BoardHint label={info.forceStartHint ?? forceStartHint(requested)}>
               <button
                 className={cn(
                   "inline-flex h-[28px] items-center justify-center gap-1.5 rounded-lg border border-primary bg-primary px-2.5 text-board-12 font-medium text-primary-foreground shadow-xs hover:bg-primary/90",
@@ -1933,8 +1935,11 @@ function ActionsSection({
   const actionContext = {
     pullRequestState: pullRequest?.state ?? null,
     pullRequestNumber: pullRequest?.number ?? null,
-    conflictFixLive: props.conflictFix !== null,
-    conflictFixReason: props.conflictFix?.mergeDisabledReason ?? null,
+    // T3o: a card waiting in the merge queue cannot merge until its turn (T3O-128).
+    conflictFixLive: props.conflictFix !== null || props.mergeQueued === true,
+    conflictFixReason:
+      props.conflictFix?.mergeDisabledReason ??
+      (props.mergeQueued === true ? "Waiting in the merge queue" : null),
     stepHeld: props.stepHeld === true,
     hasBranch: card.worktree !== null,
     blocked: card.blocked,
