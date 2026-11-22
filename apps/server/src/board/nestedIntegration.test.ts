@@ -631,7 +631,7 @@ describe("cancelling a started leaf's work to make it a parent (T3O-28)", () => 
 
             const started = (yield* h.board).cards.find((candidate) => candidate.id === leaf.id)!;
             yield* h.pumpDomain(workCancelledEvent(asCancelled(started), 2));
-            yield* h.reactor.drain;
+            yield* h.reactor.drainWorktreeSweep;
 
             const after = yield* h.board;
             const state = after.stepStates?.find((candidate) => candidate.cardId === leaf.id);
