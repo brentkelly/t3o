@@ -649,43 +649,28 @@ function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad 
 }
 
 /** T3o (T3O-129): write the run's load-sensitive list once, so every segment of the run (a
-    T3O-130 restart included) reads the same snapshot. Created only if absent, atomically: a
-    hard link from a temp file fails rather than overwrites. A failed write sets no variable. */
-let loadSensitiveTempSeq = 0;
-
+    T3O-130 restart included) reads the same snapshot. Created only if absent (`wx`), so a
+    second writer never overwrites the first. A failed write sets no variable. */
 function writeLoadSensitiveList(
   logDir: string,
   entries: ReadonlyArray<{ readonly title: string; readonly file: string }>,
 ): { readonly path: string | null; readonly error: string | null } {
-  {
-    const path = NodePath.resolve(logDir, "load-sensitive.json");
-    if (NodeFS.existsSync(path)) return { path, error: null };
-    const temp = `${path}.${process.pid}.${++loadSensitiveTempSeq}.tmp`;
-    try {
-      NodeFS.writeFileSync(
-        temp,
-        JSON.stringify(entries.map((entry) => ({ file: entry.file, title: entry.title }))),
-      );
-      try {
-        NodeFS.linkSync(temp, path);
-      } catch (error) {
-        // Another segment wrote it first: that snapshot stands.
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-      return { path, error: null };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        path: null,
-        error: `\n[board] Could not write the load-sensitive list, so T3O_CI_LOAD_SENSITIVE is unset: ${message}\n`,
-      };
-    } finally {
-      try {
-        NodeFS.rmSync(temp, { force: true });
-      } catch {
-        // A stray temp file in the log directory harms nothing.
-      }
-    }
+  const path = NodePath.resolve(logDir, "load-sensitive.json");
+  try {
+    NodeFS.writeFileSync(
+      path,
+      JSON.stringify(entries.map((entry) => ({ file: entry.file, title: entry.title }))),
+      { flag: "wx" },
+    );
+    return { path, error: null };
+  } catch (error) {
+    // Another segment wrote it first: that snapshot stands.
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return { path, error: null };
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      path: null,
+      error: `\n[board] Could not write the load-sensitive list, so T3O_CI_LOAD_SENSITIVE is unset: ${message}\n`,
+    };
   }
 }
 
