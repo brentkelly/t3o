@@ -58,6 +58,7 @@ import {
   type BoardAutomationChanged,
   type BoardResolvedAutomation,
   resolveBoardCardAutomationIn,
+  resolveBoardCiLoadThreshold,
   boardCardChildren,
   boardBuildHumanInLoopDefault,
   boardCardPendingSplit,
@@ -4952,6 +4953,10 @@ const make = Effect.gen(function* () {
       const fresh = yield* readCard(cardId);
       if (fresh === null || !isCiPassLive(fresh, runId)) return;
       const notFlakyTitle = boardCiFlakeCardTarget(card);
+      // T3o (T3O-127): a flake card's own test may be inconclusive under load only when a
+      // human merges the card.
+      const inconclusiveTargetAllowed =
+        notFlakyTitle !== null && !(yield* cardAutoMergeArmed(fresh));
       yield* ciPasses.start({
         cardId: card.id,
         runId,
@@ -4962,6 +4967,10 @@ const make = Effect.gen(function* () {
         // T3o (T3O-126): a test already ruled flaky this entry passes with no agent turn.
         ...(fresh.ci.flakyTitles === undefined ? {} : { knownFlaky: fresh.ci.flakyTitles }),
         ...(notFlakyTitle === null ? {} : { notFlakyTitle }),
+        loadThreshold: resolveBoardCiLoadThreshold(
+          boardProjectStageConfig(board, card.projectId)?.resources ?? null,
+        ),
+        ...(inconclusiveTargetAllowed ? { inconclusiveTargetAllowed: true } : {}),
         ...(card.ci.continueOnFailure === true ? { stopOnFailure: false } : {}),
         ...(runner === undefined ? {} : { runner }),
       });
@@ -5868,7 +5877,16 @@ const make = Effect.gen(function* () {
     function* (card: BoardCard, runId: string, flakes: ReadonlyArray<BoardCiFlake>) {
       if (flakes.length === 0) return;
       const { ordinal } = yield* ciPassSnapshot(card.id, runId);
-      yield* fileBoardCiFlakes(ciFlakeDeps, { card, runId, passOrdinal: ordinal, flakes });
+      const loadThreshold = resolveBoardCiLoadThreshold(
+        boardProjectStageConfig(yield* readBoard, card.projectId)?.resources ?? null,
+      );
+      yield* fileBoardCiFlakes(ciFlakeDeps, {
+        card,
+        runId,
+        passOrdinal: ordinal,
+        flakes,
+        loadThreshold,
+      });
     },
     Effect.catchCause((cause) =>
       Effect.logWarning("board supervisor: filing CI flakes failed", {
@@ -5919,6 +5937,9 @@ const make = Effect.gen(function* () {
             : { repro: report.repro.trim().slice(0, 500) }),
           stepName: issue.stepName,
           command: step.command,
+          // T3o (T3O-127): never load-sensitive (the agent can't see marks), but under load.
+          ...(step.underLoad === true ? { underLoad: true } : {}),
+          ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
           source: "agent" as const,
         },
       ];
@@ -5960,6 +5981,8 @@ const make = Effect.gen(function* () {
           ...(failure.repro === undefined ? {} : { repro: failure.repro }),
           stepName: step.name,
           command: step.command,
+          ...(step.underLoad === true ? { underLoad: true } : {}),
+          ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
           source: "agent",
         });
       }
@@ -6014,6 +6037,10 @@ const make = Effect.gen(function* () {
           ...(failure.file === undefined ? {} : { file: failure.file }),
           ...(repro === undefined ? {} : { repro }),
           ...(failure.flaky === true ? {} : { byAgent: true as const }),
+          ...(failure.flaky === true && failure.loadSensitive === true
+            ? { loadSensitive: true as const }
+            : {}),
+          ...(step.underLoad === true ? { underLoad: true as const } : {}),
         });
         return { ...failure, flaky: true };
       });
@@ -6024,6 +6051,7 @@ const make = Effect.gen(function* () {
           ...(whole.file === undefined ? {} : { file: whole.file }),
           ...(whole.repro === undefined ? {} : { repro: whole.repro }),
           byAgent: true,
+          ...(step.underLoad === true ? { underLoad: true as const } : {}),
         });
       }
       const { headline: _headline, ...rest } = step;
