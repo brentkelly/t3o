@@ -103,11 +103,16 @@ import {
   unmetBoardCardDependencies,
   BoardCard,
   type BoardPlan,
+  type BoardCardGroup,
   type BoardState,
   BoardShellSnapshot,
   DEFAULT_BOARD_MERGE_STAGE_EXECUTION,
 } from "./board.ts";
-import { defaultBoardCardGroup } from "./boardGroups.ts";
+import {
+  boardGroupFlagsTurnedOn,
+  boardNextGroupSettings,
+  defaultBoardCardGroup,
+} from "./boardGroups.ts";
 import { boardGateDue } from "./boardGates.ts";
 import { BoardWorkerId } from "./boardWorkers.ts";
 import type {
@@ -3722,4 +3727,89 @@ describe("default prompt saved as an old default", () => {
       expect(decoded(edited)).toBe(edited);
     },
   );
+});
+
+describe("group settings changes (T3O-114)", () => {
+  const group = (overrides: Partial<BoardCardGroup> = {}): BoardCardGroup =>
+    defaultBoardCardGroup(
+      { stages: [...BOARD_SEED_STAGES], cards: [] } as unknown as BoardState,
+      { stage: BOARD_SEED_STAGE_IDS.backlog },
+      overrides,
+    );
+
+  it.each([
+    { name: "to own turns Auto-merge on", from: {}, change: { target: "own" }, autoMerge: true },
+    {
+      name: "to inherit turns Auto-merge off",
+      from: { target: "own" },
+      change: { target: "inherit" },
+      autoMerge: false,
+    },
+    {
+      name: "an explicit Auto-merge wins over the target rule",
+      from: {},
+      change: { target: "own", autoMerge: false },
+      autoMerge: false,
+    },
+    {
+      name: "the same target is no transition",
+      from: { target: "own", autoMerge: false },
+      change: { target: "own" },
+      autoMerge: false,
+    },
+  ] as const)("next settings: $name", ({ from, change, autoMerge }) => {
+    const next = boardNextGroupSettings(group(from), change);
+    expect(next.autoMerge).toBe(autoMerge);
+    expect(next.target).toBe(change.target);
+  });
+
+  it.each([
+    {
+      name: "a flag going on",
+      from: {},
+      change: { autoBuild: true },
+      wide: false,
+      on: ["autoBuild"],
+    },
+    {
+      name: "a flag going off",
+      from: { autoBuild: true },
+      change: { autoBuild: false },
+      wide: false,
+      on: [],
+    },
+    {
+      name: "a flag already on",
+      from: { autoPlan: true },
+      change: { autoPlan: true },
+      wide: false,
+      on: [],
+    },
+    { name: "to own", from: {}, change: { target: "own" }, wide: false, on: ["autoMerge"] },
+    {
+      name: "to own, board-wide Auto-merge on",
+      from: {},
+      change: { target: "own" },
+      wide: true,
+      on: [],
+    },
+    {
+      name: "to own, Auto-merge kept off",
+      from: {},
+      change: { target: "own", autoMerge: false },
+      wide: false,
+      on: [],
+    },
+    {
+      name: "to inherit",
+      from: { target: "own", autoMerge: true },
+      change: { target: "inherit" },
+      wide: false,
+      on: [],
+    },
+  ] as const)("flags turned on: $name", ({ from, change, wide, on }) => {
+    expect(
+      boardGroupFlagsTurnedOn({ group: group(from), change, boardWideAutoMerge: wide }),
+    ).toEqual(on);
+  });
 });

@@ -28,7 +28,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { BoardEngine } from "../../../board/BoardEngine.ts";
+import { BoardEngine, type BoardEngineShape } from "../../../board/BoardEngine.ts";
+import { BoardQueries } from "../../../board/BoardQueries.ts";
 import {
   BoardScheduleStore,
   BoardScheduleStoreLive,
@@ -92,8 +93,23 @@ const centralBase = Layer.mergeAll(ServerSettings.layerTest(), BoardRelayStoreLi
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
-/** The supervisor is not this suite's subject; the tools here never reach it. */
-const supervisorStub = Layer.succeed(SupervisorReactor, {} as SupervisorReactorShape);
+/** The supervisor is not this suite's subject: it only clears a link, under the caller's
+    command id, through the engine `setup` hands it once built. */
+const supervisorStub = (engine: { current?: BoardEngineShape }) =>
+  Layer.succeed(SupervisorReactor, {
+    linkPullRequest: (cardId, target, options) =>
+      target !== null || options?.commandId === undefined
+        ? Effect.die("only clearing a link is stubbed")
+        : Effect.suspend(() =>
+            engine.current!.dispatch({
+              type: "board.card.set-linked-pull-request",
+              commandId: options.commandId!,
+              cardId,
+              pullRequest: null,
+              createdAt: t0,
+            }),
+          ).pipe(Effect.as({ outcome: "unlinked" } as const), Effect.orDie),
+  } as Pick<SupervisorReactorShape, "linkPullRequest"> as SupervisorReactorShape);
 
 /**
  * A central board over one in-process worker. `relay` starts the central
@@ -133,6 +149,7 @@ const setup = (options: { readonly relay?: boolean } = {}) =>
           digest,
         }),
     });
+    const engineCell: { current?: BoardEngineShape } = {};
     const runtime = yield* Layer.build(
       BoardRuntimeLive.pipe(
         Layer.provideMerge(
@@ -143,13 +160,14 @@ const setup = (options: { readonly relay?: boolean } = {}) =>
               getEnvironmentId: Effect.succeed(CENTRAL_ID),
               getDescriptor: Effect.die("unused"),
             }),
-            supervisorStub,
+            supervisorStub(engineCell),
           ),
         ),
         // T3o: the schedule store, which records schedule runs (T3O-118).
         Layer.provideMerge(BoardScheduleStoreLive),
       ),
     );
+    engineCell.current = yield* BoardEngine.pipe(Effect.provide(runtime));
     const relayClient = yield* makeBoardMcpRelayClient.pipe(Effect.provide(runtime));
     if (options.relay !== false) {
       yield* env.relayHost.connected.pipe(
@@ -169,6 +187,7 @@ const seedCard = Effect.fn("seedCard")(function* (
     readonly cardId: BoardCardId;
     readonly threadId: ThreadId;
     readonly linkedTo?: "worker" | "local";
+    readonly humanInLoop?: boolean;
   },
 ) {
   const engine = yield* BoardEngine;
@@ -224,7 +243,7 @@ const seedCard = Effect.fn("seedCard")(function* (
     model: "gpt-5-codex",
     mode: "plan",
     runtimeMode: "auto",
-    humanInLoop: false,
+    humanInLoop: input.humanInLoop ?? false,
     maxAttempts: 3,
     timeoutMs: 60_000,
     baseTipAtRoundStart: null,
@@ -311,16 +330,19 @@ describe("the board MCP relay", () => {
   );
 
   it.effect(
-    "changes unplaced cards and its own group, and refuses a card placed on another worker (T3O-87)",
+    "changes cards on another worker and says so on their activity, and refuses only destructive acts there (T3O-114)",
     () =>
       inCentral(
         Effect.gen(function* () {
           const world = yield* setup();
           const threadId = ThreadId.make("thread-cross");
-          yield* seedCard(world, { cardId: BoardCardId.make("card-own"), threadId }).pipe(
+          const ownId = BoardCardId.make("card-own");
+          // Attended, so a whole-group archive gets past its approval to the worker check.
+          yield* seedCard(world, { cardId: ownId, threadId, humanInLoop: true }).pipe(
             Effect.provide(world.runtime),
           );
           const engine = yield* BoardEngine.pipe(Effect.provide(world.runtime));
+          const queries = yield* BoardQueries.pipe(Effect.provide(world.runtime));
           const create = (cardId: BoardCardId, title: string, parentCardId?: BoardCardId) =>
             engine.dispatch({
               type: "board.card.create",
@@ -332,21 +354,43 @@ describe("the board MCP relay", () => {
               ...(parentCardId === undefined ? {} : { parentCardId }),
               createdAt: t0,
             });
+          const placeHere = (cardId: BoardCardId) =>
+            Effect.gen(function* () {
+              yield* engine.dispatch({
+                type: "board.card.place",
+                commandId: CommandId.make(`cmd-place-${cardId}`),
+                cardId,
+                workerId: "local",
+                createdAt: t0,
+              });
+              yield* engine.dispatch({
+                type: "board.card.provision-worktree",
+                commandId: CommandId.make(`cmd-provision-${cardId}`),
+                cardId,
+                branch: `board/${cardId}`,
+                baseRefName: "main",
+                createdAt: t0,
+              });
+            });
           const cardOf = (cardId: BoardCardId) =>
             Effect.map(engine.getReadModel, (model) =>
               model.board?.cards.find((card) => card.id === cardId),
             );
           const updateCard = relayable("board_update_card", boardHandlers.board_update_card);
           const archiveCard = relayable("board_archive_card", boardHandlers.board_archive_card);
+          const unarchiveCard = relayable(
+            "board_unarchive_card",
+            boardHandlers.board_unarchive_card,
+          );
+          const deleteCard = relayable("board_delete_card", boardHandlers.board_delete_card);
           const createCard = relayable("board_create_card", boardHandlers.board_create_card);
+          const ownKey = (yield* cardOf(ownId))!.key;
 
-          // An unplaced backlog card belongs to no worker: the agent may change it.
+          // An unplaced card and a group belong to no worker; both stay writable.
           const backlog = BoardCardId.make("card-backlog");
           yield* create(backlog, "An unplaced card");
           yield* onWorker(world, threadId, updateCard({ cardId: backlog, title: "Renamed" }));
           assert.strictEqual((yield* cardOf(backlog))?.title, "Renamed");
-
-          // A group is never refused: the agent adds a card to it and renames it.
           const group = BoardCardId.make("card-group");
           yield* create(group, "A group");
           yield* create(BoardCardId.make("card-in-group"), "Its first child", group);
@@ -355,41 +399,180 @@ describe("the board MCP relay", () => {
             threadId,
             createCard({ title: "A follow-up", parentCardId: String(group) }),
           );
-          yield* onWorker(world, threadId, updateCard({ cardId: group, title: "Renamed group" }));
-          assert.strictEqual((yield* cardOf(group))?.title, "Renamed group");
 
-          // A card placed on another worker (this server) with its worktree there is refused.
+          // A card placed on another worker (this server) is edited, archived and unarchived.
           const elsewhere = BoardCardId.make("card-elsewhere");
           yield* create(elsewhere, "A card on this server");
+          yield* placeHere(elsewhere);
+          yield* onWorker(world, threadId, updateCard({ cardId: elsewhere, title: "Renamed" }));
+          assert.strictEqual((yield* cardOf(elsewhere))?.title, "Renamed");
+          const edited = (yield* queries.boardCardActivity(elsewhere)).filter(
+            (entry) => entry.kind === "card-edited",
+          );
+          assert.strictEqual(edited.length, 1);
+          assert.strictEqual(edited[0]?.payload.editKind, "details");
+          assert.strictEqual(edited[0]?.actor.sourceCardKey, ownKey);
+          assert.strictEqual(edited[0]?.actor.sourceWorkerId, WORKER_ID);
+
+          // An incremental edit from another worker is one row, not two.
+          yield* onWorker(
+            world,
+            threadId,
+            updateCard({ cardId: elsewhere, briefAppend: "A note" }),
+          );
+          const appended = (yield* queries.boardCardActivity(elsewhere)).filter(
+            (entry) => entry.kind === "card-edited",
+          );
+          assert.strictEqual(appended.length, 2);
+          const note = appended.find((entry) => entry.payload.briefEdit === "appended");
+          assert.strictEqual(note?.payload.editKind, "details");
+          assert.strictEqual(note?.actor.sourceWorkerId, WORKER_ID);
+
+          // A regroup names the cards it moves, never the group they land in or the caller.
+          const moveCard = relayable("board_move_card", boardHandlers.board_move_card);
+          yield* onWorker(world, threadId, moveCard({ cardId: elsewhere, parentCardId: group }));
+          const regrouped = (yield* queries.boardCardActivity(elsewhere)).find(
+            (entry) => entry.payload.editKind === "regrouped",
+          );
+          assert.isDefined(regrouped);
+          assert.strictEqual(regrouped?.actor.sourceCardKey, ownKey);
+          assert.isFalse(
+            (yield* queries.boardCardActivity(group)).some(
+              (entry) => entry.actor.sourceWorkerId !== undefined && entry.kind === "card-edited",
+            ),
+          );
+          yield* onWorker(world, threadId, moveCard({ cardId: elsewhere, parentCardId: null }));
+          assert.isFalse(
+            (yield* queries.boardCardActivity(ownId)).some(
+              (entry) => entry.actor.sourceCardKey !== undefined,
+            ),
+          );
+
+          const regroupedRows = (cardId: BoardCardId) =>
+            Effect.map(queries.boardCardActivity(cardId), (entries) =>
+              entries.filter(
+                (entry) =>
+                  entry.payload.editKind === "regrouped" &&
+                  entry.actor.sourceWorkerId === WORKER_ID,
+              ),
+            );
+
+          // A leaf there that takes its first child becomes a group, and says who did it.
+          const leaf = BoardCardId.make("card-leaf-elsewhere");
+          yield* create(leaf, "A leaf on this server");
           yield* engine.dispatch({
             type: "board.card.place",
-            commandId: CommandId.make("cmd-place-elsewhere"),
-            cardId: elsewhere,
+            commandId: CommandId.make(`cmd-place-${leaf}`),
+            cardId: leaf,
             workerId: "local",
+            createdAt: t0,
+          });
+          yield* onWorker(world, threadId, createCard({ title: "Its child", parentCardId: leaf }));
+          assert.isNotNull((yield* cardOf(leaf))?.group);
+          assert.strictEqual((yield* regroupedRows(leaf)).length, 1);
+
+          // Cancelling work on the caller's worker adopts a card there, and that card says so.
+          const started = BoardCardId.make("card-started");
+          yield* create(started, "A started card on the caller's worker");
+          yield* engine.dispatch({
+            type: "board.worker.register",
+            commandId: CommandId.make("cmd-register-worker"),
+            mode: "add",
+            worker: registeredWorker,
+            createdAt: t0,
+          });
+          yield* engine.dispatch({
+            type: "board.card.place",
+            commandId: CommandId.make(`cmd-place-${started}`),
+            cardId: started,
+            workerId: WORKER_ID,
             createdAt: t0,
           });
           yield* engine.dispatch({
             type: "board.card.provision-worktree",
-            commandId: CommandId.make("cmd-provision-elsewhere"),
-            cardId: elsewhere,
-            branch: "board/card-elsewhere",
+            commandId: CommandId.make(`cmd-provision-${started}`),
+            cardId: started,
+            branch: `board/${started}`,
             baseRefName: "main",
             createdAt: t0,
           });
-          const refused = yield* Effect.flip(
-            onWorker(world, threadId, updateCard({ cardId: elsewhere, title: "Renamed" })),
+          const regroupedBefore = (yield* regroupedRows(elsewhere)).length;
+          const cancelWork = relayable(
+            "board_cancel_card_work",
+            boardHandlers.board_cancel_card_work,
           );
-          assert.strictEqual(refused._tag === "BoardToolError" ? refused.code : null, "rejected");
-          const archiveRefused = yield* Effect.flip(
-            onWorker(world, threadId, archiveCard({ cardId: elsewhere })),
+          yield* onWorker(
+            world,
+            threadId,
+            cancelWork({
+              cardId: started,
+              confirmCardKey: (yield* cardOf(started))!.key,
+              cardIds: [elsewhere],
+              approved: true,
+            }),
+          );
+          assert.strictEqual((yield* cardOf(elsewhere))?.parentCardId, started);
+          assert.strictEqual((yield* regroupedRows(elsewhere)).length, regroupedBefore + 1);
+          yield* onWorker(world, threadId, moveCard({ cardId: elsewhere, parentCardId: null }));
+
+          // Clearing its linked pull request leaves a row too, though a clear records none.
+          yield* engine.dispatch({
+            type: "board.card.set-linked-pull-request",
+            commandId: CommandId.make("cmd-link-elsewhere"),
+            cardId: elsewhere,
+            pullRequest: {
+              number: 9,
+              url: "https://github.com/acme/repo/pull/9",
+              state: "open",
+              title: "A pull request",
+              headBranch: "feature/elsewhere",
+              baseRef: "main",
+              checkedAt: t0,
+            },
+            createdAt: t0,
+          });
+          yield* onWorker(world, threadId, updateCard({ cardId: elsewhere, pullRequest: null }));
+          assert.isNull((yield* cardOf(elsewhere))?.pullRequest);
+          const cleared = (yield* queries.boardCardActivity(elsewhere)).filter(
+            (entry) => entry.kind === "card-edited" && entry.payload.editKind === "details",
+          );
+          assert.strictEqual(cleared.at(-1)?.actor.sourceWorkerId, WORKER_ID);
+          assert.strictEqual(cleared.length, 3);
+
+          yield* onWorker(world, threadId, archiveCard({ cardId: elsewhere }));
+          assert.isNotNull((yield* cardOf(elsewhere))?.archivedAt);
+          yield* onWorker(world, threadId, unarchiveCard({ cardId: elsewhere }));
+          assert.isNull((yield* cardOf(elsewhere))?.archivedAt);
+
+          // Deleting it is refused.
+          const deleteRefused = yield* Effect.flip(
+            onWorker(world, threadId, deleteCard({ cardId: elsewhere })),
           );
           assert.strictEqual(
-            archiveRefused._tag === "BoardToolError" ? archiveRefused.code : null,
+            deleteRefused._tag === "BoardToolError" ? deleteRefused.code : null,
             "rejected",
           );
-          const untouched = yield* cardOf(elsewhere);
-          assert.strictEqual(untouched?.title, "A card on this server");
-          assert.isNull(untouched?.archivedAt);
+          assert.isDefined(yield* cardOf(elsewhere));
+
+          // So is archiving a whole group with a card inside it on another worker.
+          const armed = BoardCardId.make("card-armed-group");
+          yield* create(armed, "A group with a card elsewhere");
+          const inside = BoardCardId.make("card-inside-elsewhere");
+          yield* create(inside, "A card inside it, on this server", armed);
+          yield* placeHere(inside);
+          const groupKey = (yield* cardOf(armed))!.key;
+          const groupRefused = yield* Effect.flip(
+            onWorker(
+              world,
+              threadId,
+              archiveCard({ cardId: armed, confirmCardKey: groupKey, approved: true }),
+            ),
+          );
+          assert.strictEqual(
+            groupRefused._tag === "BoardToolError" ? groupRefused.code : null,
+            "rejected",
+          );
+          assert.isNull((yield* cardOf(inside))?.archivedAt);
         }),
       ),
   );
@@ -906,7 +1089,7 @@ describe("the board MCP relay for a schedule run on a worker (T3O-118)", () => {
         );
         assert.strictEqual(codeOf(elsewhere), "rejected");
 
-        // A card it filed that is then placed on this server is another machine's: refused.
+        // A card it filed that is then placed on this server is still its own to change.
         yield* engine.dispatch({
           type: "board.card.place",
           commandId: CommandId.make("cmd-place-filed"),
@@ -922,11 +1105,19 @@ describe("the board MCP relay for a schedule run on a worker (T3O-118)", () => {
           baseRefName: "main",
           createdAt: t0,
         });
-        const crossWorker = yield* Effect.flip(
-          onWorker(world, threadId, updateCard({ cardId: created.cardId, title: "Renamed" })),
+        yield* onWorker(world, threadId, updateCard({ cardId: created.cardId, title: "Renamed" }));
+        const renamed = (yield* engine.getReadModel).board?.cards.find(
+          (card) => card.id === created.cardId,
         );
-        assert.strictEqual(codeOf(crossWorker), "rejected");
-        assert.include(crossWorker.message, "T3O-114");
+        assert.strictEqual(renamed?.title, "Renamed");
+        // A schedule run has no card, so its rows name only the worker.
+        const queries = yield* BoardQueries.pipe(Effect.provide(world.runtime));
+        const edited = (yield* queries.boardCardActivity(created.cardId)).filter(
+          (entry) => entry.kind === "card-edited",
+        );
+        const fromRun = edited.find((entry) => entry.payload.editKind === "details");
+        assert.strictEqual(fromRun?.actor.sourceWorkerId, WORKER_ID);
+        assert.isUndefined(fromRun?.actor.sourceCardKey);
       }),
     ),
   );

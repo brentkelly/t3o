@@ -423,6 +423,10 @@ Agents on a worker keep reaching the board through their own server, which passe
 on to the board server. While the board server isn't connected to that worker, an agent's board
 calls fail with a message telling it to retry shortly.
 
+A card's agent can edit, move, archive and regroup cards that run on other machines, and the
+changed card's activity says which card and machine the change came from. It can't delete them,
+cancel their work or archive a whole group whose cards run elsewhere; ask for those from the app.
+
 ## Scheduling a t3o.json task on a worker
 
 A project's `t3o.json` schedules can run on a worker as well as on the board server: pick the
@@ -436,7 +440,8 @@ offline, out of date or not ready for the project can't be picked until it is.
   reason: offline, needs a T3o update, not ready for the project, its provider signed out, or at
   its agent limit. The Schedules tab warns while its worker is offline and offers to move it.
 - **Its board tools reach the board**, limited to the schedule's project, as on the board server.
-  A run can't change a card that runs on another machine.
+  A run's board tools reach its own cards wherever they run; what a run may do to them is
+  unchanged.
 - **A worker's agent limit is approximate for schedule runs**: a run counts against it from its
   launch, but the hold lapses while the worktree is set up, so a burst can briefly exceed it. A
   schedule never has two runs going at once.

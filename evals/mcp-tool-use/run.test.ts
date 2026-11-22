@@ -4471,13 +4471,13 @@ it("fills a case's {{NAME}} references with the current T3 text, and refuses unk
     kind: "bad",
     pattern: "p",
     experience: "e",
-    setup: { role: "top", context: "Context. {{BOARD_ENVELOPE_REGROUP_GUARD}}" },
+    setup: { role: "top", context: "Context. {{BOARD_ENVELOPE_AUTOMATION_GUARD}}" },
     prompt: "{{BOARD_AUTO_PLAN_INSTRUCTION}}",
     expect: {},
   } as unknown as McpToolUseCase;
   const expanded = expandCaseText(base);
   expect(expanded.prompt).toContain("board_record_decisions");
-  expect(expanded.setup.context).toContain("regroup");
+  expect(expanded.setup.context).toContain("Automation");
   expect(() => expandCaseText({ ...base, prompt: "{{NOT_A_THING}}" })).toThrow("NOT_A_THING");
 });
 

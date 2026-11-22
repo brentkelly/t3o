@@ -88,8 +88,14 @@ The central side runs the same handlers under a synthesised invocation scope aft
 the thread is linked to a card on the very worker the call came from, or is a t3o.json schedule run
 the board itself recorded (`schedule_run_threads`) on that worker, and that the routed gateway
 sees it as a live caller. A schedule run is then held to `scheduleThreadPolicy`. The board
-authorises against its own records, so a worker can't claim a run it wasn't sent. A card named by a write is bound the same way
-(`refuseOtherWorkersCard`). Calls are answered once per worker and call id: a recorded answer is
+authorises against its own records, so a worker can't claim a run it wasn't sent. A write may name
+a card on any worker; only delete, cancel-work and a whole-group archive whose cards run on another
+worker are refused (`refuseOtherWorkersDestructive`), even for an attended agent, while archiving
+each child card separately is allowed. Group cards belong to no worker, so the check applies to
+leaf cards only. A schedule run's own scope (its project, the cards its runs created) is unchanged
+by this and now reaches those cards on any worker. Every agent write to another card stamps the
+source card and worker (`stampBoardActivitySource`), and the projector puts them on the target
+cards' rows only. Calls are answered once per worker and call id: a recorded answer is
 re-sent, a running call is awaited, and transient refusals are not recorded.
 
 ### Measuring a base tip

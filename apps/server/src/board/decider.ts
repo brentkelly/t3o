@@ -65,6 +65,7 @@ import {
   boardCardActiveChildren,
   boardCardAncestors,
   boardCardGroupOf,
+  boardNextGroupSettings,
   boardCardInheritedDependsOn,
   boardCreateDefaultStage,
   boardProjectFirstStageId,
@@ -2782,24 +2783,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
           );
         }
       }
-      // Own branch turns children's auto-merge on and Inherit turns it off —
-      // only on a real target change, and only when this command
-      // does not set auto-merge itself, so a full-settings save keeps a choice.
-      const transitionMerge =
-        command.autoMerge === undefined &&
-        command.target !== undefined &&
-        command.target !== group.target
-          ? { autoMerge: command.target === "own" }
-          : {};
-      const nextGroup: BoardCardGroup = {
-        ...group,
-        ...(command.target === undefined ? {} : { target: command.target }),
-        ...(command.autoBuild === undefined ? {} : { autoBuild: command.autoBuild }),
-        ...(command.autoMerge === undefined ? {} : { autoMerge: command.autoMerge }),
-        ...(command.autoPlan === undefined ? {} : { autoPlan: command.autoPlan }),
-        ...(command.autoSignOff === undefined ? {} : { autoSignOff: command.autoSignOff }),
-        ...transitionMerge,
-      };
+      const nextGroup = boardNextGroupSettings(group, command);
       if (boardCardGroupsEqual(nextGroup, card.group)) {
         return yield* invariant(command, `Group settings for '${card.key}' are unchanged.`);
       }

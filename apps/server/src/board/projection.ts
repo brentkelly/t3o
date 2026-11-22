@@ -90,6 +90,7 @@ import {
   type BoardProjectStageConfigShell,
   ProjectId,
   ThreadId,
+  TrimmedNonEmptyString,
   RuntimeMode,
   type ProviderOptionSelections,
 } from "@t3tools/contracts";
@@ -100,7 +101,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../persistence/Errors.ts";
-import { boardActivityActorFor } from "./activityActors.ts";
+import { boardActivityActorForCard, boardActivityCrossWorkerEditKind } from "./activityActors.ts";
 import type { TodoSignal } from "./ThreadGateway.ts";
 import {
   allCardUsageSummaries,
@@ -345,6 +346,8 @@ const BoardCardActivityDbRow = Schema.Struct({
   actorName: BoardActivityActor.fields.name,
   actorProviderInstanceId: BoardActivityActor.fields.providerInstanceId,
   actorThreadId: BoardActivityActor.fields.threadId,
+  actorSourceCardKey: Schema.NullOr(TrimmedNonEmptyString),
+  actorSourceWorkerId: Schema.NullOr(BoardWorkerId),
   threadId: BoardCardActivityEntry.fields.threadId,
   createdAt: BoardCardActivityEntry.fields.createdAt,
 });
@@ -398,6 +401,8 @@ function toBoardCardActivityEntry(row: BoardCardActivityDbRow): BoardCardActivit
       name: row.actorName,
       providerInstanceId: row.actorProviderInstanceId,
       threadId: row.actorThreadId,
+      ...(row.actorSourceCardKey === null ? {} : { sourceCardKey: row.actorSourceCardKey }),
+      ...(row.actorSourceWorkerId === null ? {} : { sourceWorkerId: row.actorSourceWorkerId }),
     },
     threadId: row.threadId,
     createdAt: row.createdAt,
@@ -2027,12 +2032,12 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
       INSERT INTO board_card_activity (
         activity_id, card_id, kind, payload,
         actor_kind, actor_name, actor_provider_instance_id, actor_thread_id,
-        thread_id, created_at
+        actor_source_card_key, actor_source_worker_id, thread_id, created_at
       )
       VALUES (
         ${row.activityId}, ${row.cardId}, ${row.kind}, ${row.payload},
         ${row.actorKind}, ${row.actorName}, ${row.actorProviderInstanceId}, ${row.actorThreadId},
-        ${row.threadId}, ${row.createdAt}
+        ${row.actorSourceCardKey}, ${row.actorSourceWorkerId}, ${row.threadId}, ${row.createdAt}
       )
       ON CONFLICT (activity_id) DO NOTHING
     `,
@@ -2056,6 +2061,8 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
           actor_name AS "actorName",
           actor_provider_instance_id AS "actorProviderInstanceId",
           actor_thread_id AS "actorThreadId",
+          actor_source_card_key AS "actorSourceCardKey",
+          actor_source_worker_id AS "actorSourceWorkerId",
           thread_id AS "threadId",
           created_at AS "createdAt"
         FROM board_card_activity
@@ -2071,6 +2078,8 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
             actor_name AS "actorName",
             actor_provider_instance_id AS "actorProviderInstanceId",
             actor_thread_id AS "actorThreadId",
+            actor_source_card_key AS "actorSourceCardKey",
+            actor_source_worker_id AS "actorSourceWorkerId",
             thread_id AS "threadId",
             created_at AS "createdAt"
           FROM board_card_activity
@@ -2090,6 +2099,8 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
             actor_name AS "actorName",
             actor_provider_instance_id AS "actorProviderInstanceId",
             actor_thread_id AS "actorThreadId",
+            actor_source_card_key AS "actorSourceCardKey",
+            actor_source_worker_id AS "actorSourceWorkerId",
             thread_id AS "threadId",
             created_at AS "createdAt"
           FROM board_card_activity
@@ -3026,7 +3037,7 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
     /** A second row from the same event needs its own id (plan review). */
     readonly activityIdSuffix?: string;
   }) => {
-    const actor = boardActivityActorFor(input.event.commandId);
+    const actor = boardActivityActorForCard(input.event.commandId, input.cardId);
     return queries
       .insertBoardCardActivityRow({
         activityId: BoardActivityId.make(
@@ -3039,6 +3050,8 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
         actorName: actor.name,
         actorProviderInstanceId: actor.providerInstanceId,
         actorThreadId: actor.threadId,
+        actorSourceCardKey: actor.sourceCardKey ?? null,
+        actorSourceWorkerId: actor.sourceWorkerId ?? null,
         threadId: input.threadId ?? actor.threadId,
         createdAt: input.event.occurredAt,
       })
@@ -3459,8 +3472,22 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
         // Only transitions (`linked`, `state-changed`) earn a rail row. `updated` is
         // the same PR in the same state, and a vanished link is not the card's doing.
         const pullRequest = event.payload.pullRequest;
-        if (pullRequest === null) return;
-        if (event.payload.transition === "updated") return;
+        if (pullRequest === null || event.payload.transition === "updated") {
+          // An agent on another worker clearing or refreshing the link still says so (T3O-114).
+          const crossWorkerKind = boardActivityCrossWorkerEditKind(
+            event.commandId,
+            event.payload.cardId,
+          );
+          if (crossWorkerKind === null) return;
+          yield* recordActivity({
+            event,
+            cardId: event.payload.cardId,
+            kind: "card-edited",
+            payload: { editKind: crossWorkerKind },
+            threadId: null,
+          });
+          return;
+        }
         const kind =
           event.payload.transition === "linked"
             ? ("card-pull-request-linked" as const)
@@ -3626,13 +3653,21 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
         }
         // An incremental edit is railed, so a card whose brief or
         // dependencies changed under it says who did it and how. Whole-value
-        // edits carry no summary and stay off the rail.
-        if (event.payload.edit !== undefined) {
+        // edits stay off the rail, unless an agent on another worker made them
+        // (T3O-114): one row per event, since the row id is the event id.
+        const crossWorkerKind = boardActivityCrossWorkerEditKind(
+          event.commandId,
+          event.payload.cardId,
+        );
+        if (event.payload.edit !== undefined || crossWorkerKind !== null) {
           yield* recordActivity({
             event,
             cardId: event.payload.cardId,
             kind: "card-edited",
-            payload: event.payload.edit,
+            payload: {
+              ...event.payload.edit,
+              ...(crossWorkerKind === null ? {} : { editKind: crossWorkerKind }),
+            },
             threadId: null,
           });
         }
