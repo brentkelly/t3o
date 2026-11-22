@@ -631,7 +631,11 @@ export interface SupervisorReactorShape {
   readonly linkPullRequest: (
     cardId: BoardCardId,
     target: BoardCardPullRequestTarget | null,
-    options?: { readonly resolved?: BoardCardPullRequest },
+    options?: {
+      readonly resolved?: BoardCardPullRequest;
+      /** The id the caller stamped its actor under, so the rail names who linked it. */
+      readonly commandId?: CommandId;
+    },
   ) => Effect.Effect<BoardLinkCardPullRequestResult>;
   /** Merge a card's pull request and advance it (the Merge button). */
   readonly mergePullRequest: (cardId: BoardCardId) => Effect.Effect<BoardMergeAttemptResult>;
@@ -7938,7 +7942,7 @@ const make = Effect.gen(function* () {
   const linkPullRequest = Effect.fn("board-supervisor-linkPullRequest")(function* (
     cardId: BoardCardId,
     target: BoardCardPullRequestTarget | null,
-    options?: { readonly resolved?: BoardCardPullRequest },
+    options?: { readonly resolved?: BoardCardPullRequest; readonly commandId?: CommandId },
   ) {
     const card = yield* readCard(cardId);
     if (card === null) return { outcome: "unknown-card" } as const;
@@ -7959,7 +7963,7 @@ const make = Effect.gen(function* () {
     }
     const refusal = yield* dispatchRefusal({
       type: "board.card.set-linked-pull-request",
-      commandId: yield* commandId("link-pr"),
+      commandId: options?.commandId ?? (yield* commandId("link-pr")),
       cardId,
       pullRequest,
       createdAt: yield* nowIso,

@@ -28,7 +28,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { BoardEngine } from "../../../board/BoardEngine.ts";
+import { BoardEngine, type BoardEngineShape } from "../../../board/BoardEngine.ts";
 import { BoardQueries } from "../../../board/BoardQueries.ts";
 import {
   BoardScheduleStore,
@@ -93,8 +93,23 @@ const centralBase = Layer.mergeAll(ServerSettings.layerTest(), BoardRelayStoreLi
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
-/** The supervisor is not this suite's subject; the tools here never reach it. */
-const supervisorStub = Layer.succeed(SupervisorReactor, {} as SupervisorReactorShape);
+/** The supervisor is not this suite's subject: it only clears a link, under the caller's
+    command id, through the engine `setup` hands it once built. */
+const supervisorStub = (engine: { current?: BoardEngineShape }) =>
+  Layer.succeed(SupervisorReactor, {
+    linkPullRequest: (cardId, target, options) =>
+      target !== null || options?.commandId === undefined
+        ? Effect.die("only clearing a link is stubbed")
+        : Effect.suspend(() =>
+            engine.current!.dispatch({
+              type: "board.card.set-linked-pull-request",
+              commandId: options.commandId!,
+              cardId,
+              pullRequest: null,
+              createdAt: t0,
+            }),
+          ).pipe(Effect.as({ outcome: "unlinked" } as const), Effect.orDie),
+  } as Pick<SupervisorReactorShape, "linkPullRequest"> as SupervisorReactorShape);
 
 /**
  * A central board over one in-process worker. `relay` starts the central
@@ -134,6 +149,7 @@ const setup = (options: { readonly relay?: boolean } = {}) =>
           digest,
         }),
     });
+    const engineCell: { current?: BoardEngineShape } = {};
     const runtime = yield* Layer.build(
       BoardRuntimeLive.pipe(
         Layer.provideMerge(
@@ -144,13 +160,14 @@ const setup = (options: { readonly relay?: boolean } = {}) =>
               getEnvironmentId: Effect.succeed(CENTRAL_ID),
               getDescriptor: Effect.die("unused"),
             }),
-            supervisorStub,
+            supervisorStub(engineCell),
           ),
         ),
         // T3o: the schedule store, which records schedule runs (T3O-118).
         Layer.provideMerge(BoardScheduleStoreLive),
       ),
     );
+    engineCell.current = yield* BoardEngine.pipe(Effect.provide(runtime));
     const relayClient = yield* makeBoardMcpRelayClient.pipe(Effect.provide(runtime));
     if (options.relay !== false) {
       yield* env.relayHost.connected.pipe(
@@ -430,6 +447,97 @@ describe("the board MCP relay", () => {
               (entry) => entry.actor.sourceCardKey !== undefined,
             ),
           );
+
+          const regroupedRows = (cardId: BoardCardId) =>
+            Effect.map(queries.boardCardActivity(cardId), (entries) =>
+              entries.filter(
+                (entry) =>
+                  entry.payload.editKind === "regrouped" &&
+                  entry.actor.sourceWorkerId === WORKER_ID,
+              ),
+            );
+
+          // A leaf there that takes its first child becomes a group, and says who did it.
+          const leaf = BoardCardId.make("card-leaf-elsewhere");
+          yield* create(leaf, "A leaf on this server");
+          yield* engine.dispatch({
+            type: "board.card.place",
+            commandId: CommandId.make(`cmd-place-${leaf}`),
+            cardId: leaf,
+            workerId: "local",
+            createdAt: t0,
+          });
+          yield* onWorker(world, threadId, createCard({ title: "Its child", parentCardId: leaf }));
+          assert.isNotNull((yield* cardOf(leaf))?.group);
+          assert.strictEqual((yield* regroupedRows(leaf)).length, 1);
+
+          // Cancelling work on the caller's worker adopts a card there, and that card says so.
+          const started = BoardCardId.make("card-started");
+          yield* create(started, "A started card on the caller's worker");
+          yield* engine.dispatch({
+            type: "board.worker.register",
+            commandId: CommandId.make("cmd-register-worker"),
+            mode: "add",
+            worker: registeredWorker,
+            createdAt: t0,
+          });
+          yield* engine.dispatch({
+            type: "board.card.place",
+            commandId: CommandId.make(`cmd-place-${started}`),
+            cardId: started,
+            workerId: WORKER_ID,
+            createdAt: t0,
+          });
+          yield* engine.dispatch({
+            type: "board.card.provision-worktree",
+            commandId: CommandId.make(`cmd-provision-${started}`),
+            cardId: started,
+            branch: `board/${started}`,
+            baseRefName: "main",
+            createdAt: t0,
+          });
+          const regroupedBefore = (yield* regroupedRows(elsewhere)).length;
+          const cancelWork = relayable(
+            "board_cancel_card_work",
+            boardHandlers.board_cancel_card_work,
+          );
+          yield* onWorker(
+            world,
+            threadId,
+            cancelWork({
+              cardId: started,
+              confirmCardKey: (yield* cardOf(started))!.key,
+              cardIds: [elsewhere],
+              approved: true,
+            }),
+          );
+          assert.strictEqual((yield* cardOf(elsewhere))?.parentCardId, started);
+          assert.strictEqual((yield* regroupedRows(elsewhere)).length, regroupedBefore + 1);
+          yield* onWorker(world, threadId, moveCard({ cardId: elsewhere, parentCardId: null }));
+
+          // Clearing its linked pull request leaves a row too, though a clear records none.
+          yield* engine.dispatch({
+            type: "board.card.set-linked-pull-request",
+            commandId: CommandId.make("cmd-link-elsewhere"),
+            cardId: elsewhere,
+            pullRequest: {
+              number: 9,
+              url: "https://github.com/acme/repo/pull/9",
+              state: "open",
+              title: "A pull request",
+              headBranch: "feature/elsewhere",
+              baseRef: "main",
+              checkedAt: t0,
+            },
+            createdAt: t0,
+          });
+          yield* onWorker(world, threadId, updateCard({ cardId: elsewhere, pullRequest: null }));
+          assert.isNull((yield* cardOf(elsewhere))?.pullRequest);
+          const cleared = (yield* queries.boardCardActivity(elsewhere)).filter(
+            (entry) => entry.kind === "card-edited" && entry.payload.editKind === "details",
+          );
+          assert.strictEqual(cleared.at(-1)?.actor.sourceWorkerId, WORKER_ID);
+          assert.strictEqual(cleared.length, 3);
 
           yield* onWorker(world, threadId, archiveCard({ cardId: elsewhere }));
           assert.isNotNull((yield* cardOf(elsewhere))?.archivedAt);

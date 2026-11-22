@@ -3472,8 +3472,22 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
         // Only transitions (`linked`, `state-changed`) earn a rail row. `updated` is
         // the same PR in the same state, and a vanished link is not the card's doing.
         const pullRequest = event.payload.pullRequest;
-        if (pullRequest === null) return;
-        if (event.payload.transition === "updated") return;
+        if (pullRequest === null || event.payload.transition === "updated") {
+          // An agent on another worker clearing or refreshing the link still says so (T3O-114).
+          const crossWorkerKind = boardActivityCrossWorkerEditKind(
+            event.commandId,
+            event.payload.cardId,
+          );
+          if (crossWorkerKind === null) return;
+          yield* recordActivity({
+            event,
+            cardId: event.payload.cardId,
+            kind: "card-edited",
+            payload: { editKind: crossWorkerKind },
+            threadId: null,
+          });
+          return;
+        }
         const kind =
           event.payload.transition === "linked"
             ? ("card-pull-request-linked" as const)

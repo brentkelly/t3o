@@ -440,14 +440,18 @@ const resolveLinkablePullRequest = Effect.fn("BoardToolkit.resolveLinkablePullRe
 
 /** Link `resolved` to the card, or clear its explicit link when null. */
 const linkCardPullRequest = Effect.fn("BoardToolkit.linkCardPullRequest")(function* (
+  deps: BoardToolDeps,
   card: Pick<BoardCard, "id" | "key">,
   resolved: BoardCardPullRequest | null,
 ) {
   const supervisor = yield* SupervisorReactor;
+  const commandId = yield* mintCommandId;
+  stampBoardActivityActor(commandId, agentActor(deps));
+  yield* stampActivitySource(deps, { commandId }, [card.id], "details");
   const result = yield* supervisor.linkPullRequest(
     card.id,
     resolved === null ? null : { number: resolved.number },
-    resolved === null ? undefined : { resolved },
+    resolved === null ? { commandId } : { resolved, commandId },
   );
   if (result.outcome === "refused") {
     return yield* new BoardToolError({ code: "rejected", message: result.detail });
@@ -886,6 +890,16 @@ const commandTargetCardIds = (command: BoardCommand): ReadonlyArray<BoardCardId>
   return [...ids];
 };
 
+/** The parent a command lands cards under, when that parent is a leaf it turns into a group. */
+const convertedParentOf = (
+  board: BoardState,
+  command: { readonly parentCardId?: BoardCardId | null | undefined },
+): BoardCardId | null => {
+  if (command.parentCardId === undefined || command.parentCardId === null) return null;
+  const parent = board.cards.find((card) => card.id === command.parentCardId);
+  return parent !== undefined && boardCardGroupOf(board, parent) === null ? parent.id : null;
+};
+
 /**
  * Stamp where a write comes from, so each target card's activity names the source card and,
  * across workers, the source worker (T3O-114). Only a caller with a card, or a schedule run,
@@ -893,13 +907,19 @@ const commandTargetCardIds = (command: BoardCommand): ReadonlyArray<BoardCardId>
  */
 const stampActivitySource = Effect.fn("BoardToolkit.stampActivitySource")(function* (
   deps: BoardToolDeps,
-  command: Pick<BoardCommand, "commandId">,
-  targetCardIds: ReadonlyArray<BoardCardId>,
+  command: Pick<BoardCommand, "commandId"> & {
+    readonly parentCardId?: BoardCardId | null | undefined;
+  },
+  named: ReadonlyArray<BoardCardId>,
   editKind: BoardActivitySource["editKind"],
 ) {
   const board = yield* readBoardState(deps);
   const own = resolveBoardCardForThread(board, deps.scope.thread.threadId);
-  if (own === null && (yield* scheduleCaller(deps.scope.thread.threadId)) === null) return;
+  if (own === null && !(yield* isScheduleRun(deps.scope.thread.threadId))) return;
+  // A leaf that takes its first child is changed too: it becomes a group.
+  const converted = convertedParentOf(board, command);
+  const targetCardIds =
+    converted === null || named.includes(converted) ? named : [...named, converted];
   // An unplaced card, a group and a card not yet created belong to no worker: the board server.
   const workerOf = (id: BoardCardId): BoardWorkerId => {
     const card = board.cards.find((candidate) => candidate.id === id);
@@ -1473,7 +1493,12 @@ const rawBoardHandlers = {
     // rejection or a mid-write crash could strand a half-built card while
     // the tool reports an error (inviting a retry that mints a duplicate).
     const commandId = yield* mintCommandId;
-    yield* stampActivitySource(deps, { commandId }, [cardId], undefined);
+    yield* stampActivitySource(
+      deps,
+      { commandId, parentCardId: parent?.id },
+      [cardId],
+      parent === undefined ? undefined : "regrouped",
+    );
     yield* createBoardCard({
       engine: deps.boardEngine,
       actor: agentActor(deps),
@@ -1509,7 +1534,7 @@ const rawBoardHandlers = {
     if (pullRequest !== null) {
       // The card exists now, so a failure here must say so: a retried
       // create would make a second card.
-      yield* linkCardPullRequest({ id: cardId, key }, pullRequest).pipe(
+      yield* linkCardPullRequest(deps, { id: cardId, key }, pullRequest).pipe(
         Effect.mapError(
           (error) =>
             new BoardToolError({
@@ -1698,7 +1723,7 @@ const rawBoardHandlers = {
     if (pullRequest !== undefined) {
       // When the field changes have already landed, a failure here must say
       // so: a retried whole call would apply them twice (briefAppend).
-      yield* linkCardPullRequest(target, pullRequest).pipe(
+      yield* linkCardPullRequest(deps, target, pullRequest).pipe(
         Effect.mapError((error) =>
           updatesFields
             ? new BoardToolError({
@@ -1867,7 +1892,7 @@ const rawBoardHandlers = {
       ...(cards.length === 0 ? {} : { adoptCardIds: cards.map((moving) => moving.id) }),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, command);
+    yield* dispatch(deps, command, cards.length === 0 ? undefined : "regrouped");
     return { cardId: card.id, key: card.key, cardIds: cards.map((moving) => moving.id) };
   }),
 
@@ -2376,6 +2401,16 @@ const scheduleCaller = Effect.fn("BoardToolkit.scheduleCaller")(function* (
     .createdCards(run.projectId, run.fileId)
     .pipe(Effect.mapError(internalError));
   return { store: store.value, projectId: run.projectId, fileId: run.fileId, cards };
+});
+
+/** Whether a thread is a schedule run's: one lookup, without the cards its runs created. */
+const isScheduleRun = Effect.fn("BoardToolkit.isScheduleRun")(function* (
+  threadId: McpThreadInvocationScope["thread"]["threadId"],
+) {
+  const store = yield* Effect.serviceOption(BoardScheduleStore);
+  if (Option.isNone(store)) return false;
+  const run = yield* store.value.runByThread(threadId).pipe(Effect.mapError(internalError));
+  return run !== null;
 });
 
 /** Erased to one shape to wrap them all; `boardHandlers` casts back to each handler's own type. */
