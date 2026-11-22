@@ -4762,7 +4762,10 @@ const make = Effect.gen(function* () {
 
   /** A held pass's reason ends by saying what to do, once. */
   const withCiRetryHint = (detail: string) =>
-    detail.includes("Retry CI") ? detail : `${detail} Retry CI, or Skip CI.`;
+    // T3o (T3O-130): a retry would only skip every step again.
+    detail.includes("Retry CI") || detail === BOARD_CI_ALL_SKIPPED_REASON
+      ? detail
+      : `${detail} Retry CI, or Skip CI.`;
 
   /**
    * T3o: CI that needs its worktree re-created and was denied room (T3O-86). Each placement

@@ -477,6 +477,8 @@ export type Harness = {
    * commands, so outcomes the card state does not carry (a pure report) are read here.
    */
   readonly decided: Effect.Effect<ReadonlyArray<HarnessEvent>>;
+  /** A card's CI pass rows, as the SQL projection keeps them. */
+  readonly ciPasses: (cardId: BoardCardId) => Effect.Effect<ReadonlyArray<BoardCiPass>>;
   /** Every merge the reactor asked the forge for, in order. */
   readonly mergeAttempts: Effect.Effect<ReadonlyArray<{ readonly number: number }>>;
   /** The merge method of each attempt, in the same order. */
@@ -1383,6 +1385,8 @@ export function withGovernor(
           ),
           commands: Ref.get(commands),
           decided: Ref.get(decided),
+          ciPasses: (cardId) =>
+            Effect.sync(() => [...ciPassRows.values()].filter((pass) => pass.cardId === cardId)),
           mergeAttempts: Ref.get(mergeAttempts),
           mergeMethods: Ref.get(mergeMethods),
           mergeStateProbes: Ref.get(mergeStateProbes),

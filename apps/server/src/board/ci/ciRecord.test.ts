@@ -258,3 +258,197 @@ it("T3O-61: a machine hold carries the headline when the step's own record hasn'
   assert.strictEqual(decided.payload.card.ciRoundTrips, 0);
   assert.strictEqual(decided.payload.card.ci?.fixAttempts, 0);
 });
+
+// T3o (T3O-130): a human skips one step of a live pass.
+const skipCi = (phase: BoardCardCi["phase"], marks?: ReadonlyArray<string>): BoardCard => ({
+  ...inCi(phase),
+  ci: {
+    ...ci(phase),
+    steps: [
+      { id: "lint", name: "Lint", status: "passed", startedAt: NOW, finishedAt: NOW },
+      { id: "test", name: "Test", status: "running", startedAt: NOW, finishedAt: null },
+      { id: "e2e", name: "E2E", status: "pending", startedAt: null, finishedAt: null },
+      { id: "docs", name: "Docs", status: "pending", startedAt: null, finishedAt: null },
+    ],
+    ...(marks === undefined ? {} : { skippedSteps: marks }),
+  },
+});
+
+const setSkip = (index: number, stepId: string, skip = true, runId = "run-1") =>
+  record({ kind: "set-step-skip", runId, index, stepId, skip, actor: "Ana" });
+
+const stepReport = (status: BoardCiPassStep["status"], name = "E2E"): BoardCiPassStep => ({
+  name,
+  command: "vp e2e",
+  timeoutMinutes: 5,
+  status,
+  startedAt: NOW,
+  finishedAt: status === "running" || status === "pending" ? null : NOW,
+  exitCode: status === "failed" ? 1 : null,
+  tail: "boom",
+  ...(status === "failed" ? { headline: headline("boom") } : {}),
+});
+
+it("T3O-130: skipping a running step settles it skipped, marks its id and patches its row", () => {
+  const decided = decideBoardCiRecord(skipCi("running"), setSkip(1, "test"));
+  assert.isTrue(decided.ok);
+  if (!decided.ok) return;
+  const next = decided.payload.card.ci!;
+  assert.deepStrictEqual(next.skippedSteps, ["test"]);
+  assert.strictEqual(next.steps[1]?.status, "skipped");
+  assert.strictEqual(next.steps[1]?.finishedAt, NOW);
+  assert.deepStrictEqual(decided.payload.stepRow, {
+    runId: "run-1",
+    index: 1,
+    patch: { status: "skipped", finishedAt: NOW, note: "Skipped by Ana" },
+  });
+  assert.deepStrictEqual(decided.payload.activity, {
+    kind: "card-ci-step-skip",
+    ciStepName: "Test",
+    ciStepSkip: true,
+  });
+});
+
+it("T3O-130: marking a pending step only adds its id; unskip takes it off", () => {
+  const marked = decideBoardCiRecord(skipCi("queued"), setSkip(2, "e2e"));
+  assert.isTrue(marked.ok);
+  if (!marked.ok) return;
+  assert.deepStrictEqual(marked.payload.card.ci?.skippedSteps, ["e2e"]);
+  assert.strictEqual(marked.payload.card.ci?.steps[2]?.status, "pending");
+  assert.strictEqual(marked.payload.stepRow, undefined);
+  const unmarked = decideBoardCiRecord(marked.payload.card, setSkip(2, "e2e", false));
+  assert.isTrue(unmarked.ok);
+  if (!unmarked.ok) return;
+  assert.strictEqual(unmarked.payload.card.ci?.skippedSteps, undefined);
+  assert.strictEqual(unmarked.payload.activity?.ciStepSkip, false);
+  // Unskip needs a mark, and works only before the step starts.
+  assert.isFalse(decideBoardCiRecord(skipCi("running"), setSkip(2, "e2e", false)).ok);
+  assert.isFalse(decideBoardCiRecord(skipCi("running", ["test"]), setSkip(1, "test", false)).ok);
+});
+
+it("T3O-130: a skip is refused on a settled step, a stale pass, a wrong id or a pass not running", () => {
+  // Passed already, and one that failed in the instant before the click.
+  assert.isFalse(decideBoardCiRecord(skipCi("running"), setSkip(0, "lint")).ok);
+  const failed = skipCi("running");
+  const failedCard = {
+    ...failed,
+    ci: {
+      ...failed.ci!,
+      steps: failed.ci!.steps.map((step, index) =>
+        index === 1 ? { ...step, status: "failed" as const } : step,
+      ),
+    },
+  };
+  assert.isFalse(decideBoardCiRecord(failedCard, setSkip(1, "test")).ok);
+  assert.isFalse(decideBoardCiRecord(skipCi("running"), setSkip(1, "test", true, "run-old")).ok);
+  assert.isFalse(decideBoardCiRecord(skipCi("running"), setSkip(1, "e2e")).ok);
+  for (const phase of ["fixing", "held", "stopped", "passed"] as const) {
+    assert.isFalse(decideBoardCiRecord(skipCi(phase), setSkip(2, "e2e")).ok, phase);
+  }
+});
+
+it("T3O-130: a skip that would leave nothing to run is refused", () => {
+  const solo: BoardCard = {
+    ...inCi("running"),
+    ci: {
+      ...ci("running"),
+      steps: [{ id: "only", name: "Only", status: "running", startedAt: NOW, finishedAt: null }],
+    },
+  };
+  const refused = decideBoardCiRecord(solo, setSkip(0, "only"));
+  assert.deepStrictEqual(refused, { ok: false, refusal: "Use Skip CI to skip all of CI." });
+  // A step that passed counts as run, so the rest may all be skipped.
+  const decided = decideBoardCiRecord(skipCi("running", ["e2e", "docs"]), setSkip(1, "test"));
+  assert.isTrue(decided.ok);
+  const unrun: BoardCard = {
+    ...inCi("running"),
+    ci: {
+      ...ci("running"),
+      steps: [
+        { id: "a", name: "A", status: "running", startedAt: NOW, finishedAt: null },
+        { id: "b", name: "B", status: "pending", startedAt: null, finishedAt: null },
+      ],
+      skippedSteps: ["b"],
+    },
+  };
+  assert.isFalse(decideBoardCiRecord(unrun, setSkip(0, "a")).ok);
+});
+
+it("T3O-130: a skipped row takes no more reports, and a marked step's end is stored skipped", () => {
+  const skipped = decideBoardCiRecord(skipCi("running"), setSkip(1, "test"));
+  assert.isTrue(skipped.ok);
+  if (!skipped.ok) return;
+  for (const status of ["running", "passed", "failed", "cancelled"] as const) {
+    assert.isFalse(
+      decideBoardCiRecord(
+        skipped.payload.card,
+        record({ kind: "step", runId: "run-1", index: 1, step: stepReport(status, "Test") }),
+      ).ok,
+      status,
+    );
+  }
+  // Skipped over skipped is a no-op.
+  const again = decideBoardCiRecord(
+    skipped.payload.card,
+    record({ kind: "step", runId: "run-1", index: 1, step: stepReport("skipped", "Test") }),
+  );
+  assert.isTrue(again.ok && again.payload.card.ci?.steps[1]?.status === "skipped");
+  // A marked step that started anyway and failed ends skipped, its headline dropped.
+  const marked = skipCi("running", ["e2e"]);
+  const started = decideBoardCiRecord(
+    marked,
+    record({ kind: "step", runId: "run-1", index: 2, step: stepReport("running") }),
+  );
+  assert.isTrue(started.ok && started.payload.card.ci?.steps[2]?.status === "running");
+  if (!started.ok) return;
+  const ended = decideBoardCiRecord(
+    started.payload.card,
+    record({ kind: "step", runId: "run-1", index: 2, step: stepReport("failed") }),
+  );
+  assert.isTrue(ended.ok);
+  if (!ended.ok) return;
+  assert.strictEqual(ended.payload.card.ci?.steps[2]?.status, "skipped");
+  assert.strictEqual(ended.payload.card.ci?.steps[2]?.id, "e2e");
+  assert.strictEqual(ended.payload.card.ci?.headline, undefined);
+  const row = ended.payload.stepRow;
+  assert.isTrue(row !== undefined && "step" in row);
+  if (row !== undefined && "step" in row) {
+    assert.strictEqual(row.step.status, "skipped");
+    assert.strictEqual(row.step.id, "e2e");
+    assert.strictEqual(row.step.headline, undefined);
+    assert.strictEqual(row.step.tail, "boom");
+  }
+  // A settled row can't be written skipped.
+  assert.isFalse(
+    decideBoardCiRecord(
+      marked,
+      record({ kind: "step", runId: "run-1", index: 0, step: stepReport("skipped", "Lint") }),
+    ).ok,
+  );
+});
+
+it("T3O-130: skips carry across an entry's passes and are dropped on a fresh or new entry", () => {
+  const start = (entry: number, fresh?: true) =>
+    record({
+      kind: "start-pass",
+      runId: "run-2",
+      entry,
+      ordinal: 2,
+      steps: boardCiStepsFromLegacy([{ name: "Test", command: "vp test", timeoutMinutes: 5 }]),
+      maxFixAttempts: 2,
+      logDir: "/tmp/ci/run-2",
+      queued: true,
+      fixThreadId: null,
+      ...(fresh === undefined ? {} : { fresh }),
+    });
+  const card = skipCi("held", ["e2e"]);
+  const same = decideBoardCiRecord(card, start(1));
+  assert.isTrue(same.ok && same.payload.card.ci?.skippedSteps?.[0] === "e2e");
+  // The new pass's steps carry their ids.
+  assert.isTrue(same.ok && same.payload.card.ci?.steps[0]?.id === "legacy-0");
+  assert.isTrue(same.ok && same.payload.started?.steps[0]?.id === "legacy-0");
+  const fresh = decideBoardCiRecord(card, start(2, true));
+  assert.isTrue(fresh.ok && fresh.payload.card.ci?.skippedSteps === undefined);
+  const next = decideBoardCiRecord(card, start(2));
+  assert.isTrue(next.ok && next.payload.card.ci?.skippedSteps === undefined);
+});
