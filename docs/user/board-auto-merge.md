@@ -52,8 +52,7 @@ auto-merge is looked at rather than given up on:
   the board stops and the card reads **Merge needs you**; clicking Merge allows one more fix. This
   happens whether or not the card is armed.
 - **The branch is behind its base** and your repository requires it to be up to date. The board
-  brings it up to date once (an agent merges the base in and pushes), then merges. If the base
-  moves again before the merge lands, the card holds rather than chasing it. Only GitHub says
+  brings it up to date once (an agent merges the base in and pushes), then merges. Only GitHub says
   whether being behind is the whole refusal; elsewhere a branch behind its base holds.
 - **Everything is green and the forge still says no** — a missing approval, a branch protection
   rule. That is a decision the board does not have, so it stops and says so.
@@ -63,6 +62,20 @@ auto-merge is looked at rather than given up on:
 - **An agent fixing the branch fails**, or the card has no pull request or no checkout to merge
   from: the card holds and says why. Linking a pull request to a card that had none lets the merge
   go ahead by itself.
+
+### One conflict fix at a time
+
+When several cards in Ready for merge need their conflicts resolved, or their branch brought up to
+date, against the same base branch, the board does them one at a time. Each fix would otherwise
+go stale the moment the card ahead of it merged. The others wear a grey **Queued · merge queue**
+pill and try their merge again when the card ahead merges, stops, or waits on you. Nothing is spent
+while a card waits, and its Merge button is off until its turn. Press **Start now** on a queued card to
+resolve it right away, alongside the one ahead.
+
+If the base moves while an agent is resolving conflicts, the board tells the agent to merge it in
+again. If the branch still conflicts, or is behind again, once the fix is done because the base
+moved meanwhile, the board runs the fix again rather than stopping, up to 10 times. After that the
+card holds and reads **Merge needs you**.
 
 Whatever happens, the forge's own words are on the card. Open it and the banner says why, which
 attempt it was, and how the checks stood.

@@ -2067,8 +2067,8 @@ it.effect(
           yield* withFixStep(h, "card-three");
           const result = yield* h.reactor.mergePullRequest(BoardCardId.make("card-two"));
           assert.strictEqual(result.outcome, "merged");
-          const steers = (yield* h.commands).filter(
-            (command) => command.type === "thread.send" && command.delivery === "steer",
+          const steers = (yield* h.commands).flatMap((command) =>
+            command.type === "thread.send" && command.delivery === "steer" ? [command] : [],
           );
           assert.deepStrictEqual(
             steers.map((command) => String(command.threadId)),
@@ -2205,8 +2205,10 @@ it.effect("an unarmed card refused when its turn comes says so on the card", () 
         yield* h.reactor.drain;
         assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-two"), 1);
         assert.isTrue(
-          mergeRefusedNotes(yield* h.commands).some((command) =>
-            String(command.detail).includes("Its turn in the merge queue came"),
+          (yield* h.commands).some(
+            (command) =>
+              command.type === "board.card.record-note" &&
+              command.detail.includes("Its turn in the merge queue came"),
           ),
         );
       }),

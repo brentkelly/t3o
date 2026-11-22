@@ -100,6 +100,7 @@ import {
   EMPTY_BOARD_STATE,
   liveBoardCardDependents,
   makeBoardCardShell,
+  emptyBoardCardMergeStay,
   unmetBoardCardDependencies,
   BoardCard,
   type BoardPlan,
@@ -114,6 +115,7 @@ import {
   defaultBoardCardGroup,
 } from "./boardGroups.ts";
 import { boardGateDue } from "./boardGates.ts";
+import { boardMergeQueueHeads, boardMergeQueueOrder } from "./boardMergeQueue.ts";
 import { BoardWorkerId } from "./boardWorkers.ts";
 import type {
   BoardCardAutoMergeHold,
@@ -3169,6 +3171,132 @@ describe("automation (T3O-38)", () => {
         // Any other stop stays until a person or a push revives it.
         const failed = hold({ classification: "other", stop: "fix-failed" });
         expect(due({ card: atMerge({ autoMergeHold: failed }) })).toBe(null);
+      });
+
+      it("merge: a queued card is the merge queue's to wake, unless it merged (T3O-128)", () => {
+        const queued = atMerge({ mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: NOW } });
+        expect(due({ card: queued })).toBe(null);
+        expect(due({ card: { ...queued, pullRequest: link("merged") } })).toBe("merged-done");
+        // A place left from an earlier stay is not a place.
+        expect(due({ card: { ...queued, stageEnteredAt: ENTERED } })).toBe("merge");
+      });
+
+      describe("the merge queue (T3O-128)", () => {
+        const tree = (id: string, baseRefName = "main") => ({
+          branch: `board/${id}`,
+          baseRefName,
+          path: `/wt/${id}`,
+          status: "ready" as const,
+          attempts: 1,
+          lastError: null,
+          reclaimBlockedReason: null,
+        });
+        const fixing = (id: string, overrides: Partial<BoardCard> = {}) =>
+          atMerge({
+            id: BoardCardId.make(id),
+            orderKey: id,
+            worktree: tree(id),
+            mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1, fixBaseTip: "main" },
+            ...overrides,
+          });
+        const key = { projectId: fixing("x").projectId, baseRefName: "main" };
+        const onWorker = (card: BoardCard): BoardCard => ({
+          ...card,
+          threadLinks: [
+            {
+              threadId: "thread-fix" as BoardCard["threadLinks"][number]["threadId"],
+              role: BOARD_SEED_STAGE_IDS.merge,
+              linkedAt: NOW,
+              tombstonedAt: null,
+              workerId: decodeWorkerId("worker-1") as NonNullable<
+                BoardCard["threadLinks"][number]["workerId"]
+              >,
+            },
+          ],
+        });
+        const isHead = (
+          card: BoardCard,
+          input: {
+            readonly status?: BoardCardStepState["status"];
+            readonly unreachable?: boolean;
+            readonly pending?: boolean;
+          } = {},
+        ) =>
+          boardMergeQueueHeads(
+            {
+              ...boardWith([card]),
+              stepStates:
+                input.status === undefined
+                  ? []
+                  : [
+                      step(card, {
+                        stepId: BOARD_SEED_STAGE_IDS.merge,
+                        status: input.status,
+                        threadId: "thread-fix" as BoardCardStepState["threadId"],
+                      }),
+                    ],
+            },
+            key,
+            {
+              workerUnreachable: () => input.unreachable === true,
+              ...(input.pending === undefined ? {} : { mergeStillPending: () => input.pending! }),
+            },
+          ).length === 1;
+
+        it.each([
+          ["started a base fix this stay", fixing("a"), {}, true],
+          [
+            "never started one",
+            fixing("a", { mergeStay: emptyBoardCardMergeStay(null) }),
+            {},
+            false,
+          ],
+          ["started one on an earlier stay", fixing("a", { stageEnteredAt: ENTERED }), {}, false],
+          ["has merged", fixing("a", { pullRequest: link("merged") }), {}, false],
+          ["is hard-held", fixing("a", { autoMergeHold: hold() }), {}, false],
+          [
+            "is soft-held, waiting on CI",
+            fixing("a", { autoMergeHold: hold({ retryAt: NOW }) }),
+            {},
+            true,
+          ],
+          ["is fixing", fixing("a"), { status: "running" }, true],
+          ["waits on a human", fixing("a"), { status: "awaiting-input" }, false],
+          ["has stalled", fixing("a"), { status: "stalled" }, false],
+          ["is paused", fixing("a"), { status: "paused" }, false],
+          ["is fixing on a worker", onWorker(fixing("a")), { status: "running" }, true],
+          [
+            "is fixing on an unreachable worker",
+            onWorker(fixing("a")),
+            { status: "running", unreachable: true },
+            false,
+          ],
+          ["merges into another base", fixing("a", { worktree: tree("a", "develop") }), {}, false],
+          ["left the merge stage", fixing("a", { stage: BOARD_SEED_STAGE_IDS.review }), {}, false],
+          ["is archived", fixing("a", { archivedAt: NOW }), {}, false],
+          ["no longer waits on its own merge", fixing("a"), { pending: false }, false],
+        ] as const)("a card that %s: head = %s", (_label, card, input, expected) => {
+          expect(isHead(card, input)).toBe(expected);
+        });
+
+        it("wakes by priority, then queue time, then drag order", () => {
+          const queued = (id: string, queuedAt: string, overrides: Partial<BoardCard> = {}) =>
+            fixing(id, {
+              mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt },
+              ...overrides,
+            });
+          const order = boardMergeQueueOrder(
+            boardWith([
+              queued("d", "2026-01-01T00:00:02.000Z"),
+              queued("c", "2026-01-01T00:00:01.000Z"),
+              queued("b", "2026-01-01T00:00:01.000Z"),
+              queued("a", "2026-01-01T00:00:09.000Z", { priority: "urgent" }),
+              fixing("head"),
+            ]),
+            key,
+          ).map((card) => String(card.id));
+          expect(order).toEqual(["a", "b", "c", "d"]);
+        });
       });
 
       it("merge: an armed group is due once every live child is done", () => {
