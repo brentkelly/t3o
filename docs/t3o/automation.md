@@ -26,7 +26,11 @@ User-facing wording lives in `docs/user/board-auto-plan.md`, `board-plan-review.
    once and the merge goes ahead; a branch merely behind its base is brought up to date once. Each
    allowance is spent per stay in Ready for merge: a second conflict, a failed fix, or a retry
    ladder run out ends in an amber hold that says why, and the card merges again only after a
-   human clicks Merge or someone else pushes to the branch.
+   human clicks Merge or someone else pushes to the branch. Conflict fixes and branch updates on
+   one project and base run one at a time: the rest wait in a queue, spending nothing, and the next
+   one's merge is retried when the card ahead merges, stops, or waits on a human (Start now jumps
+   the queue; switching Auto-merge off drops the places it took, never a human's). A fix whose base moved under it, and that conflicts or is behind again, runs again
+   instead of holding, up to 10 times per stay; then it holds amber.
 
 The toggles chain. A card with all five on goes from Planning to merged with no human step, a split
 included.
@@ -50,7 +54,7 @@ included.
   in a CI entry passes with no agent after that. A verdict whose branch moved counts as a fix. The
   only stop is the loop guard: 10 flaky checks in one entry stops the card as a flake storm.
 - **Flake cards are the one place the board turns automation on by itself.** Each flaky test files
-  a bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
+  a low-priority bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
   sign-off and Auto-build on, Auto-merge explicitly off (board-wide Auto-merge still locks it on,
   as for every card), and an unattended plan review. If the toggles are refused it stays in
   Backlog. It is

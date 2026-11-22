@@ -25,6 +25,8 @@ export interface BoardQueueInfo {
   readonly blocked?: boolean;
   /** Waiting on a human to sign in somewhere: violet (`--attention`). */
   readonly attention?: boolean;
+  /** T3o: what Start now does here, when it is not the step queue's override (T3O-128). */
+  readonly forceStartHint?: string;
 }
 
 /**

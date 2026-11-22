@@ -84,6 +84,7 @@ import { boardAttachmentLimits } from "./boardAttachmentUpload";
 import { boardConflictFix } from "./boardConflictFix";
 import { boardScheduleKind } from "./boardSchedule";
 import { boardQueueInfo } from "./boardQueueInfo";
+import { boardMergeQueueInfo } from "./boardMergeQueueInfo";
 import { BoardCardCapacityPanelHost } from "./BoardCardCapacityPanel";
 import { boardCardBlocksHint, boardCardPriorityStartedNote } from "./boardCardPriority";
 import {
@@ -278,6 +279,9 @@ export function BoardCardDetail({
     reportFailure: false,
   });
   const mergeCardPullRequest = useAtomCommand(boardEnvironment.mergeCardPullRequest, {
+    reportFailure: false,
+  });
+  const mergeQueueStartNow = useAtomCommand(boardEnvironment.mergeQueueStartNow, {
     reportFailure: false,
   });
   // T3o: "Link one". A refusal renders inline under the input.
@@ -649,6 +653,15 @@ export function BoardCardDetail({
               projects.find((project) => project.id === cardShell.projectId)?.title ??
               "this project",
           }),
+        });
+  // T3o: a merge-queue wait takes the queue section, and its Start now (T3O-128).
+  const mergeQueueInfo =
+    cardShell === undefined
+      ? null
+      : boardMergeQueueInfo({
+          card: cardShell,
+          running: boardRunningStepCount(allShellCards),
+          baseRef: detail?.card.worktree?.baseRefName ?? null,
         });
   // Null whenever reordering could not actually improve the card's position —
   // the rail hides the button rather than offering one that does nothing.
@@ -1380,12 +1393,26 @@ export function BoardCardDetail({
         });
       }}
       onClose={onClose}
-      queueInfo={queueInfo}
+      queueInfo={mergeQueueInfo ?? queueInfo}
+      mergeQueued={mergeQueueInfo !== null}
       queueForceStartPending={forceStartPending}
-      queueForceStartRequested={cardShell?.forceStart === true}
+      queueForceStartRequested={mergeQueueInfo === null && cardShell?.forceStart === true}
       onQueueForceStart={() => {
         setFeedback(null);
         setForceStartPending(true);
+        if (mergeQueueInfo !== null) {
+          void mergeQueueStartNow({ environmentId, input: { cardId: card.id } }).then((result) => {
+            setForceStartPending(false);
+            if (result._tag === "Failure") {
+              if (!isAtomCommandInterrupted(result)) {
+                setFeedback(describeBoardCommandFailure(result));
+              }
+              return;
+            }
+            setFeedback(describeBoardMergeOutcome(result.value));
+          });
+          return;
+        }
         void forceStartStep({ environmentId, input: { cardId: card.id } }).then((result) => {
           setForceStartPending(false);
           if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -1394,7 +1421,7 @@ export function BoardCardDetail({
         });
       }}
       onQueueMoveToFront={
-        queueMoveToFront === null
+        queueMoveToFront === null || mergeQueueInfo !== null
           ? undefined
           : () =>
               runCommand(

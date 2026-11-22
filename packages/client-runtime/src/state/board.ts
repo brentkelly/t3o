@@ -106,6 +106,7 @@ import {
   attachBoardCardFile,
   detachBoardCardFile,
   mergeBoardCardPullRequest,
+  startBoardMergeQueueCardNow,
   moveBoardCard,
   moveBoardCards,
   setBoardCardGroupSettings,
@@ -1091,6 +1092,11 @@ export function createBoardEnvironmentAtoms<R, ER>(
     mergeCardPullRequest: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:merge-card-pull-request",
       execute: (input: { readonly cardId: BoardCardId }) => mergeBoardCardPullRequest(input),
+    }),
+    /** T3o: a queued card's Start now (T3O-128): merge, and fix, now. */
+    mergeQueueStartNow: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:merge-queue-start-now",
+      execute: (input: { readonly cardId: BoardCardId }) => startBoardMergeQueueCardNow(input),
     }),
     /** Open the card's pull request from Building and route it past Code
         review. Resolves to the outcome the card reports — started, or

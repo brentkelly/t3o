@@ -268,6 +268,8 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
         earlierKey: earlier?.key ?? null,
       }),
       ...(bugLabelLive ? { labels: [BOARD_SEED_LABEL_IDS.bug] } : {}),
+      // Low, so a flake fix never queues ahead of the work it let through.
+      priority: "low",
       externalRef: { system: BOARD_CI_FLAKE_REF_SYSTEM, id: refId, url: null },
       planReview: {
         ...boardPlanReviewCreationDefaults(planExecution?.kind === "simple" ? planExecution : null),

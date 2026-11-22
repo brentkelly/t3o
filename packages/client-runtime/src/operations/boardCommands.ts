@@ -139,6 +139,10 @@ export const linkBoardCardPullRequest = (input: {
 export const mergeBoardCardPullRequest = (input: { readonly cardId: BoardCardId }) =>
   request(BOARD_WS_METHODS.mergeCardPullRequest, input);
 
+/** T3o: a queued card's Start now (T3O-128). */
+export const startBoardMergeQueueCardNow = (input: { readonly cardId: BoardCardId }) =>
+  request(BOARD_WS_METHODS.mergeQueueStartNow, input);
+
 /** Open the card's pull request from Building and route it past Code review.
     Same input shape as the merge action, and the same reason for
     being an RPC: the caller renders the outcome. */

@@ -169,6 +169,7 @@ const supervisorStub: SupervisorReactorShape = {
       supervisorCalls.merge.push(String(cardId));
       return { outcome: "merged", number: 284 } as const;
     }),
+  mergeQueueStartNow: () => Effect.succeed({ outcome: "merged", number: 284 } as const),
   submitForMerge: (cardId) =>
     Effect.sync(() => {
       supervisorCalls.submit.push(String(cardId));
