@@ -676,7 +676,8 @@ export function BoardCardContent({
       ) : null}
       <div
         className={cn(
-          "text-board-13 leading-board-1-35 font-medium text-pretty",
+          // A token too long to wrap (a test path) is clipped, never spills past the card.
+          "min-w-0 overflow-hidden text-board-13 leading-board-1-35 font-medium text-pretty",
           summary.muted || priority === "low" ? "text-muted-foreground" : "text-foreground",
         )}
       >
