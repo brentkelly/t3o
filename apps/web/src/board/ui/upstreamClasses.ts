@@ -24,7 +24,7 @@ export const UPSTREAM_TEXTAREA_MIN_HEIGHT = "min-h-17.5 max-sm:min-h-20.5";
 
 /** components/ui/dialog.tsx */
 export const UPSTREAM_DIALOG_VIEWPORT =
-  "fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-4";
+  "fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-4 [-webkit-app-region:no-drag]";
 export const UPSTREAM_DIALOG_VIEWPORT_MOBILE_SHEET =
   "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12";
 export const UPSTREAM_DIALOG_POPUP = "row-start-2 text-popover-foreground";
