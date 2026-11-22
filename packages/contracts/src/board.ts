@@ -1100,6 +1100,9 @@ export const BoardCardMergeStay = Schema.Struct({
   baseFollowUps: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   /** T3o: when the card joined its base's merge queue; null when not queued (T3O-128). */
   queuedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** T3o: a person's merge holds the queue place; otherwise Auto-merge does, and switching it off
+      gives the place up (T3O-128). */
+  queuedByHand: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type BoardCardMergeStay = typeof BoardCardMergeStay.Type;
 
@@ -1112,6 +1115,7 @@ export function emptyBoardCardMergeStay(stageEnteredAt: string | null): BoardCar
     fixBaseTip: null,
     baseFollowUps: 0,
     queuedAt: null,
+    queuedByHand: false,
   };
 }
 

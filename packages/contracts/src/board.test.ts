@@ -3254,6 +3254,7 @@ describe("automation (T3O-38)", () => {
           ["started one on an earlier stay", fixing("a", { stageEnteredAt: ENTERED }), {}, false],
           ["has merged", fixing("a", { pullRequest: link("merged") }), {}, false],
           ["is hard-held", fixing("a", { autoMergeHold: hold() }), {}, false],
+          ["is blocked by a dependency", fixing("a", { blocked: true }), {}, false],
           [
             "is soft-held, waiting on CI",
             fixing("a", { autoMergeHold: hold({ retryAt: NOW }) }),

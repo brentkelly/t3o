@@ -70,7 +70,9 @@ date, against the same base branch, the board does them one at a time. Each fix 
 go stale the moment the card ahead of it merged. The others wear a grey **Queued · merge queue**
 pill and try their merge again when the card ahead merges, stops, or waits on you. Nothing is spent
 while a card waits, and its Merge button is off until its turn. Press **Start now** on a queued card to
-resolve it right away, alongside the one ahead.
+resolve it right away, alongside the one ahead. A card that Auto-merge queued leaves the queue if
+you switch Auto-merge off; one you queued with Merge keeps its place until you move it out of Ready
+for merge. A card blocked by a dependency keeps its place but lets the cards behind it go first.
 
 If the base moves while an agent is resolving conflicts, the board tells the agent to merge it in
 again. If the branch still conflicts, or is behind again, once the fix is done because the base

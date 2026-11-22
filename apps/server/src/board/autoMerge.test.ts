@@ -2176,6 +2176,89 @@ it.effect("a queue place survives a restart and is woken on boot when nothing ho
   ),
 );
 
+it.effect("switching Auto-merge off gives up its queue place; a person's place stays", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        // Queued by Auto-merge, which was then switched off.
+        queueCard("card-one", {
+          ...cardAtMerge({ autoMerge: false, id: "card-one" }),
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+        }),
+        // Queued by a person's Merge click on an unarmed card.
+        queueCard("card-two", {
+          ...cardAtMerge({ autoMerge: false, id: "card-two" }),
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT, queuedByHand: true },
+        }),
+      ],
+      states: new Map(),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-one"), 0);
+        assert.strictEqual(stayOf(yield* h.board, "card-one")?.queuedAt, null);
+        assert.strictEqual(stageOf(yield* h.board, "card-one"), MERGE);
+        assert.strictEqual(stageOf(yield* h.board, "card-two"), DONE);
+      }),
+  ),
+);
+
+it.effect("a blocked queued card keeps its place, and the next card is woken instead", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        queueCard("card-one", {
+          blocked: true,
+          dependsOn: [BoardCardId.make("dep")],
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+        }),
+        queueCard("card-two", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: "2026-01-02T00:00:00.000Z" },
+        }),
+        makeBoardCard({ id: "dep", stage: BUILDING, orderKey: "b" }),
+      ],
+      states: new Map(),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        assert.strictEqual(attemptsOn(yield* h.mergeAttempts, "card-one"), 0);
+        assert.strictEqual(stayOf(yield* h.board, "card-one")?.queuedAt, QUEUED_AT);
+        assert.strictEqual(stageOf(yield* h.board, "card-two"), DONE);
+      }),
+  ),
+);
+
+it.effect("Start now on a card that is not queued queues it behind the head", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        queueCard("card-one", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1, fixBaseTip: "main" },
+        }),
+        // Unarmed, so only the click asks for its merge.
+        queueCard("card-two", cardAtMerge({ autoMerge: false, id: "card-two" })),
+      ],
+      states: new Map([
+        [284, probe({ pending: 1, passed: 1 })],
+        [285, conflictState()],
+      ]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        const result = yield* h.reactor.mergeQueueStartNow(BoardCardId.make("card-two"));
+        assert.deepStrictEqual(result, {
+          outcome: "queued",
+          behindCardId: BoardCardId.make("card-one"),
+        });
+        assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 0);
+        assert.isTrue(stayOf(yield* h.board, "card-two")?.queuedByHand ?? false);
+      }),
+  ),
+);
+
 it.effect("a queue place left from an earlier stay is not a queue place", () =>
   withGovernor(
     queueSetup({
@@ -2231,7 +2314,7 @@ it.effect("an unarmed card refused when its turn comes says so on the card", () 
         {
           ...cardAtMerge({ id: "card-two" }),
           orderKey: "card-two",
-          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT },
+          mergeStay: { ...emptyBoardCardMergeStay(null), queuedAt: QUEUED_AT, queuedByHand: true },
         },
       ],
       states: new Map([[285, probe({ passed: 2 })]]),

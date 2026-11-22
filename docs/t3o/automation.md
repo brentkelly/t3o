@@ -29,7 +29,7 @@ User-facing wording lives in `docs/user/board-auto-plan.md`, `board-plan-review.
    human clicks Merge or someone else pushes to the branch. Conflict fixes and branch updates on
    one project and base run one at a time: the rest wait in a queue, spending nothing, and the next
    one's merge is retried when the card ahead merges, stops, or waits on a human (Start now jumps
-   the queue). A fix whose base moved under it, and that conflicts or is behind again, runs again
+   the queue; switching Auto-merge off drops the places it took, never a human's). A fix whose base moved under it, and that conflicts or is behind again, runs again
    instead of holding, up to 10 times per stay; then it holds amber.
 
 The toggles chain. A card with all five on goes from Planning to merged with no human step, a split

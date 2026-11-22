@@ -404,6 +404,8 @@ interface MergeAttemptOptions {
   readonly bypassQueue?: boolean;
   /** The queue place to keep if the woken card has to wait again. */
   readonly queuedAt?: string;
+  /** A person asked for this merge, so a queue place it takes outlives Auto-merge. */
+  readonly byHand?: boolean;
 }
 
 /** What a "Submit for merge — no review" click did, for the RPC
@@ -6742,6 +6744,7 @@ const make = Effect.gen(function* () {
         [fix]: counts[fix] + 1,
         fixBaseTip: tip ?? UNMEASURED_BASE_TIP,
         queuedAt: null,
+        queuedByHand: false,
       },
       createdAt: yield* nowIso,
     });
@@ -6773,6 +6776,7 @@ const make = Effect.gen(function* () {
       ...emptyBoardCardMergeStay(counts.stageEnteredAt),
       fixBaseTip: counts.fixBaseTip,
       queuedAt: counts.queuedAt,
+      queuedByHand: counts.queuedByHand,
       baseFollowUps: by === "click" ? 0 : counts.baseFollowUps,
     };
     const empty = kept.fixBaseTip === null && kept.queuedAt === null && kept.baseFollowUps === 0;
@@ -6929,10 +6933,10 @@ const make = Effect.gen(function* () {
         mergeAwaitingChecks.add(String(cardId));
         outcome = justReadiedRefusal(recentPullRequest.number);
       } else {
-        outcome = yield* mergeCardPullRequest(
-          cardId,
-          options.bypassQueue === true ? { bypassQueue: true } : {},
-        );
+        outcome = yield* mergeCardPullRequest(cardId, {
+          byHand: true,
+          ...(options.bypassQueue === true ? { bypassQueue: true } : {}),
+        });
       }
       const card = yield* readCard(cardId);
       if (
@@ -9233,6 +9237,11 @@ const make = Effect.gen(function* () {
         }
         const live = (yield* readCard(card.id)) ?? card;
         const counts = boardCardMergeStayCounts(live);
+        // An unarmed card's merge was a person's, even when a fix's completion re-asks for it.
+        const byHand =
+          options.byHand === true ||
+          (counts.queuedAt !== null && counts.queuedByHand) ||
+          !(yield* cardAutoMergeArmed(live));
         yield* dispatch({
           type: "board.card.update",
           commandId: yield* commandId("merge-queue-join"),
@@ -9240,6 +9249,7 @@ const make = Effect.gen(function* () {
           mergeStay: {
             ...counts,
             queuedAt: counts.queuedAt ?? options.queuedAt ?? (yield* nowIso),
+            queuedByHand: byHand,
           },
           createdAt: yield* nowIso,
         });
@@ -9247,6 +9257,27 @@ const make = Effect.gen(function* () {
       }),
     );
   });
+
+  /**
+   * Give up the queue places Auto-merge took on cards it no longer merges: switched off, or the
+   * card stopped being armed while it waited. A person's place stays. Run under the queue lock.
+   */
+  const dropAbandonedQueuePlaces = Effect.fn("board-supervisor-dropAbandonedQueuePlaces")(
+    function* (key: BoardMergeQueueKey) {
+      for (const card of boardMergeQueueOrder(yield* readBoard, key)) {
+        const counts = boardCardMergeStayCounts(card);
+        if (counts.queuedByHand || mergeAwaitingChecks.has(String(card.id))) continue;
+        if (yield* cardAutoMergeArmed(card)) continue;
+        yield* dispatch({
+          type: "board.card.update",
+          commandId: yield* commandId("merge-queue-leave"),
+          cardId: card.id,
+          mergeStay: { ...counts, queuedAt: null, queuedByHand: false },
+          createdAt: yield* nowIso,
+        });
+      }
+    },
+  );
 
   /**
    * Wake the next queued card on a key when nothing holds its base, and keep going until one
@@ -9263,7 +9294,9 @@ const make = Effect.gen(function* () {
       const woken = yield* mergeQueueLock.withPermits(1)(
         Effect.gen(function* () {
           if (mergeQueueWaking.has(keyString)) return null;
-          const next = boardMergeQueueOrder(yield* readBoard, key)[0];
+          yield* dropAbandonedQueuePlaces(key);
+          // A blocked card keeps its place but waits on its dependency, not its turn.
+          const next = boardMergeQueueOrder(yield* readBoard, key).find((card) => !card.blocked);
           if (next === undefined) return null;
           if ((yield* mergeQueueHolders(key)).length > 0) return null;
           const counts = boardCardMergeStayCounts(next);
@@ -9273,15 +9306,16 @@ const make = Effect.gen(function* () {
             type: "board.card.update",
             commandId: yield* commandId("merge-queue-wake"),
             cardId: next.id,
-            mergeStay: { ...counts, queuedAt: null },
+            mergeStay: { ...counts, queuedAt: null, queuedByHand: false },
             createdAt: yield* nowIso,
           });
-          return { cardId: next.id, queuedAt: counts.queuedAt };
+          return { cardId: next.id, queuedAt: counts.queuedAt, byHand: counts.queuedByHand };
         }),
       );
       if (woken === null) return null;
       const outcome = yield* mergeCardPullRequest(woken.cardId, {
         fromQueue: true,
+        ...(woken.byHand ? { byHand: true } : {}),
         ...(woken.queuedAt === null ? {} : { queuedAt: woken.queuedAt }),
       });
       return { cardId: woken.cardId, outcome };
@@ -9371,15 +9405,15 @@ const make = Effect.gen(function* () {
     const card = yield* readCard(cardId);
     if (card === null) return { outcome: "unknown-card" } as const;
     const counts = boardCardMergeStayCounts(card);
-    if (counts.queuedAt !== null) {
-      yield* dispatch({
-        type: "board.card.update",
-        commandId: yield* commandId("merge-queue-start-now"),
-        cardId: card.id,
-        mergeStay: { ...counts, queuedAt: null },
-        createdAt: yield* nowIso,
-      });
-    }
+    // Only a queued card skips the queue: on any other, Start now is a plain Merge click.
+    if (counts.queuedAt === null) return yield* mergeCardPullRequestByHand(cardId);
+    yield* dispatch({
+      type: "board.card.update",
+      commandId: yield* commandId("merge-queue-start-now"),
+      cardId: card.id,
+      mergeStay: { ...counts, queuedAt: null, queuedByHand: false },
+      createdAt: yield* nowIso,
+    });
     return yield* mergeCardPullRequestByHand(cardId, { bypassQueue: true });
   });
 
@@ -9731,6 +9765,7 @@ const make = Effect.gen(function* () {
                 baseFollowUps: spent.baseFollowUps + 1,
                 fixBaseTip: tip,
                 queuedAt: null,
+                queuedByHand: false,
               },
               createdAt: yield* nowIso,
             });
@@ -9943,12 +9978,20 @@ const make = Effect.gen(function* () {
         if (kind === undefined && boardCardMergeStayCounts(card).fixBaseTip === null) continue;
         const step = boardCardStepState(board, card.id);
         if (step?.status !== "running" || step.threadId === null) continue;
+        // Per fix, so one failed steer does not skip the others.
         yield* sendTurn({
           threadId: step.threadId,
           text: `The base branch \`${key.baseRefName}\` just moved (${merged.key} merged). Fetch it and merge it in again, resolving any new conflicts, before you finish.`,
           runtimeMode: step.runtimeMode,
           delivery: "steer",
-        });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("board supervisor: base-moved steer failed", {
+              cardId: card.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
       }
     },
     Effect.catchCause((cause) =>
