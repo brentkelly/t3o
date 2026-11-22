@@ -460,6 +460,23 @@ describe("export", () => {
     expect(boardProjectDeltasEqual(exported.delta, upgraded)).toBe(true);
   });
 
+  it("round-trips the CI reservation and under-load threshold; absent stays absent (T3O-127)", () => {
+    const back = resolve({ resources: { ciCpuCores: 8, ciLoadThreshold: 60 } });
+    expect(back.delta.resources).toMatchObject({ ciCpuCores: 8, ciLoadThreshold: 60 });
+    const file = buildT3oProjectFile({ board: EMPTY_BOARD_STATE, config: back.delta });
+    expect(file.resources).toEqual({ ciCpuCores: 8, ciLoadThreshold: 60 });
+    const exported = resolve(JSON.parse(JSON.stringify(file)));
+    expect(boardProjectDeltasEqual(exported.delta, back.delta)).toBe(true);
+    const bad = resolve({ resources: { ciCpuCores: -1, ciLoadThreshold: 101 } });
+    expect(bad.delta.resources).not.toHaveProperty("ciCpuCores");
+    expect(bad.delta.resources).not.toHaveProperty("ciLoadThreshold");
+    expect(bad.delta.warnings.join("\n")).toContain("resources.ciCpuCores");
+    expect(bad.delta.warnings.join("\n")).toContain("resources.ciLoadThreshold");
+    expect(resolve({ resources: { setupTimeoutMinutes: 5 } }).delta.resources).not.toHaveProperty(
+      "ciLoadThreshold",
+    );
+  });
+
   it("round-trips Stop on failure: absent is Yes, and only No is written (T3O-57)", () => {
     const steps = [{ id: "lint", name: "Lint", command: "vp lint" }];
     const yes = withFile({ ci: { steps } });

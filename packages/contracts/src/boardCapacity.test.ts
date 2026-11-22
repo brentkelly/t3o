@@ -47,6 +47,26 @@ describe("normalizeBoardReadinessPath", () => {
 });
 
 describe("boardProjectConfigVersion", () => {
+  it("moves with the CI reservation and threshold only when they are set (T3O-127)", () => {
+    const delta = { stageSwitches: {}, overrides: {}, ci: { steps: [] } };
+    const resources = {
+      baseline: null,
+      setupTimeoutMinutes: 5,
+      readinessPath: null,
+      readinessTimeoutSeconds: null,
+      readinessChecks: [],
+    };
+    const before = boardProjectConfigVersion({ ...delta, resources });
+    // A stable hash: the same as this config hashed before the keys existed.
+    expect(before).toBe(boardProjectConfigVersion({ ...delta, resources: { ...resources } }));
+    expect(
+      boardProjectConfigVersion({ ...delta, resources: { ...resources, ciCpuCores: 8 } }),
+    ).not.toBe(before);
+    expect(
+      boardProjectConfigVersion({ ...delta, resources: { ...resources, ciLoadThreshold: 60 } }),
+    ).not.toBe(before);
+  });
+
   it("is unchanged for a config without resources, and moves when they are set", () => {
     const delta = { stageSwitches: {}, overrides: {}, ci: { steps: [] } };
     const before = boardProjectConfigVersion(delta);

@@ -325,9 +325,25 @@ it.effect(
         exitCode: 1,
         result: {
           summary: null,
-          failures: [{ title: "adds", file: "a.test.ts", flaky: true, repro: "vp test a" }],
+          failures: [
+            { title: "adds", file: "a.test.ts", flaky: true, repro: "vp test a", loadSensitive: true },
+          ],
+          skippedUnderLoad: 2,
         },
-        flaky: [{ title: "adds", file: "a.test.ts", repro: "vp test a" }],
+        // T3o (T3O-127): the worker's load reading and note cross the wire too.
+        cpuPressure: 84.5,
+        underLoad: true as const,
+        skippedUnderLoad: 2,
+        note: "Target test inconclusive under load",
+        flaky: [
+          {
+            title: "adds",
+            file: "a.test.ts",
+            repro: "vp test a",
+            loadSensitive: true as const,
+            underLoad: true as const,
+          },
+        ],
       };
       // Through the wire schema both ways, as the gateway decodes them.
       const wire = yield* decodeCiProgress({ _tag: "step", index: 0, step: flakyStep });
@@ -349,13 +365,25 @@ it.effect(
         },
         worker,
       ).run(
-        { ...request, knownFlaky: ["b.test.ts › subtracts"], notFlakyTitle: "c.test.ts › own" },
+        {
+          ...request,
+          knownFlaky: ["b.test.ts › subtracts"],
+          notFlakyTitle: "c.test.ts › own",
+          loadThreshold: 60,
+          inconclusiveTargetAllowed: true,
+        },
         (progress) => Effect.sync(() => seen.push(progress)),
       );
       const sent = decodeRunCiInputUnknown(inputs[0]);
       assert.deepStrictEqual(sent.knownFlaky, ["b.test.ts › subtracts"]);
       assert.strictEqual(sent.notFlakyTitle, "c.test.ts › own");
+      assert.strictEqual(sent.loadThreshold, 60);
+      assert.strictEqual(sent.inconclusiveTargetAllowed, true);
       assert.deepStrictEqual(seen[0]?.step.flaky, flakyStep.flaky);
       assert.deepStrictEqual(seen[0]?.step.result, flakyStep.result);
+      assert.strictEqual(seen[0]?.step.cpuPressure, 84.5);
+      assert.strictEqual(seen[0]?.step.underLoad, true);
+      assert.strictEqual(seen[0]?.step.skippedUnderLoad, 2);
+      assert.strictEqual(seen[0]?.step.note, flakyStep.note);
     }),
 );

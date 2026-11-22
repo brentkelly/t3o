@@ -27,6 +27,7 @@ import * as Ref from "effect/Ref";
 
 import { buildingCard, projectId } from "../supervisorHarness.testkit.ts";
 import {
+  ciProfileOf,
   desiredHeavy,
   HEAVY_TAIL_MS,
   holdForDenial,
@@ -852,5 +853,105 @@ it.effect("syncAll reads each project's repository key once, however many worker
     yield* admission.syncAll();
     assert.strictEqual(fake.syncs.length, 3);
     assert.deepStrictEqual([...keyReads].sort(), [other, projectId].sort());
+  }),
+);
+
+// T3o (T3O-127): a CI pass reserves the CPU its project declares, best effort.
+const withCiCores = (cards: ReadonlyArray<BoardCard>, ciCpuCores: number): BoardState => ({
+  ...boardWith(cards),
+  projectStageConfigs: {
+    [projectId]: {
+      stageSwitches: {},
+      overrides: {},
+      ci: { steps: [] },
+      dismissedImportSha: null,
+      warnings: [],
+      version: "v1",
+      lastChangedBy: null,
+      resources: {
+        baseline: null,
+        setupTimeoutMinutes: null,
+        readinessPath: null,
+        readinessTimeoutSeconds: null,
+        readinessChecks: [],
+        ciCpuCores,
+      },
+    },
+  },
+});
+
+const inCi = (card: BoardCard, phase: "running" | "passed" = "running"): BoardCard => ({
+  ...card,
+  ci: { runId: "run-1", entry: 1, fixAttempts: 0, maxFixAttempts: 2, phase, steps: [] },
+});
+
+it("a CI profile raises only the CPU, never past the worker's declared CPU", () => {
+  const base = { cpuCores: 2, ramGiB: 4, diskGB: 5 };
+  assert.deepStrictEqual(ciProfileOf(base, 8, 16), { cpuCores: 8, ramGiB: 4, diskGB: 5 });
+  assert.deepStrictEqual(ciProfileOf(base, 40, 16), { cpuCores: 16, ramGiB: 4, diskGB: 5 });
+  assert.deepStrictEqual(ciProfileOf(base, 1, 16), base);
+  assert.deepStrictEqual(ciProfileOf(base, undefined, 16), base);
+});
+
+it.effect("a CI pass on a heavy card grows to the CI reservation when it fits, once", () =>
+  Effect.gen(function* () {
+    const now = { ms: T0 };
+    const h = yield* harness(withCiCores([inCi(granted("a"))], 40), now);
+    yield* h.admission.syncAll();
+    assert.isTrue(yield* h.admission.ensureCiReservation(BoardCardId.make("a")));
+    // Clamped to the worker's 16 cores; RAM and disk unchanged.
+    assert.deepStrictEqual((yield* h.grantOf("a"))?.profile, {
+      cpuCores: 16,
+      ramGiB: 4,
+      diskGB: 5,
+    });
+    assert.deepStrictEqual(
+      h.fake.claims.map((claim) => [claim.kind, claim.profile.cpuCores]),
+      [["grow", 16]],
+    );
+    assert.match(h.fake.claims[0]!.claimId, /^a:ci-grow:/);
+    // Already holding it: nothing more to ask.
+    assert.isFalse(yield* h.admission.ensureCiReservation(BoardCardId.make("a")));
+    assert.lengthOf(h.fake.claims, 1);
+  }),
+);
+
+it.effect("a CI grow that is denied admits on the old grant and leaves the denial cache", () =>
+  Effect.gen(function* () {
+    const now = { ms: T0 };
+    const h = yield* harness(
+      withCiCores([inCi(granted("a")), granted("b", { heavy: false })], 8),
+      now,
+    );
+    yield* h.admission.syncAll();
+    h.fake.external.set(BOARD_LOCAL_WORKER_ID, { cpuCores: 12, ramGiB: 0, diskGB: 0 });
+    assert.isFalse(yield* h.admission.ensureCiReservation(BoardCardId.make("a")));
+    assert.strictEqual((yield* h.grantOf("a"))?.profile.cpuCores, 2);
+    assert.lengthOf(h.fake.claims, 1);
+    // A light card is never grown to the CI profile: it goes heavy at its own first.
+    assert.isFalse(yield* h.admission.ensureCiReservation(BoardCardId.make("b")));
+    assert.lengthOf(h.fake.claims, 1);
+    // A worker the board can't reach is never asked.
+    const offline = yield* harness(withCiCores([inCi(granted("a"))], 8), now);
+    assert.isFalse(yield* offline.admission.ensureCiReservation(BoardCardId.make("a")));
+    assert.lengthOf(offline.fake.claims, 0);
+  }),
+);
+
+it.effect("a CI pass keeps its larger CPU until it ends, then shrinks back", () =>
+  Effect.gen(function* () {
+    const now = { ms: T0 };
+    const h = yield* harness(withCiCores([inCi(granted("a"))], 8), now);
+    yield* h.admission.syncAll();
+    assert.isTrue(yield* h.admission.ensureCiReservation(BoardCardId.make("a")));
+    yield* h.admission.resizeGrants();
+    assert.strictEqual((yield* h.grantOf("a"))?.profile.cpuCores, 8);
+    assert.lengthOf(h.fake.claims, 1);
+    yield* Ref.update(h.board, (current) => ({
+      ...current,
+      cards: current.cards.map((card) => inCi(card, "passed")),
+    }));
+    yield* h.admission.resizeGrants();
+    assert.strictEqual((yield* h.grantOf("a"))?.profile.cpuCores, 2);
   }),
 );

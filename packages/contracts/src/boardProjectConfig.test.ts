@@ -309,6 +309,24 @@ describe("script reporting", () => {
     expect(parsed.result?.failures).toEqual([{ title: "adds", flaky: true, repro: "vp test a" }]);
   });
 
+  it("keeps a failure's load-sensitive mark and the skipped-under-load count (T3O-127)", () => {
+    const parsed = parseBoardCiResultFile(
+      JSON.stringify({
+        skippedUnderLoad: 3,
+        failures: [{ title: "slow", flaky: true, loadSensitive: true }],
+      }),
+    );
+    expect(parsed.result).toEqual({
+      summary: null,
+      skippedUnderLoad: 3,
+      failures: [{ title: "slow", flaky: true, loadSensitive: true }],
+    });
+    // A bad count is ignored, never a failure.
+    const bad = parseBoardCiResultFile(JSON.stringify({ skippedUnderLoad: -1, failures: [] }));
+    expect(bad.result).toEqual({ summary: null, failures: [] });
+    expect(bad.complete).toBe(true);
+  });
+
   it("clips an over-long failure field rather than dropping the failure (T3O-126)", () => {
     const parsed = parseBoardCiResultFile(
       JSON.stringify({ failures: [{ title: "real", detail: "x".repeat(5_000) }] }),
