@@ -604,24 +604,26 @@ it.effect("passes the project's submodules setting to the worktree add, and only
 
 // T3O-133: card worktrees follow t3.json's sparse patterns like threads do; a pattern file the
 // base lacks fails provisioning as a git error, which the card reports, never a crash.
-it.effect("fails provisioning as a git error when t3.json names a missing sparse pattern file", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      yield* writeTextFile(cwd, "t3.json", `{ "worktreeSparsePatternsPath": "missing.txt" }`);
-      yield* git(cwd, ["add", "."]);
-      yield* git(cwd, ["commit", "-m", "sparse"]);
-      const error = yield* provisionBoardCardWorktree({
-        projectCwd: cwd,
-        branch: "board/card-sparse",
-        baseRefName: initialBranch,
-        submodules: null,
-      }).pipe(Effect.flip);
-      assert.instanceOf(error, GitCommandError);
-      assert.include(error.message, "missing.txt");
-    }),
-  ).pipe(Effect.provide(TestLayer)),
+it.effect(
+  "fails provisioning as a git error when t3.json names a missing sparse pattern file",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "t3.json", `{ "worktreeSparsePatternsPath": "missing.txt" }`);
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "sparse"]);
+        const error = yield* provisionBoardCardWorktree({
+          projectCwd: cwd,
+          branch: "board/card-sparse",
+          baseRefName: initialBranch,
+          submodules: null,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, GitCommandError);
+        assert.include(error.message, "missing.txt");
+      }),
+    ).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("resolves the submodules setting from the project's own override", () =>

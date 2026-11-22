@@ -820,21 +820,22 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
       attachments: ReadonlyArray<ChatAttachment>,
     ) =>
       Effect.flatMap(freshMessageId, (messageId) =>
-        ThreadMessageIntake.dispatchCommand({
-          type: "message.dispatch",
-          commandId,
-          threadId: input.threadId,
-          messageId,
-          text: input.text,
-          attachments,
-          dispatchMode: { type: "start_immediately" },
-          // Only where the provider steers in place; `auto` may resolve to an interrupt-restart.
-          ...(steer ? { deliveryIntent: "steer" as const } : {}),
-          ...BOARD_AUTHOR,
-        },
-        // The board acts for the server itself, which holds every scope.
-        { managesProviders: true },
-      ),
+        ThreadMessageIntake.dispatchCommand(
+          {
+            type: "message.dispatch",
+            commandId,
+            threadId: input.threadId,
+            messageId,
+            text: input.text,
+            attachments,
+            dispatchMode: { type: "start_immediately" },
+            // Only where the provider steers in place; `auto` may resolve to an interrupt-restart.
+            ...(steer ? { deliveryIntent: "steer" as const } : {}),
+            ...BOARD_AUTHOR,
+          },
+          // The board acts for the server itself, which holds every scope.
+          { managesProviders: true },
+        ),
       ).pipe(Effect.provideContext(intakeServices));
     // The claim is all-or-nothing and runs before the dispatch, so nothing
     // was committed: the turn goes again without its attachments, which
