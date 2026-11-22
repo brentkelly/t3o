@@ -3362,7 +3362,7 @@ export const BoardProjectLoadSensitiveEntry = Schema.Struct({
 export type BoardProjectLoadSensitiveEntry = typeof BoardProjectLoadSensitiveEntry.Type;
 
 /** How long an entry lives after its test's last busy flake. */
-export const BOARD_CI_LOAD_SENSITIVE_TTL_DAYS = 14;
+const BOARD_CI_LOAD_SENSITIVE_TTL_DAYS = 14;
 /** The most entries a project's list holds; past it the oldest is evicted. */
 export const BOARD_CI_LOAD_SENSITIVE_MAX = 50;
 
@@ -3424,14 +3424,16 @@ export function boardLoadSensitiveUpsert(
         Date.parse(a.entry.lastFlakedAt) - Date.parse(b.entry.lastFlakedAt) || a.index - b.index,
     );
   const evicted = new Set(
-    oldestFirst.slice(0, entries.length - BOARD_CI_LOAD_SENSITIVE_MAX).map(({ entry }) => entry.key),
+    oldestFirst
+      .slice(0, entries.length - BOARD_CI_LOAD_SENSITIVE_MAX)
+      .map(({ entry }) => entry.key),
   );
   return entries.filter((entry) => !evicted.has(entry.key));
 }
 
 /** The list's revision on the shell, opaque: every record and removal changes it, so a client
     knows to refetch the list. Null for no list. */
-export function boardLoadSensitiveRevision(
+function boardLoadSensitiveRevision(
   entries: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
 ): string | null {
   if (entries === undefined) return null;

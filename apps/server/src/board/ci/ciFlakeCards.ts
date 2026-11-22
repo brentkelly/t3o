@@ -423,10 +423,7 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     script-flagged flakes beside a real failure. */
 export function boardCiPassFlakes(
   steps: ReadonlyArray<
-    Pick<
-      BoardCiPassStep,
-      "name" | "command" | "status" | "result" | "flaky" | "kind" | "underLoad"
-    >
+    Pick<BoardCiPassStep, "name" | "command" | "status" | "result" | "flaky" | "kind" | "underLoad">
   >,
 ): ReadonlyArray<BoardCiFlake> {
   return steps.flatMap((step) => {
@@ -476,7 +473,7 @@ export function boardCiPassFlakes(
 
 /** T3o (T3O-129): every test a pass's steps deferred to the nightly, by key, once each. A
     skipped step vouches for nothing, its deferrals included. */
-export function boardCiPassDeferred(
+function boardCiPassDeferred(
   steps: ReadonlyArray<Pick<BoardCiPassStep, "status" | "deferred">>,
 ): ReadonlyArray<string> {
   const keys = new Set<string>();
@@ -510,6 +507,9 @@ export const noteBoardCiDeferred = Effect.fn("BoardCiFlakeCards.noteDeferred")(f
     ),
     createdAt: yield* deps.nowIso,
   };
-  stampBoardActivityActor(command.commandId, { ...BOARD_CI_FLAKE_ACTOR, name: "CI: deferred tests" });
+  stampBoardActivityActor(command.commandId, {
+    ...BOARD_CI_FLAKE_ACTOR,
+    name: "CI: deferred tests",
+  });
   yield* deps.dispatch(command);
 });

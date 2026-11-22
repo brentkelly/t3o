@@ -363,7 +363,7 @@ function boardCiPassedDetail(skipped: number, deferred: number): string {
 
 /** T3o (T3O-129): load-sensitive tests the steps that ran deferred to the nightly. A full
     pass row lists them; a shell step carries the count. */
-export function boardCiDeferredCount(
+function boardCiDeferredCount(
   steps: ReadonlyArray<{
     readonly status: BoardCiStepStatus;
     readonly deferred?: ReadonlyArray<unknown> | number;

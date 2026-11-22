@@ -408,21 +408,23 @@ it.effect("on a flake card's own CI, another busy test is listed but its target 
   }),
 );
 
-it.effect("a second filing in the same run records the new keys; a repeat is the same command", () =>
-  Effect.gen(function* () {
-    const { deps, commands } = yield* fakeBoard([tested]);
-    yield* file(deps, [flake("one", { underLoad: true })]);
-    yield* file(deps, [flake("one", { underLoad: true }), flake("two", { underLoad: true })]);
-    yield* file(deps, [flake("one", { underLoad: true }), flake("two", { underLoad: true })]);
-    const records = ofType(commands, "board.project.record-load-sensitive");
-    assert.deepStrictEqual(
-      records.map((record) => record.entries.map((entry) => entry.title)),
-      [["one"], ["one", "two"], ["one", "two"]],
-    );
-    // The command id dedupes a repeat; a growing flake set gets a new one.
-    assert.notStrictEqual(records[0]?.commandId, records[1]?.commandId);
-    assert.strictEqual(records[1]?.commandId, records[2]?.commandId);
-  }),
+it.effect(
+  "a second filing in the same run records the new keys; a repeat is the same command",
+  () =>
+    Effect.gen(function* () {
+      const { deps, commands } = yield* fakeBoard([tested]);
+      yield* file(deps, [flake("one", { underLoad: true })]);
+      yield* file(deps, [flake("one", { underLoad: true }), flake("two", { underLoad: true })]);
+      yield* file(deps, [flake("one", { underLoad: true }), flake("two", { underLoad: true })]);
+      const records = ofType(commands, "board.project.record-load-sensitive");
+      assert.deepStrictEqual(
+        records.map((record) => record.entries.map((entry) => entry.title)),
+        [["one"], ["one", "two"], ["one", "two"]],
+      );
+      // The command id dedupes a repeat; a growing flake set gets a new one.
+      assert.notStrictEqual(records[0]?.commandId, records[1]?.commandId);
+      assert.strictEqual(records[1]?.commandId, records[2]?.commandId);
+    }),
 );
 
 it("reads a pass's flakes as under load from the step or the entry", () => {

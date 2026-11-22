@@ -2085,7 +2085,10 @@ it.effect("T3O-129: a flake card's run request leaves its own target off the ski
     });
     const config = {
       ...ciConfig(),
-      loadSensitive: [entry("src/math.test.ts", "adds two numbers"), entry("e2e/a.spec.ts", "slow")],
+      loadSensitive: [
+        entry("src/math.test.ts", "adds two numbers"),
+        entry("e2e/a.spec.ts", "slow"),
+      ],
     };
     yield* withGovernor({ board: boardWith([subject], config), settings }, (h) =>
       Effect.gen(function* () {

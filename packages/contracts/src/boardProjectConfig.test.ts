@@ -382,7 +382,9 @@ describe("load-sensitive list (T3O-129)", () => {
 
   it("adds, refreshes once per run, and prunes what expired", () => {
     const first = boardLoadSensitiveUpsert(undefined, [flake("slow")], "run-1", at(1));
-    expect(first).toEqual([{ ...flake("slow"), lastFlakedAt: at(1), flakes: 1, lastRunId: "run-1" }]);
+    expect(first).toEqual([
+      { ...flake("slow"), lastFlakedAt: at(1), flakes: 1, lastRunId: "run-1" },
+    ]);
     // The same run filing twice (failed finish, then a flaky resume) counts once.
     const again = boardLoadSensitiveUpsert(first, [flake("slow")], "run-1", at(2));
     expect(again[0]?.flakes).toBe(1);
@@ -398,8 +400,15 @@ describe("load-sensitive list (T3O-129)", () => {
   });
 
   it("evicts the oldest past the cap", () => {
-    const full = Array.from({ length: BOARD_CI_LOAD_SENSITIVE_MAX }, (_, index) =>
-      boardLoadSensitiveUpsert(undefined, [flake(`t${index}`)], "run", at(index === 0 ? 1 : 2))[0]!,
+    const full = Array.from(
+      { length: BOARD_CI_LOAD_SENSITIVE_MAX },
+      (_, index) =>
+        boardLoadSensitiveUpsert(
+          undefined,
+          [flake(`t${index}`)],
+          "run",
+          at(index === 0 ? 1 : 2),
+        )[0]!,
     );
     const next = boardLoadSensitiveUpsert(full, [flake("over")], "run-x", at(3));
     expect(next).toHaveLength(BOARD_CI_LOAD_SENSITIVE_MAX);

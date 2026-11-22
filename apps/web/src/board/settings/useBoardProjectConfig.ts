@@ -53,7 +53,6 @@ export function useBoardProjectConfig(
     projectId,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Each new shell version needs its full config.
     version,
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- And each new load-sensitive list.
     loadSensitiveRevision,
   ]);
   return { shell, full: full !== null && full.version === version ? full : null };

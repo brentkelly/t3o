@@ -332,9 +332,8 @@ function StepRow({
             <span className="text-board-11 text-warning-foreground">
               Flaky, passed alone:{" "}
               {flakes
-                .map(
-                  (flake) =>
-                    flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`,
+                .map((flake) =>
+                  flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`,
                 )
                 .join(", ")}
             </span>

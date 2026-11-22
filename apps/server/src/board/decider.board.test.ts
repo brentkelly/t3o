@@ -3386,7 +3386,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("board decider", 
           commandId: CommandId.make("cmd-project-load-sensitive"),
           projectId: ProjectId.make("project-1"),
           runId: "run-1",
-          entries: [{ key: "a.test.ts › adds", file: "a.test.ts", title: "adds", cardKey: "T3O-1" }],
+          entries: [
+            { key: "a.test.ts › adds", file: "a.test.ts", title: "adds", cardKey: "T3O-1" },
+          ],
           createdAt: NOW,
         },
         "board.project.remove-load-sensitive": {

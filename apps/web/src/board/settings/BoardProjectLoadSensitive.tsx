@@ -13,6 +13,7 @@ import {
 import { useState } from "react";
 
 import { Button } from "../../components/ui/button";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { boardEnvironment } from "../../state/board";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -32,12 +33,13 @@ export function BoardProjectLoadSensitive(props: {
     reportFailure: false,
   });
   const [confirmClear, setConfirmClear] = useState(false);
+  // Expiry is read on this client's clock, as the board reads it on its own.
+  const nowMinute = useNowMinute();
+  const nowMs = Date.parse(`${nowMinute}:00.000Z`);
   if (props.entries === null) {
     return <p className="text-xs text-muted-foreground">Loading the list…</p>;
   }
-  // Expiry is read on this client's clock, as the board reads it on its own.
-  const nowMs = Date.now();
-  const live = boardLiveLoadSensitive(props.entries, new Date(nowMs).toISOString());
+  const live = boardLiveLoadSensitive(props.entries, `${nowMinute}:00.000Z`);
   const send = (input: { readonly keys: ReadonlyArray<string> } | { readonly all: true }) => {
     setConfirmClear(false);
     void remove({ environmentId, input: { projectId: props.projectId, ...input } }).then(
