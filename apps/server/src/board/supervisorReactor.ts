@@ -6199,7 +6199,6 @@ const make = Effect.gen(function* () {
           stepName: step.name,
           command: step.command,
           ...(step.underLoad === true ? { underLoad: true } : {}),
-          ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
           source: "agent",
         });
       }
