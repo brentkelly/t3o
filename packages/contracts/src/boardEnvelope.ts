@@ -31,6 +31,11 @@ export const BOARD_ENVELOPE_QUESTION_MECHANISM =
 
 /** `board_move_card` is agent-reachable, so the envelope, not the editable prompt, forbids
     it. Holds on every stance and on a stage with no steps. */
+/** The board's Ready for merge and Auto-merge gates own every card's merge. A watch until merged
+    keeps the thread Working until a merge only the board makes, so the step would never end. */
+export const BOARD_ENVELOPE_MERGE_GUARD =
+  "The board merges this card's pull request: never merge it yourself, by tool or `gh pr merge`, and never watch a pull request until it merges.";
+
 export const BOARD_ENVELOPE_MOVE_GUARD =
   "Never move the card between stages yourself; finish your work and the board or a human moves the card on.";
 
@@ -306,7 +311,9 @@ export function boardStepPostamble(input: {
       : input.role === "build"
         ? [BOARD_ENVELOPE_BUILD_DELIVERABLE]
         : [];
-  return [...stance, ...deliverable, BOARD_ENVELOPE_MOVE_GUARD].join("\n");
+  return [...stance, ...deliverable, BOARD_ENVELOPE_MERGE_GUARD, BOARD_ENVELOPE_MOVE_GUARD].join(
+    "\n",
+  );
 }
 
 /**

@@ -61,3 +61,5 @@ apps/web/.t3o-release.json
 .claude/worktrees/
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+/packages/ssh/.ssh-launcher-test-*/
