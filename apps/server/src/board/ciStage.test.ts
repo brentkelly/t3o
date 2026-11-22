@@ -2067,6 +2067,36 @@ it.effect.each([
     }),
 );
 
+it.effect("T3O-129: a flake card's run request leaves its own target off the skip list", () =>
+  Effect.gen(function* () {
+    const { runner, requests } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+    const target = "src/math.test.ts › adds two numbers";
+    const subject = card("load-sensitive-own", review, {
+      externalRef: { system: "t3o-flaky", id: `${projectId}:${target}`, url: null },
+    });
+    const entry = (file: string, title: string) => ({
+      key: `${file} › ${title}`,
+      file,
+      title,
+      lastFlakedAt: NOW,
+      cardKey: "T3O-1",
+      flakes: 1,
+      lastRunId: "run-0",
+    });
+    const config = {
+      ...ciConfig(),
+      loadSensitive: [entry("src/math.test.ts", "adds two numbers"), entry("e2e/a.spec.ts", "slow")],
+    };
+    yield* withGovernor({ board: boardWith([subject], config), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const request = (yield* requests)[0]!;
+        assert.deepStrictEqual(request.loadSensitive, [{ file: "e2e/a.spec.ts", title: "slow" }]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
 it.effect("T3O-126: a mixed step's fix sees only the real failures; its flake is still filed", () =>
   Effect.gen(function* () {
     const { runner } = yield* scriptedRunner([
