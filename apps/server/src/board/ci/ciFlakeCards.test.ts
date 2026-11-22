@@ -22,6 +22,7 @@ import {
   boardCiFlakeCardTarget,
   boardCiPassFlakes,
   fileBoardCiFlakes,
+  noteBoardCiDeferred,
   type BoardCiFlake,
 } from "./ciFlakeCards.ts";
 
@@ -309,134 +310,176 @@ it("reads a pass's flakes: passed-over ones with their error, and flagged ones b
   ]);
 });
 
-// T3o (T3O-127): flakes under load.
-it.effect("a flake under load files a performance card; a calm one keeps the race brief", () =>
+// T3o (T3O-129): a flake on a busy machine goes onto the load-sensitive list, not a card.
+it.effect("a busy flake files no card, records the entry and notes the tested card", () =>
   Effect.gen(function* () {
     const { deps, commands } = yield* fakeBoard([tested]);
-    yield* fileBoardCiFlakes(deps, {
+    const result = yield* fileBoardCiFlakes(deps, {
       card: tested,
       runId: "run-1",
       passOrdinal: 2,
-      flakes: [flake("slow", { underLoad: true, cpuPressure: 87.4 }), flake("racy")],
+      flakes: [flake("slow", { underLoad: true }), flake("racy")],
       loadThreshold: 50,
     });
-    const [slow, racy] = ofType(commands, "board.card.create");
-    assert.strictEqual(slow?.title, "Slow under load: src/a.test.ts › slow");
-    assert.include(slow?.brief ?? "", "## Slow under load");
-    assert.include(slow?.brief ?? "", "CPU pressure 87 % (under-load threshold 50 %)");
-    assert.include(slow?.brief ?? "", "Make the test cheaper");
-    assert.include(slow?.brief ?? "", "mark it load-sensitive in the same pull request");
-    assert.include(slow?.brief ?? "", "Never retry, sleep or loosen timeouts");
-    // Same ref system as any flake card, so its own CI still finds its target.
-    assert.strictEqual(slow?.externalRef?.system, "t3o-flaky");
-    assert.strictEqual(racy?.title, "Flaky test: src/a.test.ts › racy");
-    assert.notInclude(racy?.brief ?? "", "Slow under load");
-  }),
-);
-
-it.effect("a test that already had a performance card, even archived, is only marked", () =>
-  Effect.gen(function* () {
-    const earlier = flakeCard("t3o-30", "slow", {
-      title: "Slow under load: src/a.test.ts › slow",
-      stage: BOARD_SEED_STAGE_IDS.done,
-      archivedAt: NOW,
-    });
-    const { deps, commands } = yield* fakeBoard([tested, earlier]);
-    yield* file(deps, [flake("slow", { underLoad: true })]);
-    const [create] = ofType(commands, "board.card.create");
-    assert.strictEqual(create?.externalRef?.id, `${projectId}:src/a.test.ts › slow  #2`);
-    assert.include(create?.brief ?? "", "T3O-30 already tried to make this test cheaper");
-    assert.include(create?.brief ?? "", "Do not optimise it again");
-    assert.notInclude(create?.brief ?? "", "Make the test cheaper");
-  }),
-);
-
-it.effect("a card archived before Done is no earlier attempt", () =>
-  Effect.gen(function* () {
-    const abandoned = flakeCard("t3o-30", "slow", {
-      title: "Slow under load: src/a.test.ts › slow",
-      archivedAt: NOW,
-    });
-    const { deps, commands } = yield* fakeBoard([tested, abandoned]);
-    yield* file(deps, [flake("slow", { underLoad: true })]);
-    const [create] = ofType(commands, "board.card.create");
-    assert.include(create?.brief ?? "", "Make the test cheaper");
-    assert.notInclude(create?.brief ?? "", "T3O-30");
-  }),
-);
-
-it.effect("a load-sensitive flake under load files nothing and uses none of the caps", () =>
-  Effect.gen(function* () {
-    const { deps, commands } = yield* fakeBoard([tested]);
-    const marked = Array.from({ length: BOARD_CI_FLAKE_CARDS_PER_PASS }, (_, n) =>
-      flake(`marked${n}`, { underLoad: true, loadSensitive: true }),
-    );
-    const result = yield* file(deps, [...marked, flake("racy")]);
-    assert.deepStrictEqual(result.filed, ["T3O-101"]);
-    assert.lengthOf(result.loadSensitive, BOARD_CI_FLAKE_CARDS_PER_PASS);
+    assert.deepStrictEqual(result.loadSensitive, ["src/a.test.ts › slow"]);
+    // The quiet flake still files its race card.
     assert.deepStrictEqual(
       ofType(commands, "board.card.create").map((create) => create.title),
       ["Flaky test: src/a.test.ts › racy"],
     );
+    const [record] = ofType(commands, "board.project.record-load-sensitive");
+    assert.strictEqual(record?.projectId, tested.projectId);
+    assert.strictEqual(record?.runId, "run-1");
+    assert.deepStrictEqual(record?.entries, [
+      { key: "src/a.test.ts › slow", file: "src/a.test.ts", title: "slow", cardKey: tested.key },
+    ]);
     assert.include(
       ofType(commands, "board.card.record-note").at(-1)?.detail ?? "",
-      "not filed (marked load-sensitive, ran under load): src/a.test.ts › marked0",
+      "flaked under load, added to the load-sensitive list: src/a.test.ts › slow",
     );
   }),
 );
 
-it.effect("a load-sensitive mark is ignored on a calm host and for a flake card's own test", () =>
+it.effect("busy flakes use none of the caps, and a script-reported one is listed", () =>
   Effect.gen(function* () {
     const { deps, commands } = yield* fakeBoard([tested]);
-    const result = yield* file(deps, [flake("calm", { loadSensitive: true })]);
-    assert.lengthOf(result.filed, 1);
-    assert.deepStrictEqual(result.loadSensitive, []);
-    const titles = ofType(commands, "board.card.create").map((create) => create.title);
-    assert.deepStrictEqual(titles, ["Flaky test: src/a.test.ts › calm"]);
-    // A flake card's own target is never excused by its mark.
-    const own = flakeCard("t3o-60", "adds", { stage: BOARD_SEED_STAGE_IDS.ci });
-    const target = yield* fakeBoard([own]);
-    const onOwn = yield* file(
-      target.deps,
-      [flake("adds", { loadSensitive: true, underLoad: true })],
-      own,
+    // Script-reported: no `inDiff` on that path, so the board relies on the script's duty to
+    // never report a test in the card's change as flaky under load.
+    const busy = Array.from({ length: BOARD_CI_FLAKE_CARDS_PER_PASS + 1 }, (_, n) =>
+      flake(`busy${n}`, { underLoad: true }),
     );
-    assert.deepStrictEqual(onOwn.loadSensitive, []);
-    assert.deepStrictEqual(onOwn.noted, ["T3O-60"]);
+    const result = yield* file(deps, [...busy, flake("racy")]);
+    assert.deepStrictEqual(result.filed, ["T3O-101"]);
+    assert.lengthOf(result.loadSensitive, BOARD_CI_FLAKE_CARDS_PER_PASS + 1);
+    assert.lengthOf(
+      ofType(commands, "board.project.record-load-sensitive")[0]?.entries ?? [],
+      BOARD_CI_FLAKE_CARDS_PER_PASS + 1,
+    );
   }),
 );
 
-it("reads a pass's load: the step's pressure, and a mark only from the script", () => {
+it.effect("a busy flake with no file is only noted", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    const { file: _file, ...stepLevel } = flake("Test", { underLoad: true });
+    const result = yield* file(deps, [stepLevel]);
+    assert.deepStrictEqual(result.busyUnlisted, ["Test"]);
+    assert.lengthOf(ofType(commands, "board.card.create"), 0);
+    assert.lengthOf(ofType(commands, "board.project.record-load-sensitive"), 0);
+    assert.include(
+      ofType(commands, "board.card.record-note").at(-1)?.detail ?? "",
+      "flaked under load, not filed: Test",
+    );
+  }),
+);
+
+it.effect("at a threshold of 100 a worker's under-load reading counts as quiet", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    const result = yield* fileBoardCiFlakes(deps, {
+      card: tested,
+      runId: "run-1",
+      passOrdinal: 2,
+      flakes: [flake("slow", { underLoad: true })],
+      loadThreshold: 100,
+    });
+    assert.deepStrictEqual(result.loadSensitive, []);
+    assert.deepStrictEqual(result.filed, ["T3O-101"]);
+    assert.lengthOf(ofType(commands, "board.project.record-load-sensitive"), 0);
+  }),
+);
+
+it.effect("on a flake card's own CI, another busy test is listed but its target never is", () =>
+  Effect.gen(function* () {
+    const own = flakeCard("t3o-60", "adds", { stage: BOARD_SEED_STAGE_IDS.ci });
+    const { deps, commands } = yield* fakeBoard([own]);
+    const result = yield* file(
+      deps,
+      [flake("adds", { underLoad: true }), flake("other", { underLoad: true })],
+      own,
+    );
+    assert.deepStrictEqual(result.loadSensitive, ["src/a.test.ts › other"]);
+    // Its own target goes the ordinary way: noted on itself, never listed.
+    assert.deepStrictEqual(result.noted, ["T3O-60"]);
+    assert.deepStrictEqual(
+      ofType(commands, "board.project.record-load-sensitive")[0]?.entries.map((entry) => entry.key),
+      ["src/a.test.ts › other"],
+    );
+  }),
+);
+
+it.effect("a second filing in the same run records the new keys; a repeat is the same command", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    yield* file(deps, [flake("one", { underLoad: true })]);
+    yield* file(deps, [flake("one", { underLoad: true }), flake("two", { underLoad: true })]);
+    yield* file(deps, [flake("one", { underLoad: true }), flake("two", { underLoad: true })]);
+    const records = ofType(commands, "board.project.record-load-sensitive");
+    assert.deepStrictEqual(
+      records.map((record) => record.entries.map((entry) => entry.title)),
+      [["one"], ["one", "two"], ["one", "two"]],
+    );
+    // The command id dedupes a repeat; a growing flake set gets a new one.
+    assert.notStrictEqual(records[0]?.commandId, records[1]?.commandId);
+    assert.strictEqual(records[1]?.commandId, records[2]?.commandId);
+  }),
+);
+
+it("reads a pass's flakes as under load from the step or the entry", () => {
   const flakes = boardCiPassFlakes([
     {
       name: "E2E",
       command: "vp e2e",
       status: "passed",
-      cpuPressure: 88,
       underLoad: true,
       result: { summary: null, failures: [] },
-      flaky: [
-        { title: "marked", loadSensitive: true, underLoad: true },
-        { title: "ruled", byAgent: true, loadSensitive: true },
-      ],
+      flaky: [{ title: "marked" }, { title: "ruled", byAgent: true }],
     },
     {
       name: "Unit",
       command: "vp test",
       status: "failed",
-      underLoad: true,
       result: {
         summary: null,
-        failures: [{ title: "real" }, { title: "flagged", flaky: true, loadSensitive: true }],
+        failures: [{ title: "real" }, { title: "flagged", flaky: true }],
       },
     },
   ]);
   assert.deepStrictEqual(
-    flakes.map((entry) => [entry.title, entry.underLoad, entry.loadSensitive, entry.cpuPressure]),
+    flakes.map((entry) => [entry.title, entry.underLoad]),
     [
-      ["marked", true, true, 88],
-      ["ruled", true, undefined, 88],
-      ["flagged", true, true, undefined],
+      ["marked", true],
+      ["ruled", true],
+      ["flagged", undefined],
     ],
   );
 });
+
+it.effect("a run's deferred tests are noted once, by run, from every step that ran", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    const steps = [
+      { status: "passed" as const, deferred: [{ file: "e2e/a.spec.ts", title: "slow" }] },
+      // A failed finish, flaky-resumed under the same run: its later step deferred more.
+      { status: "passed" as const, deferred: [{ file: "e2e/b.spec.ts", title: "slower" }] },
+      { status: "skipped" as const, deferred: [{ title: "vouches for nothing" }] },
+    ];
+    yield* noteBoardCiDeferred(deps, { card: tested, runId: "run-1", steps });
+    yield* noteBoardCiDeferred(deps, { card: tested, runId: "run-1", steps });
+    const notes = ofType(commands, "board.card.record-note");
+    assert.lengthOf(notes, 2);
+    assert.strictEqual(notes[0]?.kind, "card-ci-deferred");
+    assert.strictEqual(
+      notes[0]?.detail,
+      "2 load-sensitive tests deferred to the nightly: e2e/a.spec.ts › slow, e2e/b.spec.ts › slower.",
+    );
+    // Seeded by the run alone, so every call site lands at most one note.
+    assert.strictEqual(notes[0]?.commandId, notes[1]?.commandId);
+    yield* noteBoardCiDeferred(deps, {
+      card: tested,
+      runId: "run-1",
+      steps: [{ status: "passed", deferred: [] }],
+    });
+    assert.lengthOf(ofType(commands, "board.card.record-note"), 2);
+  }),
+);

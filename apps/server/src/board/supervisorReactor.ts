@@ -65,6 +65,7 @@ import {
   type BoardResolvedAutomation,
   resolveBoardCardAutomationIn,
   resolveBoardCiLoadThreshold,
+  boardLiveLoadSensitive,
   boardCardChildren,
   boardBuildHumanInLoopDefault,
   boardCardPendingSplit,
@@ -326,6 +327,7 @@ import {
   boardCiFlakeCardTarget,
   boardCiPassFlakes,
   fileBoardCiFlakes,
+  noteBoardCiDeferred,
   type BoardCiFlake,
 } from "./ci/ciFlakeCards.ts";
 import { BoardWorkspaces, type BoardCardWorkspace } from "./workspace/BoardWorkspace.ts";
@@ -5019,6 +5021,7 @@ const make = Effect.gen(function* () {
         else if (yield* ciPassRecordedAs(card.id, runId, "passed")) {
           yield* advanceFromCi(card);
           yield* fileCiFlakes(card, runId, boardCiPassFlakes(read.steps));
+          yield* noteCiDeferred(card, runId);
         }
         return;
       }
@@ -5092,6 +5095,13 @@ const make = Effect.gen(function* () {
         loadThreshold: resolveBoardCiLoadThreshold(
           boardProjectStageConfig(board, card.projectId)?.resources ?? null,
         ),
+        // T3o (T3O-129): a flake card's own target is never on its own skip list.
+        loadSensitive: boardLiveLoadSensitive(
+          boardProjectStageConfig(board, card.projectId)?.loadSensitive,
+          yield* nowIso,
+        )
+          .filter((entry) => entry.key !== notFlakyTitle)
+          .map((entry) => ({ file: entry.file, title: entry.title })),
         ...(inconclusiveTargetAllowed ? { inconclusiveTargetAllowed: true } : {}),
         ...(card.ci.continueOnFailure === true ? { stopOnFailure: false } : {}),
         ...(runner === undefined ? {} : { runner }),
@@ -5568,6 +5578,7 @@ const make = Effect.gen(function* () {
     const after = (yield* readBoard).cards.find((candidate) => candidate.id === card.id);
     if (after?.ci?.runId !== runId || after.ci.phase !== "held") return false;
     yield* holdInCi(card, reason);
+    yield* noteCiDeferred(card, runId);
     return true;
   });
 
@@ -6062,6 +6073,21 @@ const make = Effect.gen(function* () {
   /** T3o (T3O-126): the deps a flake filing writes through. */
   const ciFlakeDeps = { readBoard, settings: boardSettings, dispatch: dispatchRefusal, nowIso };
 
+  /** T3o (T3O-129): the tests a run deferred to the nightly, noted once on the card at the
+      run's real end. Never on a failed finish, which a flaky resume can carry on. */
+  const noteCiDeferred = Effect.fn("board-supervisor-noteCiDeferred")(
+    function* (card: BoardCard, runId: string) {
+      const read = yield* ciPassFailures(card.id, runId);
+      if (read === null) return;
+      yield* noteBoardCiDeferred(ciFlakeDeps, { card, runId, steps: read.steps });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("board supervisor: noting deferred CI tests failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
   /** File a pass's flakes as bug cards; a fault is logged and never touches the card. */
   const fileCiFlakes = Effect.fn("board-supervisor-fileCiFlakes")(
     function* (card: BoardCard, runId: string, flakes: ReadonlyArray<BoardCiFlake>) {
@@ -6227,9 +6253,6 @@ const make = Effect.gen(function* () {
           ...(failure.file === undefined ? {} : { file: failure.file }),
           ...(repro === undefined ? {} : { repro }),
           ...(failure.flaky === true ? {} : { byAgent: true as const }),
-          ...(failure.flaky === true && failure.loadSensitive === true
-            ? { loadSensitive: true as const }
-            : {}),
           ...(step.underLoad === true ? { underLoad: true as const } : {}),
         });
         return { ...failure, flaky: true };
@@ -6358,6 +6381,8 @@ const make = Effect.gen(function* () {
           return;
         }
         const runId = card.ci?.runId ?? null;
+        // Read before `startCiPass` replaces the run: that run has ended.
+        if (runId !== null) yield* noteCiDeferred(card, runId);
         const flakes =
           runId === null || plan.flakyIssues === undefined
             ? []
@@ -6374,6 +6399,7 @@ const make = Effect.gen(function* () {
         return;
       case "ci-stop":
         yield* stopCiForHuman(card, plan.reason, context.fixThreadId);
+        if (card.ci !== null) yield* noteCiDeferred(card, card.ci.runId);
         return;
       case "run": {
         if (card.ci === null) return;

@@ -3381,6 +3381,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("board decider", 
           actor: BOARD_SYSTEM_ACTOR,
           createdAt: NOW,
         },
+        "board.project.record-load-sensitive": {
+          type: "board.project.record-load-sensitive",
+          commandId: CommandId.make("cmd-project-load-sensitive"),
+          projectId: ProjectId.make("project-1"),
+          runId: "run-1",
+          entries: [{ key: "a.test.ts › adds", file: "a.test.ts", title: "adds", cardKey: "T3O-1" }],
+          createdAt: NOW,
+        },
+        "board.project.remove-load-sensitive": {
+          type: "board.project.remove-load-sensitive",
+          commandId: CommandId.make("cmd-project-load-sensitive-remove"),
+          projectId: ProjectId.make("project-1"),
+          all: true,
+          actor: BOARD_SYSTEM_ACTOR,
+          createdAt: NOW,
+        },
       };
 
       // The full decision is checked: only a human's move and the pipeline's own

@@ -21,6 +21,7 @@ import {
   type BoardCard,
   type BoardCiPassStep,
   type BoardCommand,
+  type BoardLoadSensitiveFlake,
   type BoardSettings,
   type BoardState,
 } from "@t3tools/contracts";
@@ -59,31 +60,8 @@ export interface BoardCiFlake {
   readonly command?: string;
   /** Who said it passed alone: the script, or the fix agent. */
   readonly source: "script" | "agent";
-  /** T3o (T3O-127): the step it flaked in ran under load, at this CPU pressure. */
+  /** T3o (T3O-127): the step it flaked in ran under load. */
   readonly underLoad?: boolean;
-  readonly cpuPressure?: number;
-  /** The runner says the project marked the test load-sensitive. Never from the fix agent. */
-  readonly loadSensitive?: boolean;
-}
-
-/** T3o (T3O-127): a performance card's title prefix; how a later flake knows the test
-    already had its one optimisation attempt. */
-const SLOW_UNDER_LOAD_PREFIX = "Slow under load: ";
-
-const isPerformanceCard = (card: Pick<BoardCard, "title">) =>
-  card.title.startsWith(SLOW_UNDER_LOAD_PREFIX);
-
-/** A load-sensitive mark covers load only, and never a flake card's own test, which must
-    really pass. Running the tests a card changed is the script's job. */
-function isHonouredLoadSensitiveFlake(
-  flake: Pick<BoardCiFlake, "loadSensitive" | "underLoad" | "file" | "title">,
-  target: string | null,
-): boolean {
-  return (
-    flake.loadSensitive === true &&
-    flake.underLoad === true &&
-    boardCiFlakeKey(flake.file, flake.title) !== target
-  );
 }
 
 export interface BoardCiFlakeFilingDeps {
@@ -99,8 +77,10 @@ export interface BoardCiFlakeFiling {
   readonly noted: ReadonlyArray<string>;
   /** Flakes over a limit, only listed on the tested card. */
   readonly listed: ReadonlyArray<string>;
-  /** T3o (T3O-127): marked load-sensitive and flaked under load: no card, no cap used. */
+  /** T3o (T3O-129): flaked on a busy machine, so onto the load-sensitive list: no card, no cap. */
   readonly loadSensitive: ReadonlyArray<string>;
+  /** Flaked on a busy machine with no file to list it by: only noted. */
+  readonly busyUnlisted: ReadonlyArray<string>;
 }
 
 // The whole key, never clipped: a flake card's CI reads its own test back off the ref.
@@ -153,9 +133,6 @@ function boardCiFlakeBrief(input: {
   readonly testedKey: string;
   readonly passOrdinal: number;
   readonly earlierKey: string | null;
-  /** T3o (T3O-127): an earlier performance card already had the one optimisation attempt. */
-  readonly earlierPerformanceKey?: string | null;
-  readonly loadThreshold?: number;
 }): string {
   const { flake } = input;
   const repro =
@@ -163,7 +140,6 @@ function boardCiFlakeBrief(input: {
     (flake.command === undefined
       ? `Re-run \`${input.key}\` with the project's test runner.`
       : `\`${flake.command}\`, then look for \`${input.key}\``);
-  if (flake.underLoad === true) return boardCiSlowUnderLoadBrief(input, repro);
   return [
     "## Problem",
     `The test \`${input.key}\` failed in CI on ${input.testedKey} (pass ${input.passOrdinal}, step "${flake.stepName}") and then passed when re-run alone, as the ${flake.source === "agent" ? "CI fix agent" : "CI script"} found. CI let ${input.testedKey} through; this card makes the test reliable.`,
@@ -190,51 +166,6 @@ function boardCiFlakeBrief(input: {
   ].join("\n");
 }
 
-/** T3o (T3O-127): the brief of a flake that happened under load: make the test cheaper, or
-    mark it load-sensitive, never hide it. */
-function boardCiSlowUnderLoadBrief(
-  input: Parameters<typeof boardCiFlakeBrief>[0],
-  repro: string,
-): string {
-  const { flake } = input;
-  const pressure =
-    flake.cpuPressure === undefined ? "" : ` at CPU pressure ${Math.round(flake.cpuPressure)} %`;
-  const threshold =
-    input.loadThreshold === undefined ? "" : ` (under-load threshold ${input.loadThreshold} %)`;
-  const earlier = input.earlierPerformanceKey ?? null;
-  return [
-    "## Slow under load",
-    `The test \`${input.key}\` failed in CI on ${input.testedKey} (pass ${input.passOrdinal}, step "${flake.stepName}") while the host was under load${pressure}${threshold}, and then passed when re-run alone, as the ${flake.source === "agent" ? "CI fix agent" : "CI script"} found. CI let ${input.testedKey} through; this card makes the test cheap enough to pass on a busy host, or marks it so it doesn't run there.`,
-    ...(flake.inDiff === true
-      ? [
-          "",
-          `This test is in ${input.testedKey}'s change, so the cause may be that card rather than the test.`,
-        ]
-      : []),
-    "",
-    "## Repro",
-    repro,
-    "",
-    "## Error",
-    "```",
-    clip(flake.detail?.trim() || "(no error text was reported)", DETAIL_MAX),
-    "```",
-    "",
-    "## What to build",
-    ...(earlier === null
-      ? [
-          "Make the test cheaper: less setup, wait on the right state rather than a fixed time, fewer page loads, lighter fixtures. Check it for a race while you are there. Re-measure it under the host's current load (read `/proc/pressure/cpu`) and put the timings in the pull request.",
-          "",
-          "If it still can't reliably pass under load, mark it load-sensitive in the same pull request using the project's convention (its AGENTS.md; else the test runner's own tag, marker or group; else an in-test skip when `T3O_UNDER_LOAD` is set), and say why in the pull request. A human merges it.",
-        ]
-      : [
-          `${earlier} already tried to make this test cheaper. Do not optimise it again: mark it load-sensitive using the project's convention (its AGENTS.md; else the test runner's own tag, marker or group; else an in-test skip when \`T3O_UNDER_LOAD\` is set), and say why in the pull request. Fix an obvious race if you find one.`,
-        ]),
-    "",
-    "Never retry, sleep or loosen timeouts to hide it.",
-  ].join("\n");
-}
-
 /**
  * File a pass's flakes. Runs after the tested card has been recorded and moved on, and never
  * fails: the caller logs a fault, and the tested card is not touched by one.
@@ -246,7 +177,8 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     readonly runId: string;
     readonly passOrdinal: number;
     readonly flakes: ReadonlyArray<BoardCiFlake>;
-    /** T3o (T3O-127): the project's under-load threshold, for a performance brief. */
+    /** T3o (T3O-129): the project's resolved under-load threshold. At 100 nothing is busy,
+        whatever an older worker reported. Absent counts as below 100. */
     readonly loadThreshold?: number;
   },
 ) {
@@ -255,7 +187,10 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
   const noted: string[] = [];
   const listed: string[] = [];
   const loadSensitive: string[] = [];
+  const toList: BoardLoadSensitiveFlake[] = [];
+  const busyUnlisted: string[] = [];
   const refusals: string[] = [];
+  const loadCountsAsBusy = (input.loadThreshold ?? 0) < 100;
   const seen = new Set<string>();
   const testedTarget = boardCiFlakeCardTarget(card);
   const testedIsFlakeCard = testedTarget !== null;
@@ -288,9 +223,14 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     const key = boardCiFlakeKey(flake.file, flake.title);
     if (seen.has(key)) continue;
     seen.add(key);
-    // T3o (T3O-127): the project already judged this test optimised; under load it files nothing.
-    if (isHonouredLoadSensitiveFlake(flake, testedTarget)) {
-      loadSensitive.push(key);
+    // T3o (T3O-129): a flake on a busy machine says nothing a card could act on. It goes onto
+    // the load-sensitive list, which the nightly covers. A flake card's own target never does.
+    if (loadCountsAsBusy && flake.underLoad === true && key !== testedTarget) {
+      if (flake.file === undefined) busyUnlisted.push(key);
+      else {
+        loadSensitive.push(key);
+        toList.push({ key, file: flake.file, title: flake.title, cardKey: card.key });
+      }
       continue;
     }
     const base = refBase(card.projectId, key);
@@ -325,7 +265,6 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     // T3o (T3O-127): a card that reached Done counts even archived; one archived unworked does not.
     const worked = matches.filter((candidate) => candidate.stage === BOARD_SEED_STAGE_IDS.done);
     const earlier = worked.at(-1) ?? null;
-    const earlierPerformance = worked.findLast(isPerformanceCard) ?? null;
     const cardId = flakeCardId(seed);
     const settings = yield* deps.settings;
     const planStage = boardStageWithRole(board, "plan");
@@ -347,18 +286,13 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
       commandId: commandIdFor(seed, "create"),
       cardId,
       projectId: card.projectId,
-      title: clip(
-        `${flake.underLoad === true ? SLOW_UNDER_LOAD_PREFIX : "Flaky test: "}${key}`,
-        200,
-      ),
+      title: clip(`Flaky test: ${key}`, 200),
       brief: boardCiFlakeBrief({
         key,
         flake,
         testedKey: card.key,
         passOrdinal: input.passOrdinal,
         earlierKey: earlier?.key ?? null,
-        earlierPerformanceKey: earlierPerformance?.key ?? null,
-        ...(input.loadThreshold === undefined ? {} : { loadThreshold: input.loadThreshold }),
       }),
       ...(bugLabelLive ? { labels: [BOARD_SEED_LABEL_IDS.bug] } : {}),
       // Low, so a flake fix never queues ahead of the work it let through.
@@ -414,7 +348,32 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     filed.push(createdKey);
   }
 
-  if (filed.length + noted.length + listed.length + loadSensitive.length + refusals.length > 0) {
+  if (toList.length > 0) {
+    const sortedKeys = toList.map((entry) => entry.key).sort();
+    const refused = yield* dispatchAs({
+      type: "board.project.record-load-sensitive",
+      // Seeded by the keys too: a resumed pass records more under the same run.
+      commandId: commandIdFor(
+        `${input.runId}\0${card.projectId}\0${sortedKeys.join("\0")}`,
+        "load-sensitive",
+      ),
+      projectId: card.projectId,
+      runId: input.runId,
+      entries: toList,
+      createdAt: yield* deps.nowIso,
+    });
+    if (refused !== null) refusals.push(`the load-sensitive list: ${refused}`);
+  }
+
+  if (
+    filed.length +
+      noted.length +
+      listed.length +
+      loadSensitive.length +
+      busyUnlisted.length +
+      refusals.length >
+    0
+  ) {
     const parts = [
       ...(filed.length === 0 ? [] : [`filed ${filed.join(", ")}`]),
       ...(noted.length === 0 ? [] : [`noted on ${noted.join(", ")}`]),
@@ -425,7 +384,10 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
           ]),
       ...(loadSensitive.length === 0
         ? []
-        : [`not filed (marked load-sensitive, ran under load): ${loadSensitive.join(", ")}`]),
+        : [`flaked under load, added to the load-sensitive list: ${loadSensitive.join(", ")}`]),
+      ...(busyUnlisted.length === 0
+        ? []
+        : [`flaked under load, not filed: ${busyUnlisted.join(", ")}`]),
       ...(refusals.length === 0 ? [] : [`refused: ${refusals.join("; ")}`]),
     ];
     const inDiff = input.flakes.filter((flake) => flake.inDiff === true);
@@ -454,7 +416,7 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
       createdAt: yield* deps.nowIso,
     });
   }
-  return { filed, noted, listed, loadSensitive } satisfies BoardCiFlakeFiling;
+  return { filed, noted, listed, loadSensitive, busyUnlisted } satisfies BoardCiFlakeFiling;
 });
 
 /** A pass row's flakes: every flaky test of a step that passed over them, and the
@@ -463,7 +425,7 @@ export function boardCiPassFlakes(
   steps: ReadonlyArray<
     Pick<
       BoardCiPassStep,
-      "name" | "command" | "status" | "result" | "flaky" | "kind" | "underLoad" | "cpuPressure"
+      "name" | "command" | "status" | "result" | "flaky" | "kind" | "underLoad"
     >
   >,
 ): ReadonlyArray<BoardCiFlake> {
@@ -473,7 +435,6 @@ export function boardCiPassFlakes(
     const base = {
       stepName: step.name,
       ...(command === undefined ? {} : { command }),
-      ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
     };
     // T3o (T3O-130): a skipped step's output vouches for nothing, flakes included.
     if (step.status === "skipped") return [];
@@ -491,9 +452,6 @@ export function boardCiPassFlakes(
           ...(repro === undefined ? {} : { repro }),
           ...(entry.inDiff === true ? { inDiff: true } : {}),
           ...(entry.underLoad === true || step.underLoad === true ? { underLoad: true } : {}),
-          ...(entry.loadSensitive === true && entry.byAgent !== true
-            ? { loadSensitive: true }
-            : {}),
           source: entry.byAgent === true ? "agent" : "script",
         };
       });
@@ -508,7 +466,6 @@ export function boardCiPassFlakes(
               ...(failure.detail === undefined ? {} : { detail: failure.detail }),
               ...(failure.repro === undefined ? {} : { repro: failure.repro }),
               ...(step.underLoad === true ? { underLoad: true } : {}),
-              ...(failure.loadSensitive === true ? { loadSensitive: true } : {}),
               source: "script",
             },
           ]
@@ -516,3 +473,43 @@ export function boardCiPassFlakes(
     );
   });
 }
+
+/** T3o (T3O-129): every test a pass's steps deferred to the nightly, by key, once each. A
+    skipped step vouches for nothing, its deferrals included. */
+export function boardCiPassDeferred(
+  steps: ReadonlyArray<Pick<BoardCiPassStep, "status" | "deferred">>,
+): ReadonlyArray<string> {
+  const keys = new Set<string>();
+  for (const step of steps) {
+    if (step.status === "skipped") continue;
+    for (const test of step.deferred ?? []) keys.add(boardCiFlakeKey(test.file, test.title));
+  }
+  return [...keys];
+}
+
+/** T3o (T3O-129): note on the tested card the tests its pass deferred to the nightly. Once per
+    run, at the run's real end: the command id is seeded by the run alone. */
+export const noteBoardCiDeferred = Effect.fn("BoardCiFlakeCards.noteDeferred")(function* (
+  deps: Pick<BoardCiFlakeFilingDeps, "dispatch" | "nowIso">,
+  input: {
+    readonly card: Pick<BoardCard, "id">;
+    readonly runId: string;
+    readonly steps: ReadonlyArray<Pick<BoardCiPassStep, "status" | "deferred">>;
+  },
+) {
+  const deferred = boardCiPassDeferred(input.steps);
+  if (deferred.length === 0) return;
+  const command: BoardCommand = {
+    type: "board.card.record-note",
+    commandId: commandIdFor(`${input.runId}\0${input.card.id}`, "deferred"),
+    cardId: input.card.id,
+    kind: "card-ci-deferred",
+    detail: clip(
+      `${deferred.length} load-sensitive ${deferred.length === 1 ? "test" : "tests"} deferred to the nightly: ${deferred.join(", ")}.`,
+      2_000,
+    ),
+    createdAt: yield* deps.nowIso,
+  };
+  stampBoardActivityActor(command.commandId, { ...BOARD_CI_FLAKE_ACTOR, name: "CI: deferred tests" });
+  yield* deps.dispatch(command);
+});

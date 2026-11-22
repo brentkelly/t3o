@@ -651,14 +651,16 @@ function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad 
 /** T3o (T3O-129): write the run's load-sensitive list once, so every segment of the run (a
     T3O-130 restart included) reads the same snapshot. Created only if absent, atomically: a
     hard link from a temp file fails rather than overwrites. A failed write sets no variable. */
-const writeLoadSensitiveList = (
+let loadSensitiveTempSeq = 0;
+
+function writeLoadSensitiveList(
   logDir: string,
   entries: ReadonlyArray<{ readonly title: string; readonly file: string }>,
-) =>
-  Effect.sync((): { readonly path: string | null; readonly error: string | null } => {
+): { readonly path: string | null; readonly error: string | null } {
+  {
     const path = NodePath.resolve(logDir, "load-sensitive.json");
     if (NodeFS.existsSync(path)) return { path, error: null };
-    const temp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    const temp = `${path}.${process.pid}.${++loadSensitiveTempSeq}.tmp`;
     try {
       NodeFS.writeFileSync(
         temp,
@@ -684,7 +686,8 @@ const writeLoadSensitiveList = (
         // A stray temp file in the log directory harms nothing.
       }
     }
-  });
+  }
+}
 
 /** T3o (T3O-129): the `[board]` lines a result file earns: an ignored T3O-127 mark, and tests
     deferred on a calm machine. */
@@ -791,7 +794,9 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
         detail: `CI could not create its log directory: ${logDirError}.`,
       } as const;
     }
-    const loadSensitive = yield* writeLoadSensitiveList(request.logDir, request.loadSensitive ?? []);
+    const loadSensitive = yield* Effect.sync(() =>
+      writeLoadSensitiveList(request.logDir, request.loadSensitive ?? []),
+    );
     const stepEnv = (load: BoardCiLoad | null) => ({
       ...boardCiLoadEnv(load),
       ...(loadSensitive.path === null ? {} : { T3O_CI_LOAD_SENSITIVE: loadSensitive.path }),
