@@ -12882,10 +12882,6 @@ export const DEFAULT_BOARD_CHECKS_FIX_PROMPT =
   "This card's pull request cannot merge because its CI checks are failing. Find out why: read the failing checks and their logs (`gh pr checks` and `gh run view --log-failed` on GitHub, or the equivalent for this repository's forge). Fix the cause in this card's branch, then run the project's own checks and tests and fix what they catch. Merge the base branch in only if the failure actually needs it. Then commit and push normally. Do NOT rebase, do NOT force-push, and do NOT convert the pull request back to a draft: a push to a ready pull request re-runs CI, which is exactly what has to happen next. If the failure is flaky, an infrastructure problem, or unrelated to this branch's changes, do not guess at a fix. Stop and say so.";
 
 /**
- * Compiled in for the same reason: it starts only when the forge refuses a merge solely because
- * the branch is behind its base, once per stay in the merge stage (T3O-116).
- */
-/**
  * T3o: appended to the conflict-fix and branch-update prompts, edited or not, so a fix keeps up
  * with a base that moves while it runs (T3O-128). Compiled in, not editable.
  */
@@ -12894,8 +12890,12 @@ export const BOARD_MERGE_BASE_FIX_PROMPT_SEGMENT =
 
 /** T3o: the handoff a follow-up fix gets when the base moved under the last one (T3O-128). */
 export const BOARD_MERGE_BASE_FOLLOW_UP_HANDOFF =
-  "A previous fix already resolved conflicts against an earlier base and pushed them to this branch; only merge in what has changed on the base since.";
+  "An earlier fix on this branch may already have merged in part of the base; merge in what the base has gained since, and resolve only the conflicts that brings.";
 
+/**
+ * Compiled in for the same reason: it starts only when the forge refuses a merge solely because
+ * the branch is behind its base, once per stay in the merge stage (T3O-116).
+ */
 export const DEFAULT_BOARD_BRANCH_UPDATE_PROMPT =
   "This card's pull request cannot merge because its branch is behind the base branch and the repository requires it to be up to date. There are no known conflicts. Merge the base branch into this card's branch. If the merge does conflict after all, resolve each conflict on the merits: read enough of both sides to understand what each change was for and keep the intent of both, never discarding one side to make the merge go through. Then run the project's own checks and tests and fix what the merge broke. Commit and push normally. Do NOT rebase, and do NOT force-push under any circumstances: this branch has an open pull request, and rewriting its history strands the review comments anchored to it and can destroy work someone else pushed. If a conflict needs a decision you cannot make from the code alone, stop and say so rather than guessing.";
 

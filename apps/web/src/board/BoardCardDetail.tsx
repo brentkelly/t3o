@@ -660,7 +660,6 @@ export function BoardCardDetail({
       ? null
       : boardMergeQueueInfo({
           card: cardShell,
-          cards: allShellCards,
           running: boardRunningStepCount(allShellCards),
           baseRef: detail?.card.worktree?.baseRefName ?? null,
         });

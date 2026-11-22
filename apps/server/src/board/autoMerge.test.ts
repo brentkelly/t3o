@@ -1953,6 +1953,42 @@ it.effect("a Merge click on a queued card keeps its place and restarts its follo
   ),
 );
 
+it.effect("a card that let go of its base waits behind the head for its follow-up fix", () =>
+  withGovernor(
+    queueSetup({
+      cards: [
+        // The head: its fix ran this stay, and its merge waits on CI.
+        queueCard("card-one", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1, fixBaseTip: "main" },
+        }),
+        // Fixed against an older base, then held for a human: it no longer holds the base.
+        queueCard("card-two", {
+          mergeStay: { ...emptyBoardCardMergeStay(null), conflictFixes: 1, fixBaseTip: "tip-old" },
+          autoMergeHold: hardHold({ stop: "fix-failed", headSha: null }),
+        }),
+      ],
+      states: new Map([
+        [284, probe({ pending: 1, passed: 1 })],
+        [285, conflictState()],
+      ]),
+    }),
+    (h) =>
+      Effect.gen(function* () {
+        yield* h.reactor.drain;
+        const result = yield* h.reactor.mergePullRequest(BoardCardId.make("card-two"));
+        assert.deepStrictEqual(result, {
+          outcome: "queued",
+          behindCardId: BoardCardId.make("card-one"),
+        });
+        yield* h.reactor.drain;
+        assert.strictEqual(fixesStartedFor(yield* h.commands, "card-two").length, 0);
+        const stay = stayOf(yield* h.board, "card-two");
+        assert.isNotNull(stay?.queuedAt ?? null);
+        assert.strictEqual(stay?.baseFollowUps, 0);
+      }),
+  ),
+);
+
 it.effect("a fix the base moved under runs again, without spending a fix", () => {
   const states = new Map<number, BoardMergeState>([[284, conflictState()]]);
   return withGovernor(

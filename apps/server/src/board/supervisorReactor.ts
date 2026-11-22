@@ -9256,30 +9256,47 @@ const make = Effect.gen(function* () {
     "board-supervisor-advanceMergeQueue",
   )(function* (key: BoardMergeQueueKey) {
     const keyString = boardMergeQueueKeyString(key);
-    const woken = yield* mergeQueueLock.withPermits(1)(
-      Effect.gen(function* () {
-        if (mergeQueueWaking.has(keyString)) return null;
-        const next = boardMergeQueueOrder(yield* readBoard, key)[0];
-        if (next === undefined) return null;
-        if ((yield* mergeQueueHolders(key)).length > 0) return null;
-        const counts = boardCardMergeStayCounts(next);
-        mergeQueueWaking.set(keyString, next.id);
-        yield* dispatch({
-          type: "board.card.update",
-          commandId: yield* commandId("merge-queue-wake"),
-          cardId: next.id,
-          mergeStay: { ...counts, queuedAt: null },
-          createdAt: yield* nowIso,
-        });
-        return { cardId: next.id, queuedAt: counts.queuedAt };
-      }),
+    let marked: BoardCardId | null = null;
+    // One release covers setting the marker, the wake and the attempt, so no interruption or
+    // failure between them can leave the key frozen behind a marker nobody clears.
+    const attempted = yield* Effect.gen(function* () {
+      const woken = yield* mergeQueueLock.withPermits(1)(
+        Effect.gen(function* () {
+          if (mergeQueueWaking.has(keyString)) return null;
+          const next = boardMergeQueueOrder(yield* readBoard, key)[0];
+          if (next === undefined) return null;
+          if ((yield* mergeQueueHolders(key)).length > 0) return null;
+          const counts = boardCardMergeStayCounts(next);
+          mergeQueueWaking.set(keyString, next.id);
+          marked = next.id;
+          yield* dispatch({
+            type: "board.card.update",
+            commandId: yield* commandId("merge-queue-wake"),
+            cardId: next.id,
+            mergeStay: { ...counts, queuedAt: null },
+            createdAt: yield* nowIso,
+          });
+          return { cardId: next.id, queuedAt: counts.queuedAt };
+        }),
+      );
+      if (woken === null) return null;
+      const outcome = yield* mergeCardPullRequest(woken.cardId, {
+        fromQueue: true,
+        ...(woken.queuedAt === null ? {} : { queuedAt: woken.queuedAt }),
+      });
+      return { cardId: woken.cardId, outcome };
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (marked !== null && mergeQueueWaking.get(keyString) === marked) {
+            mergeQueueWaking.delete(keyString);
+          }
+        }),
+      ),
     );
-    if (woken === null) return;
-    const outcome = yield* mergeCardPullRequest(woken.cardId, {
-      fromQueue: true,
-      ...(woken.queuedAt === null ? {} : { queuedAt: woken.queuedAt }),
-    }).pipe(Effect.ensuring(Effect.sync(() => mergeQueueWaking.delete(keyString))));
-    const fresh = yield* readCard(woken.cardId);
+    if (attempted === null) return;
+    const { outcome } = attempted;
+    const fresh = yield* readCard(attempted.cardId);
     if (fresh !== null) {
       if (
         fresh.autoMergeHold !== null ||
@@ -9302,12 +9319,25 @@ const make = Effect.gen(function* () {
     yield* advanceMergeQueue(key);
   });
 
+  // On its own fiber, so a Merge click or a stage's processing never waits on other cards' turns.
+  const mergeQueueWorker = yield* makeDrainableWorker((key: BoardMergeQueueKey) =>
+    advanceMergeQueue(key).pipe(
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.logWarning("board supervisor: merge queue advance failed", {
+            cause: Cause.pretty(cause),
+          }),
+      ),
+    ),
+  );
+
   /** Let a card's base's merge queue move on, if something released it. Total. */
   const hintMergeQueue = Effect.fn("board-supervisor-hintMergeQueue")(
     function* (cardId: BoardCardId) {
       const card = yield* readCard(cardId);
       const key = card === null ? null : boardMergeQueueKeyOf(card);
-      if (key !== null) yield* advanceMergeQueue(key);
+      if (key !== null) yield* mergeQueueWorker.enqueue(key);
     },
     Effect.catchCause((cause) =>
       Effect.logWarning("board supervisor: merge queue advance failed", {
@@ -9689,7 +9719,9 @@ const make = Effect.gen(function* () {
             !hasLiveStageThread(fresh, fresh.stage) &&
             (liveStep === null || isBoardTerminalStepStatus(liveStep.status))
           ) {
-            mergeAwaitingConflictFix.set(String(fresh.id), baseFix);
+            // A card that let go of its base waits behind whoever holds it now.
+            const queued = yield* claimBaseOrQueue(fresh, baseFix, options);
+            if (queued !== null) return queued;
             yield* dispatch({
               type: "board.card.update",
               commandId: yield* commandId("merge-stay-follow-up"),
@@ -9878,16 +9910,13 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Merge a card's pull request, then advance it, and let its base's merge queue move on: a merge
-   * or a refusal may have released the base (T3O-128). A queue's own wake advances itself.
+   * Merge a card's pull request, then advance it. Each caller hints its base's merge queue once it
+   * has recorded the outcome, since a hold it records may be what releases the base (T3O-128).
    */
   const mergeCardPullRequest = (
     cardId: BoardCardId,
     options: MergeAttemptOptions = {},
-  ): Effect.Effect<BoardMergeAttemptResult> =>
-    attemptCardMerge(cardId, options).pipe(
-      Effect.tap(() => (options.fromQueue === true ? Effect.void : hintMergeQueue(cardId))),
-    );
+  ): Effect.Effect<BoardMergeAttemptResult> => attemptCardMerge(cardId, options);
 
   /**
    * T3o: when the board merges into a base, tell every running conflict fix or branch update on
@@ -14193,6 +14222,9 @@ const make = Effect.gen(function* () {
       Effect.andThen(cardCleanupWorker.drain),
       Effect.andThen(cardRetireWorker.drain),
       Effect.andThen(mergeStageRefreshWorker.drain),
+      // A queue's wake dispatches commands of its own, which the main worker then handles.
+      Effect.andThen(mergeQueueWorker.drain),
+      Effect.andThen(worker.drain),
     ),
     // CI passes run on their own fibers and report through the
     // worker; a pass's end can start the next one, so this loops until none

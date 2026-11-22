@@ -71,7 +71,9 @@ export function boardMergeQueueHeads(
   } = {},
 ): ReadonlyArray<BoardCard> {
   return cardsOnKey(board, key).filter((card) => {
-    if (boardCardMergeStayCounts(card).fixBaseTip === null) return false;
+    const counts = boardCardMergeStayCounts(card);
+    // A queued card waits its turn, even one that fixed on this base before.
+    if (counts.fixBaseTip === null || counts.queuedAt !== null) return false;
     if (card.pullRequest?.state === "merged") return false;
     if (card.autoMergeHold !== null && card.autoMergeHold.retryAt === null) return false;
     const step = boardCardStepState(board, card.id);

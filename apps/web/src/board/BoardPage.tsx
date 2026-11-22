@@ -2146,7 +2146,7 @@ function withMergeQueueSlots(
   const running = boardRunningStepCount(cards);
   const merged = new Map(slots);
   for (const card of queued) {
-    const info = boardMergeQueueInfo({ card, cards, running });
+    const info = boardMergeQueueInfo({ card, running });
     if (info !== null && !merged.has(String(card.cardId))) merged.set(String(card.cardId), info);
   }
   return merged;

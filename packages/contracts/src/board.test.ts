@@ -3275,6 +3275,19 @@ describe("automation (T3O-38)", () => {
           ["left the merge stage", fixing("a", { stage: BOARD_SEED_STAGE_IDS.review }), {}, false],
           ["is archived", fixing("a", { archivedAt: NOW }), {}, false],
           ["no longer waits on its own merge", fixing("a"), { pending: false }, false],
+          [
+            "fixed before and is queued again",
+            fixing("a", {
+              mergeStay: {
+                ...emptyBoardCardMergeStay(null),
+                conflictFixes: 1,
+                fixBaseTip: "main",
+                queuedAt: NOW,
+              },
+            }),
+            {},
+            false,
+          ],
         ] as const)("a card that %s: head = %s", (_label, card, input, expected) => {
           expect(isHead(card, input)).toBe(expected);
         });
