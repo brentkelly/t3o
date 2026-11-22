@@ -214,6 +214,7 @@ import { deriveBoardUsageBreakdown } from "./usage/boardUsageBreakdown";
 import type { BoardSummarySectionId } from "./boardSummaryOverview";
 import { BoardPopoverPopup } from "./ui/BoardPopoverPopup";
 import { BoardSheetPopup } from "./ui/BoardDialog";
+import type { BoardCiSkipStepHandler } from "./BoardCardCiPane";
 
 const providerDisabledWords = boardStalledWords("provider-disabled-for-project", null, undefined);
 
@@ -619,6 +620,8 @@ export interface BoardCardDetailViewProps {
   readonly onRetryCi?: (() => void) | undefined;
   /** Stop CI on a queued, running or fixing pass. */
   readonly onStopCi?: (() => void) | undefined;
+  /** T3o (T3O-130): skip, mark or unmark one step of a queued or running pass. */
+  readonly onSkipCiStep?: BoardCiSkipStepHandler | undefined;
   readonly onCiSendBack?: (() => void) | undefined;
   /** A Skip CI request is in flight. */
   readonly skipCiPending?: boolean | undefined;
@@ -3465,6 +3468,7 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
                 onSkipCi={props.onSkipCi}
                 onRetryCi={props.onRetryCi}
                 onStopCi={props.onStopCi}
+                onSkipStep={props.onSkipCiStep}
                 onSendBack={props.onCiSendBack}
                 passes={props.detail.ciPasses}
                 completions={props.detail.stepCompletions}

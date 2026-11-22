@@ -193,12 +193,12 @@ function FindingRow({ entry }: { readonly entry: BoardReviewLoopFinding }) {
 type ShownPhaseStatus = BoardReviewPhaseStatus | "stopped";
 
 /** The review phase's shared step badge. A skipped phase wears the
-    cancelled dash; a stopped one stays a plain number, as amber is the pill's. */
+    skipped dash; a stopped one stays a plain number, as amber is the pill's. */
 const PHASE_BADGE: Record<ShownPhaseStatus, BoardStepBadgeState> = {
   done: "passed",
   running: "running",
   pending: "pending",
-  skipped: "cancelled",
+  skipped: "skipped",
   stopped: "pending",
 };
 

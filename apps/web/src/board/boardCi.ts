@@ -10,6 +10,7 @@ import {
   boardCiFixStepId,
   decodeBoardCiFixPayload,
   isBoardCiStepFailure,
+  isBoardCiStepSkipped,
   parseBoardCiFixStepId,
   type BoardCiFixIssueStatus,
   type BoardCardCi,
@@ -30,6 +31,8 @@ export type BoardStepBadgeState =
   | "failed"
   | "fixing"
   | "cancelled"
+  // T3o (T3O-130): a human skipped it. Neutral grey, never green.
+  | "skipped"
   | "flaky";
 
 /** A CI step's badge: a failure a fix agent is working on is blue, not amber, and a
@@ -57,6 +60,7 @@ const SEGMENT_WORD: Record<BoardStepBadgeState, string> = {
   failed: "failed",
   fixing: "being fixed",
   cancelled: "cancelled",
+  skipped: "skipped",
   flaky: "passed over flaky tests",
 };
 
@@ -65,7 +69,9 @@ export function boardCiSegments(ci: BoardCardCi): ReadonlyArray<BoardCiSegment> 
   const fixing = ci.phase === "fixing";
   return ci.steps.map((step) => {
     const state = boardCiStepBadgeState(step.status, fixing, step.flaky === true);
-    return { name: step.name, state, tooltip: `${step.name} · ${SEGMENT_WORD[state]}` };
+    const word =
+      state === "pending" && isBoardCiStepSkipped(ci, step) ? "will be skipped" : SEGMENT_WORD[state];
+    return { name: step.name, state, tooltip: `${step.name} · ${word}` };
   });
 }
 
@@ -125,7 +131,9 @@ function boardCiHeldLabel(ci: Pick<BoardCardCi, "machine" | "stopReason">): stri
 export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
   const segments = boardCiSegments(ci);
   const fixSegment = boardCiFixSegment(ci);
-  const total = ci.steps.length;
+  // T3o (T3O-130): a skipped step is out of the count, which is passed over steps that run.
+  const skipped = ci.steps.filter((step) => step.status === "skipped").length;
+  const total = ci.steps.length - skipped;
   const failedCount = ci.steps.filter((step) => isBoardCiStepFailure(step.status)).length;
   const passed = ci.steps.filter((step) => step.status === "passed").length;
   const running = ci.steps.find((step) => step.status === "running");
@@ -147,7 +155,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
         segments,
         fixSegment,
         count,
-        detail: "Every step passed",
+        detail: skipped === 0 ? "Every step passed" : `Passed · ${skipped} skipped`,
         tooltip: "CI passed; the card moves on",
       };
     // Held says why, and a machine problem says so.
@@ -213,7 +221,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
               : ci.headline !== undefined
                 ? boardCiHeadlineText(ci.headline)
                 : `${failed.name} ${failWord(failed.status)}`,
-          tooltip: `CI over ${total} ${total === 1 ? "step" : "steps"}`,
+          tooltip: `CI over ${ci.steps.length} ${ci.steps.length === 1 ? "step" : "steps"}`,
         };
       }
       const index = ci.steps.indexOf(running);
@@ -232,7 +240,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
           failedCount > 0
             ? `${failedCount} failed · running ${running.name} · ${elapsed}`
             : `${running.name} · ${elapsed}`,
-        tooltip: `Step ${index + 1} of ${total} running${
+        tooltip: `Step ${index + 1} of ${ci.steps.length} running${
           progress === null || running.progress?.message == null
             ? ""
             : ` · ${running.progress.message}`
@@ -327,7 +335,9 @@ export function boardCiPassSummary(pass: Pick<BoardCiPass, "outcome" | "steps">)
   const failed = failures[0];
   if (failed !== undefined) return `${failed.name} ${failWord(failed.status)}`;
   if (pass.outcome === "skipped") return "Skipped by a human";
-  return "";
+  // T3o (T3O-130): a pass that skipped steps says how many, beside its chip.
+  const skipped = pass.steps.filter((step) => step.status === "skipped").length;
+  return skipped === 0 ? "" : `${skipped} skipped`;
 }
 
 /** The CI tab header's status chip. */

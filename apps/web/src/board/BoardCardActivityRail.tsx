@@ -210,6 +210,7 @@ function ActivityIcon({
     case "card-ci-sent-back":
       return <Undo2Icon className={cn(className, "text-warning-foreground")} />;
     case "card-ci-skipped":
+    case "card-ci-step-skip":
       return <ChevronsRightIcon className={className} />;
     case "card-ci-held":
       return <TriangleAlertIcon className={cn(className, "text-warning-foreground")} />;
@@ -264,6 +265,7 @@ const CI_ACTIVITY_KINDS: ReadonlySet<BoardCardActivityEntry["kind"]> = new Set([
   "card-ci-pass-finished",
   "card-ci-sent-back",
   "card-ci-skipped",
+  "card-ci-step-skip",
   "card-ci-held",
   "card-ci-stopped",
   "card-ci-flakes-filed",
@@ -491,6 +493,14 @@ function activitySentence(
     }
     case "card-ci-skipped":
       return <>skipped CI</>;
+    case "card-ci-step-skip": {
+      const step = payload.ciStepName ?? "a step";
+      return payload.ciStepSkip === false ? (
+        <>took the skip off the CI step {step}</>
+      ) : (
+        <>skipped the CI step {step} until the card leaves CI</>
+      );
+    }
     case "card-ci-held":
       return payload.detail === undefined ? <>held the card in CI</> : <>{payload.detail}</>;
     case "card-ci-flakes-filed":

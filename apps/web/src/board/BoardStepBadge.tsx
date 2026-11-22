@@ -17,6 +17,7 @@ const STATE_LABEL: Record<BoardStepBadgeState, string> = {
   failed: "Failed",
   fixing: "Failed, being fixed",
   cancelled: "Cancelled",
+  skipped: "Skipped",
   flaky: "Passed over flaky tests",
 };
 
@@ -36,7 +37,7 @@ export function BoardStepBadge({
           ? { className: "bg-warning", icon: <CheckIcon className="size-[7px]" strokeWidth={4} /> }
           : state === "fixing"
             ? { className: "bg-info", icon: <XIcon className="size-[7px]" strokeWidth={4} /> }
-            : state === "cancelled"
+            : state === "cancelled" || state === "skipped"
               ? {
                   className: "bg-muted-foreground",
                   icon: <MinusIcon className="size-[7px]" strokeWidth={4} />,

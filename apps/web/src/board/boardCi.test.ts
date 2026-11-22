@@ -68,6 +68,32 @@ describe("boardCiSegments", () => {
   });
 });
 
+describe("a skipped CI step (T3O-130)", () => {
+  it("is a neutral segment, out of the count, and a pass with one says so", () => {
+    const steps = [
+      step("Lint", "passed"),
+      step("Test", "skipped"),
+      { ...step("E2E", "pending"), id: "e2e" },
+    ];
+    const marked = ci({ steps, skippedSteps: ["e2e"] });
+    expect(boardCiSegments(marked).map((segment) => [segment.state, segment.tooltip])).toEqual([
+      ["passed", "Lint · passed"],
+      ["skipped", "Test · skipped"],
+      ["pending", "E2E · will be skipped"],
+    ]);
+    expect(boardCiFace(marked, NOW_MS).count).toBe("1/2");
+    const passed = boardCiFace(ci({ phase: "passed", steps: steps.slice(0, 2) }), NOW_MS);
+    expect(passed.detail).toBe("Passed · 1 skipped");
+    expect(passed.count).toBe("1/1");
+    expect(
+      boardCiPassSummary({
+        outcome: "passed",
+        steps: [{ name: "Test", status: "skipped" } as BoardCiPassStep],
+      }),
+    ).toBe("1 skipped");
+  });
+});
+
 describe("boardCiFace", () => {
   it("names the running step with whole elapsed minutes", () => {
     const face = boardCiFace(

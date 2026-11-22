@@ -6,6 +6,7 @@
  */
 import type {
   BoardCheckCardWorktreeResult,
+  BoardCiSkipStepResult,
   BoardMergeCardPullRequestResult,
   BoardRefreshCardPullRequestResult,
   BoardRemoveCardWorktreeResult,
@@ -206,6 +207,41 @@ export function describeBoardCheckWorktreeOutcome(
 }
 
 /** The toast "Skip CI" leaves. `stageLabel` names where it went. */
+/** T3o (T3O-130): what a step skip's answer says, or null when it did what was asked. */
+export function describeBoardCiSkipStepOutcome(
+  result: BoardCiSkipStepResult,
+  stepName: string,
+): { readonly title: string; readonly description?: string; readonly tone: "info" | "error" } | null {
+  switch (result.outcome) {
+    case "skipped":
+    case "marked":
+    case "unskipped":
+      return null;
+    case "last-step":
+      return {
+        title: `${stepName} was not skipped`,
+        description: "Use Skip CI to skip all of CI.",
+        tone: "info",
+      };
+    case "not-running":
+      return {
+        title: `${stepName} was not skipped`,
+        description: "The step has finished, or this CI pass is no longer running.",
+        tone: "info",
+      };
+    case "not-in-ci":
+      return { title: "The card is no longer in CI", tone: "info" };
+    case "unknown-card":
+      return { title: "This card no longer exists.", tone: "error" };
+    case "failed":
+      return {
+        title: `${stepName} could not be skipped`,
+        description: "See the server log for details.",
+        tone: "error",
+      };
+  }
+}
+
 export function describeBoardSkipCiOutcome(
   result: BoardSkipCiResult,
   cardKey: string,
