@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New card at phone width</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#18181b}a:hover{color:#000}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; display: flex; flex-direction: column; background: #fafafa; font-family: Inter, system-ui, sans-serif; color: #18181b; overflow: hidden">
+
+  <header style="display: flex; align-items: center; gap: 10px; padding: 8px 4px 8px 18px; border-bottom: 1px solid #e4e4e7; flex-shrink: 0">
+    <h1 style="margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.01em">New card</h1>
+    <button aria-label="Column: Sprint" style="height: 36px; padding: 0 8px 0 11px; border: 1px solid #d4d4d8; border-radius: 9px; background: #ffffff; display: flex; align-items: center; gap: 5px; font: inherit; font-size: 14.5px; color: #18181b; cursor: pointer">Sprint
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+    <div style="flex-grow: 1"></div>
+    <a href="Main.dc.html" aria-label="Close without creating" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #3f3f46">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></a>
+  </header>
+
+  <main style="flex-grow: 1; min-height: 0; overflow-y: auto; padding: 16px 16px 24px; display: flex; flex-direction: column; gap: 20px">
+
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+        <div style="display: flex; flex-direction: column; gap: 7px">
+          <span id="lbl-project" style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">PROJECT</span>
+          <button aria-labelledby="lbl-project" style="height: 46px; padding: 0 10px 0 12px; border: 1px solid #d4d4d8; border-radius: 11px; background: #ffffff; display: flex; align-items: center; gap: 8px; font: inherit; font-size: 16px; color: #18181b; cursor: pointer; text-align: left">
+            <span style="width: 9px; height: 9px; border-radius: 5px; background: #c0904f"></span><span style="flex-grow: 1">t3o</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 7px">
+          <span id="lbl-base" style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">BASE BRANCH</span>
+          <button aria-labelledby="lbl-base" aria-describedby="hint-base" style="height: 46px; padding: 0 10px 0 12px; border: 1px solid #d4d4d8; border-radius: 11px; background: #ffffff; display: flex; align-items: center; gap: 8px; font: inherit; color: #18181b; cursor: pointer; text-align: left">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><path d="M6 15.5V4M18 8.5a8 8 0 0 1-8 8"></path></svg>
+            <span style="flex-grow: 1; font-family: 'JetBrains Mono', monospace; font-size: 15px">t3o</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+        </div>
+      </div>
+      <span id="hint-base" style="font-size: 13px; color: #52525b; text-align: right">Work branches off the base branch.</span>
+    </div>
+
+    <label style="display: flex; flex-direction: column; gap: 7px">
+      <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">TITLE</span>
+      <input value="{{title}}" onChange="{{typeTitle}}" placeholder="What needs building?" style="height: 48px; box-sizing: border-box; padding: 0 14px; border: 1px solid #d4d4d8; border-radius: 11px; background: #ffffff; font: inherit; font-size: 16px; color: #18181b; outline-color: #1d4ed8">
+    </label>
+
+    <div style="display: flex; flex-direction: column; gap: 7px">
+      <span id="lbl-label" style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">LABEL</span>
+      <button aria-labelledby="lbl-label" style="height: 48px; padding: 0 12px 0 14px; border: 1px solid #d4d4d8; border-radius: 11px; background: #ffffff; display: flex; align-items: center; gap: 9px; font: inherit; font-size: 16px; color: #52525b; cursor: pointer; text-align: left">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9-9-9Z"></path><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor"></circle></svg>
+        <span style="flex-grow: 1">Add labels</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <label style="display: flex; flex-direction: column; gap: 7px">
+        <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">BRIEF</span>
+        <textarea rows="6" placeholder="What's the context? Paste screenshots or attach files." style="min-height: 150px; box-sizing: border-box; padding: 12px 14px; border: 1px solid #d4d4d8; border-radius: 11px; background: #ffffff; font: inherit; font-size: 16px; line-height: 1.45; color: #18181b; resize: vertical; outline-color: #1d4ed8"></textarea>
+      </label>
+      <button style="align-self: flex-start; height: 44px; padding: 0 14px; border: 1px dashed #c4c4c8; border-radius: 11px; background: transparent; display: flex; align-items: center; gap: 7px; font: inherit; font-size: 15px; color: #27272a; cursor: pointer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"></path></svg>Attach files</button>
+    </div>
+
+    <div role="radiogroup" aria-labelledby="lbl-prio" style="display: flex; flex-direction: column; gap: 8px">
+      <span id="lbl-prio" style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">PRIORITY</span>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid #e4e4e7; border-radius: 13px; background: #ffffff">
+        <sc-for list="{{prios}}" as="p" hint-placeholder-count="4">
+          <button role="radio" aria-checked="{{p.checked}}" onClick="{{p.pick}}" style="height: 56px; border: none; border-radius: 9px; background: {{p.bg}}; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: 14px; font-weight: {{p.weight}}; color: #18181b; cursor: pointer">
+            <sc-if value="{{p.urgent}}" hint-placeholder-val="{{ false }}">
+              <span aria-hidden="true" style="width: 16px; height: 16px; border-radius: 4px; background: #dc2626; color: #ffffff; font-size: 12px; font-weight: 700; line-height: 16px; text-align: center">!</span>
+            </sc-if>
+            <sc-if value="{{p.bars}}" hint-placeholder-val="{{ true }}">
+              <svg width="16" height="16" viewBox="0 0 18 14" aria-hidden="true"><rect x="1" y="8" width="3.5" height="6" rx="1" fill="{{p.b1}}"></rect><rect x="7" y="4" width="3.5" height="10" rx="1" fill="{{p.b2}}"></rect><rect x="13" y="0" width="3.5" height="14" rx="1" fill="{{p.b3}}"></rect></svg>
+            </sc-if>
+            {{p.label}}
+          </button>
+        </sc-for>
+      </div>
+      <span style="font-size: 13.5px; line-height: 1.4; color: #52525b">{{prioHint}}</span>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">DEPENDENCIES</span>
+        <button style="height: 44px; padding: 0 8px; border: none; background: transparent; display: flex; align-items: center; gap: 4px; font: inherit; font-size: 15px; font-weight: 500; color: #18181b; cursor: pointer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add</button>
+      </div>
+      <span style="font-size: 15px; color: #52525b">No dependencies.</span>
+    </div>
+  </main>
+
+  <footer style="flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 10px 14px 22px 8px; border-top: 1px solid #e4e4e7; background: #fafafa">
+    <button aria-label="Schedule for later" style="width: 44px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #52525b; cursor: pointer">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg></button>
+    <button aria-label="Pin" style="width: 44px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #52525b; cursor: pointer">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 4 3v2H6v-2l4-3-1-6ZM12 14v7"></path></svg></button>
+    <div style="flex-grow: 1"></div>
+    <button disabled="{{createDisabled}}" style="height: 48px; padding: 0 26px; border: none; border-radius: 12px; background: {{createBg}}; color: #ffffff; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer">Create card</button>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var self = this;
+    var title = this.state.title || '';
+    var prio = this.state.prio || 'normal';
+    var dark = '#18181b', light = '#c4c4c8';
+    var defs = [
+      { key: 'low', label: 'Low', b: [dark, light, light], hint: '[What Low priority means for scheduling]' },
+      { key: 'normal', label: 'Normal', b: [dark, dark, light], hint: 'Waits its turn behind High and Urgent cards.' },
+      { key: 'high', label: 'High', b: [dark, dark, dark], hint: '[What High priority means for scheduling]' },
+      { key: 'urgent', label: 'Urgent', urgent: true, hint: '[What Urgent priority means for scheduling]' }
+    ];
+    var hint = '';
+    var prios = defs.map(function (d) {
+      var on = d.key === prio;
+      if (on) hint = d.hint;
+      return { label: d.label, urgent: !!d.urgent, bars: !d.urgent, b1: d.b ? d.b[0] : '', b2: d.b ? d.b[1] : '', b3: d.b ? d.b[2] : '',
+        checked: on ? 'true' : 'false', bg: on ? '#efefee' : 'transparent', weight: on ? '600' : '500',
+        pick: function () { self.setState({ prio: d.key }); } };
+    });
+    var ready = title.trim().length > 0;
+    return {
+      title: title, prios: prios, prioHint: hint,
+      typeTitle: function (e) { self.setState({ title: e.target.value }); },
+      createDisabled: !ready, createBg: ready ? '#1d4ed8' : '#9db4ee'
+    };
+  }
+}
+</script>
+</body>
+</html>

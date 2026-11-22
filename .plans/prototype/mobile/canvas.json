@@ -1,0 +1,177 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "CardDetail.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "Card · Summary tab",
+      "w": 390,
+      "x": 470,
+      "y": 0
+    },
+    "CardEpic.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "Epic · Cards tab",
+      "w": 390,
+      "x": 1410,
+      "y": 0
+    },
+    "CardReview.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "Card · Review tab",
+      "w": 390,
+      "x": 940,
+      "y": 0
+    },
+    "CardSheet.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "Card · Details sheet open",
+      "w": 390,
+      "x": 1880,
+      "y": 0
+    },
+    "Main.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "Board",
+      "w": 390,
+      "x": 0,
+      "y": 0
+    },
+    "CardThread.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "Card · Thread tab",
+      "w": 390,
+      "x": 2350,
+      "y": 0
+    },
+    "BoardDesktop.dc.html": {
+      "x": 0,
+      "y": 1500,
+      "w": 1440,
+      "h": 900,
+      "title": "Desktop board · project filter",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "NewCard.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "radius": 28,
+      "title": "New card",
+      "w": 390,
+      "x": 2820,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-22T12:00:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "noteOrder": [
+    "title",
+    "nBoard",
+    "nCard",
+    "nReview",
+    "nEpic",
+    "nSheet",
+    "nThread",
+    "tDesktop",
+    "nFilter",
+    "nNew"
+  ],
+  "notes": {
+    "nBoard": {
+      "text": "Same board markup. At ≤640px: columns become a scroll-snap row (one column plus a peek of the next). Cost chip hidden (moves into the Workers popover). View switcher icon-only. Floating toolbar starts collapsed.",
+      "w": 390,
+      "x": 0,
+      "y": 964
+    },
+    "nCard": {
+      "text": "Same card modal, made full-screen. ID and parent stay left; label and status chips shrink into the top-right. Tabs scroll and drop their icons. The sidebar becomes the Details sheet (panel button at the end of the tab row). Stat tiles go 4 → 2 columns; detail chips wrap under their titles.",
+      "w": 390,
+      "x": 470,
+      "y": 964
+    },
+    "nEpic": {
+      "text": "Cards tab: the Done chip moves onto each row's meta line; Dependency chart and Board buttons wrap under the heading.",
+      "w": 390,
+      "x": 1410,
+      "y": 964
+    },
+    "nReview": {
+      "text": "Round pills: grid 10 → 5 columns. Round headers wrap their counts onto a second line. Same component as the Summary board, opened on Review.",
+      "w": 390,
+      "x": 940,
+      "y": 964
+    },
+    "nSheet": {
+      "text": "The sidebar, unchanged, as a bottom sheet over the card. Opens from the panel button; closes by scrim tap, swipe down or ×.",
+      "w": 390,
+      "x": 1880,
+      "y": 964
+    },
+    "title": {
+      "kind": "title1",
+      "maxW": 3210,
+      "text": "T3 on a phone",
+      "w": 240,
+      "x": 0,
+      "y": -260
+    },
+    "nThread": {
+      "text": "Same card component, Thread tab. Title clamps to 2 lines. Session tabs drop the card-ID prefix and scroll; fullscreen and pop-out hide (the card is already full-screen); 'Ran on SRV' shortens to SRV. Prompt bubble keeps its fade + Show full message. Composer stays pinned with nothing below it.",
+      "w": 390,
+      "x": 2350,
+      "y": 964
+    },
+    "tDesktop": {
+      "kind": "title1",
+      "text": "Desktop board",
+      "x": 0,
+      "y": 1240,
+      "maxW": 1440
+    },
+    "nFilter": {
+      "x": 1520,
+      "y": 1500,
+      "w": 380,
+      "fill": "yellow",
+      "size": "s",
+      "text": "Project filter, same on desktop and phone. No 'All projects' control: nothing selected = everything shows. Click a pill to add that project, click again to remove it; any number can be on. Selected pills take a tint of the project colour; unselected ones dim while a filter is active. 'Clear' appears after the pills (phone: an × with the count, pinned before Archived) so the pills never shift under the pointer. Column counts follow the filter."
+    },
+    "nNew": {
+      "text": "Same New card modal, made full-screen. Project + base branch stay side by side; the 'work branches off this' hint moves under them. Title and Label stack. Brief placeholder drops ⌘V. Priority keeps its 4-way control with icons above labels; its explanation moves below. Cancel goes (× does it); Ctrl+↵ hint hidden. Footer stays pinned above the keyboard. Inputs are 16px so iOS doesn't zoom.",
+      "w": 390,
+      "x": 2820,
+      "y": 964
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "CardDetail.dc.html",
+    "CardReview.dc.html",
+    "CardEpic.dc.html",
+    "CardSheet.dc.html",
+    "CardThread.dc.html",
+    "BoardDesktop.dc.html",
+    "NewCard.dc.html"
+  ],
+  "pages": [],
+  "title": "T3 mobile mockups"
+}
