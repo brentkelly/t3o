@@ -11,6 +11,7 @@ import {
   type EnvironmentId,
 } from "@t3tools/contracts";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -231,7 +232,11 @@ export async function uploadBoardAttachment(input: {
   input.onAbortable?.(cancel);
   if (input.isCancelled?.()) cancel();
   const exit = await Effect.runPromise(Fiber.await(fiber));
-  if (Exit.isFailure(exit)) return { status: "cancelled" };
+  // The cycle returns its failures as values, so a failed exit is an interrupt or a defect.
+  if (Exit.isFailure(exit))
+    return Cause.hasInterruptsOnly(exit.cause)
+      ? { status: "cancelled" }
+      : { status: "failed", reason: "Upload failed" };
   const result = exit.value;
   if (result.status === "uploaded") {
     return {

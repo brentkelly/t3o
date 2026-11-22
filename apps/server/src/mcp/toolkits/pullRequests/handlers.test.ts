@@ -175,7 +175,11 @@ const boardSql = (board: HarnessOptions["board"] = {}) =>
         ? found(board.cardThreads)
         : query.includes("board_relayed_threads")
           ? found(board.relayedThreads)
-          : (board.cardPullRequestUrls ?? []).map((url) => ({ url })),
+          : (board.cardPullRequestUrls ?? []).map((url) => ({
+              url,
+              number: Number(url.replace(/\/+$/, "").split("/").at(-1)),
+              headBranch: "board/card",
+            })),
     );
   }) as unknown as SqlClient.SqlClient;
 
@@ -1136,6 +1140,40 @@ describe("source control tools", () => {
         .pipe(Effect.flip);
       expect(unpinned._tag).toBe("PullRequestForgeError");
       expect(actions).toHaveLength(1);
+    }),
+  );
+
+  // T3o: a stack merge also lands its lower layers, so a card's PR below the named one refuses.
+  it.effect("the board merge guard checks a stack's lower layers", () =>
+    Effect.gen(function* () {
+      const actions: Array<PullRequestActionInput> = [];
+      const layer = (number: number) => ({
+        number,
+        state: "open" as const,
+        headSha: `sha-${number}`,
+        headBranch: `layer-${number}`,
+      });
+      const harness = yield* makeHarness({
+        thread: branchThread,
+        board: { cardPullRequestUrls: ["https://github.com/t3tools/t3code/pull/41"] },
+        pullRequests: {
+          stack: () =>
+            Effect.succeed({
+              id: "stack-1",
+              number: 7,
+              url: "https://github.com/t3tools/t3code/stacks/7",
+              base: "main",
+              layers: [layer(41), layer(42)],
+            }),
+          runAction: (input) => Effect.sync(() => void actions.push(input)),
+          summary: () => Effect.succeed({ state: "open", headBranch: "layer-42" } as never),
+        },
+      });
+      const exit = yield* harness
+        .call("pull_request_merge", { expectedHeadSha: "sha-42", stack: true })
+        .pipe(Effect.exit);
+      expect(JSON.stringify(exit)).toContain("capability_denied");
+      expect(actions).toHaveLength(0);
     }),
   );
 

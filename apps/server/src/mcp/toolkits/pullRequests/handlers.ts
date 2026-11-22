@@ -40,7 +40,7 @@ import {
   visibleThreadPullRequests,
 } from "../../../sourceControl/threadPullRequests.ts";
 // T3o: the board owns card merges (T3O-133).
-import { refuseBoardOwnedMerge } from "../../../board/prMergeGuard.ts";
+import { boardMergeTarget, refuseBoardOwnedMerge } from "../../../board/prMergeGuard.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { threadNotFound } from "../../threadAccess.ts";
@@ -1161,8 +1161,20 @@ const make = Effect.gen(function* () {
     pull_request_merge: McpToolAccess.writesWithCapability((input) =>
       Effect.gen(function* () {
         const { thread, target, ref } = yield* locate(input);
-        yield* refuseBoardOwnedMerge(thread.id, target.url); // T3o: the board merges card PRs.
+        // T3o: the board merges card PRs, a stack's lower layers included.
+        const boardTarget = (number: number) =>
+          boardMergeTarget(
+            target.url,
+            number,
+            pullRequests.summary({ ...ref, number }).pipe(Effect.map((pr) => pr.headBranch)),
+          );
+        yield* refuseBoardOwnedMerge(thread.id, [boardTarget(ref.number)]);
         const stack = input.stack === true ? yield* stackMergeScope(ref, input) : {};
+        if ("expectedStackHeads" in stack)
+          yield* refuseBoardOwnedMerge(
+            thread.id,
+            stack.expectedStackHeads.map((layer) => boardTarget(layer.number)),
+          );
         yield* pullRequests
           .runAction({
             ...ref,

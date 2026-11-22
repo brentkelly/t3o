@@ -375,10 +375,9 @@ resolution is regenerate, not hand-merge.
   spreads in and, since `t3o-26`, hit the split `projection_state`. Policy: a marked test-side fix
   each time (`isBoardProjectorName` routes seeding/assertions to `boards.projection_state`), not a
   registry restructure.
-- **Launcher protocol.** The fork is at `SERVICE_LAUNCHER_PROTOCOL = 4`: upstream's `3` plus the
-  multi-database backup (`t3o-26`). The fork's number must stay ahead of upstream's, so an upstream
-  bump is a _semantic_ conflict even when it merges cleanly. Check `cloud/serviceProtocol.ts` on
-  every sync (see the `v0.0.45` decisions).
+- **Launcher protocol.** The fork no longer carries its own `SERVICE_LAUNCHER_PROTOCOL`: since
+  `v0.1.11` it takes upstream's number as-is, because T3o runs `dist/bin.mjs serve` from
+  `install-t3o-service` and never under upstream's launcher (see the `v0.1.11` decisions).
 - **`migrate-dev-db`** (new upstream script) rebuilds and migrates `state.sqlite` only. It neither
   copies nor migrates `boards.sqlite`. Follow-up, not blocking.
 - **Adopted in `T3O-47`:** upstream's `apps/server/src/pullRequest/` module. See the decisions
@@ -1308,8 +1307,6 @@ files (see [Seam grammar](#seam-grammar-since-t3o-02a)).
 | `apps/web/src/components/settings/SettingsBreadcrumb.tsx`                       | `T3O-49`          | Board settings pages label their breadcrumb (`boardSettingsBreadcrumbLabel`)                                                                                                                                                       | import + one-line fallback                                                   |
 | `apps/server/src/mcp/McpSessionRegistry.ts`                                     | `t3o-08`          | Granted capability set gains `"board"` (D3)                                                                                                                                                                                        | one-line edit (frozen)                                                       |
 | `apps/server/src/mcp/McpSessionRegistry.test.ts`                                | `t3o-08`          | Every thread session carries `"board"`                                                                                                                                                                                             | marked fork expectation                                                      |
-| `apps/server/src/cloud/serviceProtocol.ts`                                      | `T3O-54`          | `SERVICE_LAUNCHER_PROTOCOL = 4` (upstream's 3 + multi-database snapshot)                                                                                                                                                           | constant + comment (re-check every sync)                                     |
-| `apps/server/src/cloud/servicePreflight.test.ts`                                | `T3O-54`          | Protocol 3 is blocked too: upstream's protocol-3 launcher snapshots only `state.sqlite`                                                                                                                                            | marked fork expectation                                                      |
 | `apps/server/src/serviceLauncher.ts`                                            | `t3o-26`          | Update backup and restore cover every database in the state dir (`databaseBaseNames`), the online backup included (`T3O-102`)                                                                                                      | helpers + backup, online-backup and restore loops                            |
 | `apps/server/src/serviceLauncher.test.ts`                                       | `t3o-26`          | Import and exercise the multi-database backup helpers; upstream's online-backup test seeds a `boards.sqlite`                                                                                                                       | import + fork tests                                                          |
 | `docs/internals/server-updates.md`                                              | `t3o-26`          | "Every database, not just `state.sqlite`" section                                                                                                                                                                                  | Self-contained section                                                       |

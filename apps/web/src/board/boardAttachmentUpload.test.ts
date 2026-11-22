@@ -1,10 +1,19 @@
-import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   boardAttachmentLimits,
   formatBoardAttachmentSize,
   pastedImageFiles,
+  uploadBoardAttachment,
 } from "./boardAttachmentUpload";
+
+const cycle = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock("@t3tools/client-runtime/state/attachments", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  runAttachmentUploadCycle: () => cycle.current,
+}));
 
 describe("boardAttachmentLimits", () => {
   it("is unknown until the server config arrives", () => {
@@ -51,5 +60,24 @@ describe("pastedImageFiles", () => {
     const data = { files: [image, doc] } as unknown as DataTransfer;
     expect(pastedImageFiles(data)).toEqual([image]);
     expect(pastedImageFiles(null)).toEqual([]);
+  });
+});
+
+describe("uploadBoardAttachment", () => {
+  const upload = (exit: Effect.Effect<never>) => {
+    cycle.current = exit;
+    return uploadBoardAttachment({
+      environmentId: EnvironmentId.make("env-1"),
+      file: new File(["x"], "notes.txt", { type: "text/plain" }),
+      type: "file",
+    });
+  };
+
+  it("reports a defect as failed and only an interrupt as cancelled", async () => {
+    expect(await upload(Effect.die(new Error("boom")))).toEqual({
+      status: "failed",
+      reason: "Upload failed",
+    });
+    expect(await upload(Effect.interrupt)).toEqual({ status: "cancelled" });
   });
 });
