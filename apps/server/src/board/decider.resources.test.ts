@@ -395,6 +395,21 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("card sizes", (it
           ["slower"],
         );
         assert.strictEqual(removed?.version, afterReset);
+        // A removal that removes nothing emits nothing.
+        assert.lengthOf(
+          yield* decideEvents(
+            {
+              type: "board.project.remove-load-sensitive",
+              commandId: CommandId.make("cmd-ls-remove-none"),
+              projectId,
+              keys: ["a.spec.ts › gone"],
+              actor: BOARD_SYSTEM_ACTOR,
+              createdAt: NOW,
+            },
+            model,
+          ),
+          0,
+        );
         const cleared = yield* apply({
           type: "board.project.remove-load-sensitive",
           commandId: CommandId.make("cmd-ls-clear"),
@@ -404,6 +419,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("card sizes", (it
           createdAt: NOW,
         });
         assert.deepStrictEqual(cleared?.loadSensitive, []);
+        assert.lengthOf(
+          yield* decideEvents(
+            {
+              type: "board.project.remove-load-sensitive",
+              commandId: CommandId.make("cmd-ls-clear-again"),
+              projectId,
+              all: true,
+              actor: BOARD_SYSTEM_ACTOR,
+              createdAt: NOW,
+            },
+            model,
+          ),
+          0,
+        );
       }),
   );
 

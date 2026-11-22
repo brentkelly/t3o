@@ -257,6 +257,8 @@ export const decideProjectConfigCommand = Effect.fn("decideProjectConfigCommand"
         command.all === true
           ? []
           : (current.loadSensitive ?? []).filter((entry) => !drop.has(entry.key));
+      // Nothing removed: no event, so no reactor wake and no shell re-send.
+      if (loadSensitive.length === (current.loadSensitive ?? []).length) return [];
       return yield* emit(
         withBoardProjectConfigVersion({ ...current, loadSensitive }),
         "load-sensitive",
