@@ -40,7 +40,7 @@ export function BoardProjectFilter({
   if (projects.length <= 1 && staleIds.length === 0) return null;
   const dimUnselected = boardEffectiveProjectScope(selection, visibleIds).length > 0;
   return (
-    <div className="flex min-w-0 items-center gap-1.5 max-sm:flex-1">
+    <div className="flex min-w-0 items-center gap-1.5 max-sm:flex-1 max-sm:basis-full">
       <div
         aria-label="Filter by project"
         className="flex min-w-0 items-center gap-1.5 sm:flex-wrap max-sm:flex-1 max-sm:overflow-x-auto max-sm:[scrollbar-width:none]"
