@@ -4604,9 +4604,7 @@ const make = Effect.gen(function* () {
                     // T3o (T3O-127): once heavy, one best-effort try at the CI reservation.
                     Effect.flatMap((hold) =>
                       hold === null
-                        ? capacityAdmission.value
-                            .ensureCiReservation(card.id)
-                            .pipe(Effect.as(true))
+                        ? capacityAdmission.value.ensureCiReservation(card.id).pipe(Effect.as(true))
                         : Effect.succeed(false),
                     ),
                   ),

@@ -121,7 +121,10 @@ export function ciProfileOf(
   declaredCpuCores: number,
 ): BoardResourceProfile {
   if (ciCpuCores === undefined || ciCpuCores <= profile.cpuCores) return profile;
-  return { ...profile, cpuCores: Math.max(profile.cpuCores, Math.min(ciCpuCores, declaredCpuCores)) };
+  return {
+    ...profile,
+    cpuCores: Math.max(profile.cpuCores, Math.min(ciCpuCores, declaredCpuCores)),
+  };
 }
 
 /** The board's granted state for one worker: every card with a worktree there that is

@@ -552,14 +552,13 @@ const readStepResult = (
  * only when its `::t3o-failure::` line says so; a timeout never is, nor is a step whose
  * result file reported a failure the parser dropped or capped.
  */
-export function boardCiStepFlakes(
+function boardCiStepFlakes(
   read: { readonly result: BoardCiStepResult | null; readonly complete: boolean },
   failureLine: { readonly step: string | null; readonly flaky: boolean | null } | null,
   stepName: string,
-  options: Pick<
-    BoardCiRunRequest,
-    "knownFlaky" | "notFlakyTitle" | "inconclusiveTargetAllowed"
-  > & { readonly underLoad?: boolean },
+  options: Pick<BoardCiRunRequest, "knownFlaky" | "notFlakyTitle" | "inconclusiveTargetAllowed"> & {
+    readonly underLoad?: boolean;
+  },
 ): {
   readonly result: BoardCiStepResult | null;
   readonly flaky: ReadonlyArray<NonNullable<BoardCiPassStep["flaky"]>[number]>;
@@ -627,18 +626,18 @@ export function boardCiStepFlakes(
 }
 
 /** T3o (T3O-127): how a step group reads the host's load before it starts. */
-export interface BoardCiLoad {
+interface BoardCiLoad {
   readonly cpuPressure: number;
   readonly underLoad: boolean;
 }
 
-export function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad | null {
+function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad | null {
   if (pressure === null) return null;
   return { cpuPressure: Math.round(pressure * 10) / 10, underLoad: pressure >= threshold };
 }
 
 /** The environment a step is told the load through. Unknown pressure sets neither. */
-export function boardCiLoadEnv(load: BoardCiLoad | null): Readonly<Record<string, string>> {
+function boardCiLoadEnv(load: BoardCiLoad | null): Readonly<Record<string, string>> {
   if (load === null) return {};
   return {
     T3O_CPU_PRESSURE: String(Math.round(load.cpuPressure)),

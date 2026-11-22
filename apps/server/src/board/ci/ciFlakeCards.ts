@@ -75,7 +75,7 @@ const isPerformanceCard = (card: Pick<BoardCard, "title">) =>
 
 /** A load-sensitive mark covers load only, and never a test the card changed or a flake
     card's own test, which must really pass. */
-export function isHonouredLoadSensitiveFlake(
+function isHonouredLoadSensitiveFlake(
   flake: Pick<BoardCiFlake, "loadSensitive" | "underLoad" | "inDiff" | "file" | "title">,
   target: string | null,
 ): boolean {
@@ -148,7 +148,7 @@ const commandIdFor = (seed: string, step: string) =>
 const clip = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 
-export function boardCiFlakeBrief(input: {
+function boardCiFlakeBrief(input: {
   readonly key: string;
   readonly flake: BoardCiFlake;
   readonly testedKey: string;
@@ -347,7 +347,10 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
       commandId: commandIdFor(seed, "create"),
       cardId,
       projectId: card.projectId,
-      title: clip(`${flake.underLoad === true ? SLOW_UNDER_LOAD_PREFIX : "Flaky test: "}${key}`, 200),
+      title: clip(
+        `${flake.underLoad === true ? SLOW_UNDER_LOAD_PREFIX : "Flaky test: "}${key}`,
+        200,
+      ),
       brief: boardCiFlakeBrief({
         key,
         flake,

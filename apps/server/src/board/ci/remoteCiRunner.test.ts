@@ -326,7 +326,13 @@ it.effect(
         result: {
           summary: null,
           failures: [
-            { title: "adds", file: "a.test.ts", flaky: true, repro: "vp test a", loadSensitive: true },
+            {
+              title: "adds",
+              file: "a.test.ts",
+              flaky: true,
+              repro: "vp test a",
+              loadSensitive: true,
+            },
           ],
           skippedUnderLoad: 2,
         },
