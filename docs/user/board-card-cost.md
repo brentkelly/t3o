@@ -17,8 +17,8 @@ every review, triage and adjudicate round — and prices it. Work a thread hands
 - **A group** in Done shows the total of everything under it, nested groups included. Click the
   figure for each child's share. Inside a group's board the header shows the same total at any
   stage.
-- **The board header** shows what the cards in view cost. It follows the filter and the project
-  scope; click it for a split by column and by provider.
+- **The board header** shows what the cards in view cost. It follows the text filter and the project
+  filter; click it for a split by column and by provider.
 - **The List view** has sortable **Tokens** and **Cost** columns, a cost filter (over the
   threshold, or cards with partial data) and a total for what is listed.
 
