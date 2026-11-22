@@ -22,6 +22,7 @@ import {
   type BoardCardId,
   type BoardCardPullRequestActionInput,
   type BoardCiActionInput,
+  type BoardCiSkipStepInput,
   type BoardReadCiLogInput,
   type BoardRequestReviewRoundInput,
   type BoardCardWorkerMoveAnswer,
@@ -565,6 +566,12 @@ function makeBoardRpcHandlers(
       ),
     [BOARD_WS_METHODS.ciSendBack]: (input: BoardCardPullRequestActionInput) =>
       authorized(BOARD_WS_METHODS.ciSendBack, deps.boardSupervisor.ciSendBack(input.cardId)),
+    /** T3o (T3O-130): a human's step skip, stamped like Skip CI; no agent tool reaches it. */
+    [BOARD_WS_METHODS.ciSkipStep]: (input: BoardCiSkipStepInput) =>
+      authorized(
+        BOARD_WS_METHODS.ciSkipStep,
+        deps.boardSupervisor.skipCiStep(input, services.stampActor),
+      ),
 
     /**
      * "Remove worktree" on a finished card that kept one. The

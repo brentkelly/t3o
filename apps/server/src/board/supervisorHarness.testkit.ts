@@ -762,12 +762,28 @@ export function withGovernor(
       }
       if (payload.started !== null) ciPassRows.set(payload.started.runId, payload.started);
       const action = payload.action;
-      if (action.kind === "step") {
-        const row = ciPassRows.get(action.runId);
+      const stepRow =
+        payload.stepRow ??
+        (action.kind === "step"
+          ? { runId: action.runId, index: action.index, step: action.step }
+          : undefined);
+      if (stepRow !== undefined) {
+        const row = ciPassRows.get(stepRow.runId);
         if (row !== undefined) {
-          ciPassRows.set(action.runId, {
+          ciPassRows.set(stepRow.runId, {
             ...row,
-            steps: row.steps.map((step, index) => (index === action.index ? action.step : step)),
+            steps: row.steps.map((step, index) =>
+              index !== stepRow.index
+                ? step
+                : "step" in stepRow
+                  ? stepRow.step
+                  : {
+                      ...step,
+                      status: stepRow.patch.status,
+                      finishedAt: stepRow.patch.finishedAt,
+                      ...(stepRow.patch.note === undefined ? {} : { note: stepRow.patch.note }),
+                    },
+            ),
           });
         }
       }

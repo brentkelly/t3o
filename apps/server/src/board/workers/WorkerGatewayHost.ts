@@ -508,8 +508,16 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
               ? { inconclusiveTargetAllowed: true }
               : {}),
           },
-          (progress) =>
-            Queue.offer(queue, { _tag: "step", ...progress } as const).pipe(Effect.asVoid),
+          (progress) => {
+            const { step } = progress;
+            // T3o (T3O-130): only the board skips a step; a runner never reports one.
+            if (step.status === "skipped") return Effect.void;
+            return Queue.offer(queue, {
+              _tag: "step",
+              index: progress.index,
+              step: { ...step, status: step.status },
+            } as const).pipe(Effect.asVoid);
+          },
         )
         .pipe(
           Effect.flatMap((outcome) => Queue.offer(queue, toWireCiDone(outcome))),

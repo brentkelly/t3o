@@ -103,6 +103,7 @@ const supervisorCalls: {
   checkWorktree: Array<string>;
   link: Array<string>;
   ciAction: Array<string>;
+  skipStep: Array<string>;
 } = {
   refresh: [],
   merge: [],
@@ -112,6 +113,7 @@ const supervisorCalls: {
   checkWorktree: [],
   link: [],
   ciAction: [],
+  skipStep: [],
 };
 
 const supervisorStub: SupervisorReactorShape = {
@@ -189,6 +191,11 @@ const supervisorStub: SupervisorReactorShape = {
         : ({ outcome: "retried" } as const);
     }),
   ciSendBack: () => Effect.succeed({ outcome: "not-in-ci" } as const),
+  skipCiStep: (input) =>
+    Effect.sync(() => {
+      supervisorCalls.skipStep.push(`${String(input.cardId)}:${input.stepIndex}:${input.skip}`);
+      return { outcome: "marked" } as const;
+    }),
   drainCi: Effect.void,
 };
 
@@ -446,6 +453,23 @@ it.layer(makeBoardRpcTestLayer("t3o-board-rpc-ci-action-test-"))("board.retryCi"
         `${String(cardId)}:stop`,
         `${String(cardId)}:retry`,
       ]);
+    }),
+  );
+});
+
+// A step skip is human-only like Skip CI, so it needs the operate scope.
+it.layer(makeBoardRpcTestLayer("t3o-board-rpc-ci-skip-step-test-"))("board.ciSkipStep", (it) => {
+  it.effect("rejects a session with only the read scope, and passes the operate scope", () =>
+    Effect.gen(function* () {
+      yield* seedCard;
+      const input = { cardId, runId: "ci-run", stepIndex: 1, skip: true };
+      const readOnly = yield* makeHandlers([AuthOrchestrationReadScope]);
+      const failure = yield* Effect.flip(readOnly["board.ciSkipStep"](input));
+      assert.strictEqual(failure._tag, "EnvironmentAuthorizationError");
+      assert.deepStrictEqual(supervisorCalls.skipStep, []);
+      const operate = yield* makeHandlers([AuthOrchestrationOperateScope]);
+      assert.deepStrictEqual(yield* operate["board.ciSkipStep"](input), { outcome: "marked" });
+      assert.deepStrictEqual(supervisorCalls.skipStep, [`${String(cardId)}:1:true`]);
     }),
   );
 });
