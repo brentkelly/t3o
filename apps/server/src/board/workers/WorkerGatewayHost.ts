@@ -507,6 +507,7 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
             ...(input.inconclusiveTargetAllowed === true
               ? { inconclusiveTargetAllowed: true }
               : {}),
+            ...(input.loadSensitive === undefined ? {} : { loadSensitive: input.loadSensitive }),
           },
           (progress) => {
             const { step } = progress;

@@ -538,8 +538,18 @@ export const BoardWorkerRunCiInput = Schema.Struct({
       ignores both: it reports no pressure and fails the target as before. */
   loadThreshold: Schema.optionalKey(Schema.Number),
   inconclusiveTargetAllowed: Schema.optionalKey(Schema.Boolean),
+  /** T3o (T3O-129): the project's load-sensitive list, written once per run for the steps
+      (`T3O_CI_LOAD_SENSITIVE`). An older worker ignores it and sets no variable. */
+  loadSensitive: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ title: TrimmedNonEmptyString, file: TrimmedNonEmptyString })),
+  ),
 });
 export type BoardWorkerRunCiInput = typeof BoardWorkerRunCiInput.Type;
+
+/** T3o (T3O-129): `BoardCiDeferredTest`s; an older worker sends none. */
+const WireCiDeferred = Schema.Array(
+  Schema.Struct({ title: TrimmedNonEmptyString, file: Schema.optionalKey(TrimmedNonEmptyString) }),
+);
 
 /** `BoardCiStepResult`: what a step's result file reported. */
 const WireCiStepResult = Schema.Struct({
@@ -557,6 +567,7 @@ const WireCiStepResult = Schema.Struct({
     }),
   ),
   skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
+  deferred: Schema.optionalKey(WireCiDeferred),
 });
 
 /** `BoardCiHeadline` with loose strings: the board clamps them, so
@@ -602,6 +613,7 @@ export const BoardWorkerCiProgress = Schema.Union([
       cpuPressure: Schema.optionalKey(Schema.Number),
       underLoad: Schema.optionalKey(Schema.Literal(true)),
       skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
+      deferred: Schema.optionalKey(WireCiDeferred),
       /** `BoardCiPassStep.flaky`: the step passed over these flaky tests. */
       flaky: Schema.optionalKey(
         Schema.Array(

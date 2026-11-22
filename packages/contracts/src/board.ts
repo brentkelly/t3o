@@ -1569,8 +1569,8 @@ export const BoardCiFailureDetail = Schema.Struct({
   flaky: Schema.optionalKey(Schema.Boolean),
   /** The command that re-runs just this test, for the flake's bug card. */
   repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
-  /** T3o (T3O-127): the project marked this test load-sensitive by its runner's own
-      convention. Meaningful only with `flaky: true`; an honoured one files no flake card. */
+  /** T3o (T3O-127): a mark the board no longer reads (T3O-129 keeps the list itself). Still
+      accepted, so an older script's file decodes; the step's tail says it is ignored. */
   loadSensitive: Schema.optionalKey(Schema.Boolean),
 });
 export type BoardCiFailureDetail = typeof BoardCiFailureDetail.Type;
@@ -1594,13 +1594,29 @@ export function isBoardCiFailureFlaky(
   return failure.flaky === true || (options.knownFlaky?.includes(key) ?? false);
 }
 
+/** T3o (T3O-129): one test a script deferred to the nightly. */
+export const BoardCiDeferredTest = Schema.Struct({
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  file: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+});
+export type BoardCiDeferredTest = typeof BoardCiDeferredTest.Type;
+
+/** The most deferred tests a step's result keeps. */
+const BOARD_CI_MAX_DEFERRED = Math.max(BOARD_CI_MAX_FAILURES, 50);
+
+const decodeDeferredTest = Schema.decodeUnknownOption(BoardCiDeferredTest);
+
 /** What a step reported beyond its exit code. Adds detail only: it
     never overrides the exit code. */
 export const BoardCiStepResult = Schema.Struct({
   summary: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1_000))),
   failures: Schema.Array(BoardCiFailureDetail),
-  /** T3o (T3O-127): tests the script skipped because `T3O_UNDER_LOAD` was set. */
+  /** T3o (T3O-127): a count of tests skipped under load. Superseded by `deferred`, and shown
+      only when `deferred` is absent. */
   skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
+  /** T3o (T3O-129): the load-sensitive tests the script skipped under load, left to the
+      nightly. */
+  deferred: Schema.optionalKey(Schema.Array(BoardCiDeferredTest)),
 });
 export type BoardCiStepResult = typeof BoardCiStepResult.Type;
 
@@ -1660,15 +1676,24 @@ export function parseBoardCiResultFile(text: string): {
   const skipped = record.skippedUnderLoad;
   const skippedUnderLoad =
     typeof skipped === "number" && Number.isInteger(skipped) && skipped >= 0 ? skipped : null;
+  const deferred = Array.isArray(record.deferred)
+    ? record.deferred
+        .flatMap((entry) => {
+          const decoded = decodeDeferredTest(clipFailureFields(entry));
+          return decoded._tag === "Some" ? [decoded.value] : [];
+        })
+        .slice(0, BOARD_CI_MAX_DEFERRED)
+    : null;
   return {
     result: {
       summary,
       failures: failures.slice(0, BOARD_CI_MAX_FAILURES),
       ...(skippedUnderLoad === null ? {} : { skippedUnderLoad }),
+      ...(deferred === null ? {} : { deferred }),
     },
     warning:
       dropped > 0
-        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro?, loadSensitive? }; ignored.`
+        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro? }; ignored.`
         : null,
     complete: dropped === 0 && failures.length <= BOARD_CI_MAX_FAILURES,
   };
@@ -1962,6 +1987,8 @@ export const BoardCardCiStep = Schema.Struct({
   silentSince: Schema.optionalKey(IsoDateTime),
   /** The step passed with only flaky failures: an amber warning in CI detail. */
   flaky: Schema.optionalKey(Schema.Literal(true)),
+  /** T3o (T3O-129): how many load-sensitive tests the step deferred to the nightly. */
+  deferred: Schema.optionalKey(PositiveInt),
 });
 export type BoardCardCiStep = typeof BoardCardCiStep.Type;
 
@@ -2131,6 +2158,9 @@ export const BoardCiPassStep = Schema.Struct({
   underLoad: Schema.optionalKey(Schema.Literal(true)),
   /** Tests the step skipped under load, as its result file reported. */
   skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
+  /** T3o (T3O-129): the load-sensitive tests the step deferred to the nightly, moved here
+      from its result file. */
+  deferred: Schema.optionalKey(Schema.Array(BoardCiDeferredTest)),
   /** The step passed, but only because every failure it had was a flake: these
       tests (T3O-126). Its status is `passed`. */
   flaky: Schema.optionalKey(
@@ -2247,7 +2277,10 @@ export function boardCardCiSteps(
       | "parallel"
       | "progress"
       | "silentSince"
-    > & { readonly flaky?: BoardCiPassStep["flaky"] | true }
+    > & {
+      readonly flaky?: BoardCiPassStep["flaky"] | true;
+      readonly deferred?: BoardCiPassStep["deferred"] | number;
+    }
   >,
 ): ReadonlyArray<BoardCardCiStep> {
   return steps.map((step) => ({
@@ -2280,7 +2313,13 @@ export function boardCardCiSteps(
     (step.flaky === true || (Array.isArray(step.flaky) && step.flaky.length > 0))
       ? { flaky: true as const }
       : {}),
+    ...deferredCount(step.deferred),
   }));
+}
+
+function deferredCount(deferred: BoardCiPassStep["deferred"] | number | undefined) {
+  const count = typeof deferred === "number" ? deferred : (deferred?.length ?? 0);
+  return count > 0 ? { deferred: count } : {};
 }
 
 /** T3o: the automation gates (T3O-115), roughly in pipeline order; `boardGateDue` decides which is due. */
@@ -3131,6 +3170,8 @@ const BOARD_CARD_ACTIVITY_KINDS = [
   /** T3o (T3O-126): a flaky CI test, noted on its bug card or on the card it flaked on. */
   "card-ci-flaked-again",
   "card-ci-flakes-filed",
+  /** T3o (T3O-129): a pass deferred load-sensitive tests to the nightly. */
+  "card-ci-deferred",
 ] as const;
 export const BoardCardActivityKind = Schema.Literals(BOARD_CARD_ACTIVITY_KINDS);
 export type BoardCardActivityKind = typeof BoardCardActivityKind.Type;
@@ -3304,6 +3345,101 @@ export const BoardProjectConfigChange = Schema.Struct({
 });
 export type BoardProjectConfigChange = typeof BoardProjectConfigChange.Type;
 
+/** T3o (T3O-129): one test on a project's load-sensitive list. `file` and `title` are kept
+    exactly as the script reported them, since scripts match on those strings. */
+export const BoardProjectLoadSensitiveEntry = Schema.Struct({
+  /** `boardCiFlakeKey(file, title)`. */
+  key: TrimmedNonEmptyString,
+  file: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  lastFlakedAt: IsoDateTime,
+  /** The card whose CI saw the latest flake. */
+  cardKey: TrimmedNonEmptyString,
+  /** Busy flakes seen, one per run at most. */
+  flakes: PositiveInt,
+  lastRunId: TrimmedNonEmptyString,
+});
+export type BoardProjectLoadSensitiveEntry = typeof BoardProjectLoadSensitiveEntry.Type;
+
+/** How long an entry lives after its test's last busy flake. */
+export const BOARD_CI_LOAD_SENSITIVE_TTL_DAYS = 14;
+/** The most entries a project's list holds; past it the oldest is evicted. */
+export const BOARD_CI_LOAD_SENSITIVE_MAX = 50;
+
+const LOAD_SENSITIVE_TTL_MS = BOARD_CI_LOAD_SENSITIVE_TTL_DAYS * 24 * 60 * 60_000;
+
+/** When an entry expires, in epoch milliseconds. */
+export function boardLoadSensitiveExpiresAtMs(
+  entry: Pick<BoardProjectLoadSensitiveEntry, "lastFlakedAt">,
+): number {
+  return Date.parse(entry.lastFlakedAt) + LOAD_SENSITIVE_TTL_MS;
+}
+
+/** The entries still live at `nowIso`: the only way the list is read. */
+export function boardLiveLoadSensitive(
+  entries: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
+  nowIso: string,
+): ReadonlyArray<BoardProjectLoadSensitiveEntry> {
+  const now = Date.parse(nowIso);
+  return (entries ?? []).filter((entry) => boardLoadSensitiveExpiresAtMs(entry) > now);
+}
+
+/** One busy flake to record on the list. */
+export interface BoardLoadSensitiveFlake {
+  readonly key: string;
+  readonly file: string;
+  readonly title: string;
+  readonly cardKey: string;
+}
+
+/** The list after `incoming` flaked in run `runId` at `at`: expired entries pruned, known keys
+    refreshed (a run counts once), new keys added, then the oldest evicted past the cap. */
+export function boardLoadSensitiveUpsert(
+  current: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
+  incoming: ReadonlyArray<BoardLoadSensitiveFlake>,
+  runId: string,
+  at: string,
+): ReadonlyArray<BoardProjectLoadSensitiveEntry> {
+  const byKey = new Map(boardLiveLoadSensitive(current, at).map((entry) => [entry.key, entry]));
+  for (const flake of incoming) {
+    const known = byKey.get(flake.key);
+    const newRun = known?.lastRunId !== runId;
+    byKey.set(flake.key, {
+      key: flake.key,
+      file: flake.file,
+      title: flake.title,
+      lastFlakedAt: at,
+      cardKey: flake.cardKey,
+      flakes: known === undefined ? 1 : newRun ? known.flakes + 1 : known.flakes,
+      lastRunId: runId,
+    });
+  }
+  const entries = [...byKey.values()];
+  if (entries.length <= BOARD_CI_LOAD_SENSITIVE_MAX) return entries;
+  // Stable on ties, so the earlier-listed of two equally old entries goes first.
+  const oldestFirst = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort(
+      (a, b) =>
+        Date.parse(a.entry.lastFlakedAt) - Date.parse(b.entry.lastFlakedAt) || a.index - b.index,
+    );
+  const evicted = new Set(
+    oldestFirst.slice(0, entries.length - BOARD_CI_LOAD_SENSITIVE_MAX).map(({ entry }) => entry.key),
+  );
+  return entries.filter((entry) => !evicted.has(entry.key));
+}
+
+/** The list's revision on the shell, opaque: every record and removal changes it, so a client
+    knows to refetch the list. Null for no list. */
+export function boardLoadSensitiveRevision(
+  entries: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
+): string | null {
+  if (entries === undefined) return null;
+  let newest = "";
+  for (const entry of entries) if (entry.lastFlakedAt > newest) newest = entry.lastFlakedAt;
+  return `${entries.length}:${newest}`;
+}
+
 /**
  * One project's differences from the global pipeline, never a snapshot, so a stage
  * added later reaches every project. `ci.stopOnFailure` is stored only as `false`
@@ -3327,6 +3463,9 @@ const BoardProjectStageConfigV2 = Schema.Struct({
   ),
   /** T3o: the project's Resources settings (T3O-86); absent follows every default. */
   resources: Schema.optionalKey(BoardProjectResources),
+  /** T3o (T3O-129): tests that flaked on a busy machine, which CI scripts may defer to the
+      nightly. The board's own record: outside the version and the `t3o.json` export. */
+  loadSensitive: Schema.optionalKey(Schema.Array(BoardProjectLoadSensitiveEntry)),
 });
 
 /** The legacy shape: a config resolved from a committed `t3o.json`. */
@@ -3494,12 +3633,16 @@ export const BoardProjectStageConfigShell = Schema.Struct({
   version: Schema.String,
   /** T3o: the project's Resources settings (T3O-86); small, and every card's size reads it. */
   resources: Schema.optionalKey(BoardProjectResources),
+  /** T3o (T3O-129): `boardLoadSensitiveRevision`. The list itself is fetched with the full
+      config, since every config delta is re-sent whole to every client. */
+  loadSensitiveRevision: Schema.optionalKey(Schema.String),
 });
 export type BoardProjectStageConfigShell = typeof BoardProjectStageConfigShell.Type;
 
 export function boardProjectStageConfigShell(
   config: BoardProjectStageConfig,
 ): BoardProjectStageConfigShell {
+  const loadSensitiveRevision = boardLoadSensitiveRevision(config.loadSensitive);
   return {
     stageSwitches: config.stageSwitches,
     overrides: Object.fromEntries(
@@ -3516,6 +3659,7 @@ export function boardProjectStageConfigShell(
     })),
     ...(boardCiStopsOnFailure(config.ci) ? {} : { ciStopOnFailure: false as const }),
     ...(config.resources === undefined ? {} : { resources: config.resources }),
+    ...(loadSensitiveRevision === null ? {} : { loadSensitiveRevision }),
     warnings: config.warnings,
     version: config.version,
   };
@@ -5938,6 +6082,40 @@ export const BoardProjectRecordLearnedCommand = Schema.Struct({
 });
 export type BoardProjectRecordLearnedCommand = typeof BoardProjectRecordLearnedCommand.Type;
 
+/** T3o (T3O-129): busy flakes onto the project's load-sensitive list. Server-internal, and
+    never moves the config's version. */
+export const BoardProjectRecordLoadSensitiveCommand = Schema.Struct({
+  type: Schema.Literal("board.project.record-load-sensitive"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  runId: TrimmedNonEmptyString,
+  entries: Schema.Array(
+    Schema.Struct({
+      key: TrimmedNonEmptyString,
+      file: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+      cardKey: TrimmedNonEmptyString,
+    }),
+  ),
+  createdAt: IsoDateTime,
+});
+export type BoardProjectRecordLoadSensitiveCommand =
+  typeof BoardProjectRecordLoadSensitiveCommand.Type;
+
+/** T3o (T3O-129): a person takes tests off the load-sensitive list, by key or all of them.
+    No expected version: the list is outside it. */
+export const BoardProjectRemoveLoadSensitiveCommand = Schema.Struct({
+  type: Schema.Literal("board.project.remove-load-sensitive"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  keys: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  all: Schema.optionalKey(Schema.Literal(true)),
+  actor: BoardSettingsActor,
+  createdAt: IsoDateTime,
+});
+export type BoardProjectRemoveLoadSensitiveCommand =
+  typeof BoardProjectRemoveLoadSensitiveCommand.Type;
+
 /** The project's "Stop on failure" CI setting. It applies from the
     next pass; a running pass keeps the setting it started with. */
 export const BoardProjectSetCiStopOnFailureCommand = Schema.Struct({
@@ -6418,6 +6596,8 @@ export const BoardCardNoteKind = Schema.Literals([
   "card-ci-flaked-again",
   /** T3o (T3O-126): CI passed this card over flaky tests, and the bug cards it filed. */
   "card-ci-flakes-filed",
+  /** T3o (T3O-129): the load-sensitive tests a pass deferred to the nightly. */
+  "card-ci-deferred",
 ]);
 export type BoardCardNoteKind = typeof BoardCardNoteKind.Type;
 
@@ -7397,6 +7577,8 @@ export const BoardProjectStageConfigSetPayload = Schema.Struct({
       "stage-created",
       // T3o: the project's Resources settings (T3O-86).
       "resources",
+      // T3o: the load-sensitive list (T3O-129).
+      "load-sensitive",
     ]),
   ),
 });
@@ -8911,6 +9093,8 @@ const BOARD_INTERNAL_COMMANDS = [
   BoardCardRecordSetupCommand,
   // T3o: a project's learned baseline (T3O-87).
   BoardProjectRecordLearnedCommand,
+  // T3o: busy flakes onto the load-sensitive list (T3O-129).
+  BoardProjectRecordLoadSensitiveCommand,
   // The review loop's server-only carry fields.
   BoardCardSetReviewCarryCommand,
   // The decision log and auto-planning.
@@ -8968,6 +9152,8 @@ const BOARD_SETTINGS_COMMANDS = [
   BoardProjectResetCommand,
   BoardProjectImportFileCommand,
   BoardProjectDismissImportCommand,
+  // T3o: a person clears the load-sensitive list (T3O-129).
+  BoardProjectRemoveLoadSensitiveCommand,
 ] as const;
 
 /** The settings commands a client may send. Import is not one: the server

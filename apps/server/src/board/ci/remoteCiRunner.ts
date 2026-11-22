@@ -133,6 +133,7 @@ export const remoteCiRunner = (
           ...(request.inconclusiveTargetAllowed === true
             ? { inconclusiveTargetAllowed: true }
             : {}),
+          ...(request.loadSensitive === undefined ? {} : { loadSensitive: request.loadSensitive }),
         })
         .pipe(
           Stream.runForEach((progress) =>

@@ -14478,7 +14478,7 @@ const make = Effect.gen(function* () {
           event.type !== "board.worker-removed" &&
           event.type !== "board.card-worker-removal" &&
           // A project's CI switched off moves its cards on from CI.
-          // Settings edits, so rare.
+          // Settings edits and busy CI flakes (T3O-129), at most one per pass.
           event.type !== "board.project-stage-config-set" &&
           // The card's PR moved, or a thread joined the card: its threads'
           // PR links follow (T3O-75). One per PR change or spawn.

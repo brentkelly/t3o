@@ -71,6 +71,9 @@ export interface BoardCiRunRequest {
       inconclusive rather than failing the step. The board allows it only when the card
       won't auto-merge, so a human still judges the change. */
   readonly inconclusiveTargetAllowed?: boolean;
+  /** T3o (T3O-129): the project's live load-sensitive list, written once per run to the
+      file `T3O_CI_LOAD_SENSITIVE` names. Absent writes an empty list. */
+  readonly loadSensitive?: ReadonlyArray<{ readonly title: string; readonly file: string }>;
   /** Each complete output line of a step, by its pass index, in
       order, delivered before the step settles. */
   readonly onLine?: (index: number, line: BoardCiLine) => Effect.Effect<void>;
@@ -358,7 +361,12 @@ const runStepWithEnv = (
 ): Effect.Effect<StepExit> =>
   Effect.callback<StepExit>((resume) => {
     // The board sets these per step: a reading inherited from the server's own CI must not leak in.
-    const { T3O_CPU_PRESSURE: _pressure, T3O_UNDER_LOAD: _underLoad, ...hostEnv } = inheritedEnv;
+    const {
+      T3O_CPU_PRESSURE: _pressure,
+      T3O_UNDER_LOAD: _underLoad,
+      T3O_CI_LOAD_SENSITIVE: _loadSensitive,
+      ...hostEnv
+    } = inheritedEnv;
     const timing = input.timing ?? DEFAULT_STEP_TIMING;
     const log = NodeFS.createWriteStream(input.logPath, { flags: "w" });
     let logBroken = false;
@@ -597,7 +605,6 @@ function boardCiStepFlakes(
             title: failure.title,
             ...(failure.file === undefined ? {} : { file: failure.file }),
             ...(failure.repro === undefined ? {} : { repro: failure.repro }),
-            ...(failure.loadSensitive === true ? { loadSensitive: true as const } : {}),
             ...(options.underLoad === true ? { underLoad: true as const } : {}),
           },
         ]
@@ -637,7 +644,77 @@ function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad 
   if (pressure === null) return null;
   // Whole percent, as the step and the CI pane see it, so all three agree on "under load".
   const cpuPressure = Math.round(pressure);
-  return { cpuPressure, underLoad: cpuPressure >= threshold };
+  // T3o (T3O-129): strictly above, so a threshold of 100 never reads busy, even at 100 %.
+  return { cpuPressure, underLoad: cpuPressure > threshold };
+}
+
+/** T3o (T3O-129): write the run's load-sensitive list once, so every segment of the run (a
+    T3O-130 restart included) reads the same snapshot. Created only if absent, atomically: a
+    hard link from a temp file fails rather than overwrites. A failed write sets no variable. */
+const writeLoadSensitiveList = (
+  logDir: string,
+  entries: ReadonlyArray<{ readonly title: string; readonly file: string }>,
+) =>
+  Effect.sync((): { readonly path: string | null; readonly error: string | null } => {
+    const path = NodePath.resolve(logDir, "load-sensitive.json");
+    if (NodeFS.existsSync(path)) return { path, error: null };
+    const temp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    try {
+      NodeFS.writeFileSync(
+        temp,
+        JSON.stringify(entries.map((entry) => ({ file: entry.file, title: entry.title }))),
+      );
+      try {
+        NodeFS.linkSync(temp, path);
+      } catch (error) {
+        // Another segment wrote it first: that snapshot stands.
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      return { path, error: null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        path: null,
+        error: `\n[board] Could not write the load-sensitive list, so T3O_CI_LOAD_SENSITIVE is unset: ${message}\n`,
+      };
+    } finally {
+      try {
+        NodeFS.rmSync(temp, { force: true });
+      } catch {
+        // A stray temp file in the log directory harms nothing.
+      }
+    }
+  });
+
+/** T3o (T3O-129): the `[board]` lines a result file earns: an ignored T3O-127 mark, and tests
+    deferred on a calm machine. */
+function boardCiDeferredTailLines(
+  result: BoardCiStepResult | null,
+  underLoad: boolean,
+): string | null {
+  if (result === null) return null;
+  const lines: string[] = [];
+  if (result.failures.some((failure) => failure.loadSensitive !== undefined)) {
+    lines.push("[board] loadSensitive is ignored; the board keeps the list.");
+  }
+  if (!underLoad && (result.deferred?.length ?? 0) > 0) {
+    lines.push(
+      "[board] The step deferred tests on a calm machine: T3O_UNDER_LOAD wasn't set, so it should have run them.",
+    );
+  }
+  return lines.length === 0 ? null : `\n${lines.join("\n")}\n`;
+}
+
+/** A settled step's result, with its deferred tests moved onto the step (T3O-129). */
+function stepResultFields(
+  result: BoardCiStepResult | null,
+): Pick<BoardCiPassStep, "result" | "deferred"> {
+  if (result === null) return {};
+  const { deferred, ...rest } = result;
+  return {
+    result: rest,
+    ...(deferred === undefined || deferred.length === 0 ? {} : { deferred }),
+  };
 }
 
 /** The environment a step is told the load through. Unknown pressure sets neither. */
@@ -714,6 +791,11 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
         detail: `CI could not create its log directory: ${logDirError}.`,
       } as const;
     }
+    const loadSensitive = yield* writeLoadSensitiveList(request.logDir, request.loadSensitive ?? []);
+    const stepEnv = (load: BoardCiLoad | null) => ({
+      ...boardCiLoadEnv(load),
+      ...(loadSensitive.path === null ? {} : { T3O_CI_LOAD_SENSITIVE: loadSensitive.path }),
+    });
     const indexed = request.steps.map((definition, index) => ({
       definition,
       index,
@@ -792,13 +874,16 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
                       logPath: NodePath.join(request.logDir, `${fileIndex}.log`),
                       resultPath,
                       onOutput,
-                      env: boardCiLoadEnv(load),
+                      env: stepEnv(load),
                     }),
                 );
                 return { exit, progress: reporter.progress() };
               }),
             );
             const read = readStepResult(resultPath, tail);
+            if (loadSensitive.error !== null) tail.push(loadSensitive.error);
+            const deferredNote = boardCiDeferredTailLines(read.result, load?.underLoad === true);
+            if (deferredNote !== null) tail.push(deferredNote);
             const flakes = boardCiStepFlakes(read, facts.failureLine, definition.name, {
               ...request,
               underLoad: load?.underLoad === true,
@@ -877,7 +962,7 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
             finishedAt,
             exitCode: step.exit.exitCode,
             tail: step.tail.text(),
-            ...(step.result === null ? {} : { result: step.result }),
+            ...stepResultFields(step.result),
             // A settled step keeps where its progress got to.
             ...(step.progress === undefined ? {} : { progress: step.progress }),
             ...(headline === null ? {} : { headline }),

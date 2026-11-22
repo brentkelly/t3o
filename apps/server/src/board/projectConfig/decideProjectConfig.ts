@@ -11,6 +11,7 @@ import {
   EMPTY_BOARD_PROJECT_STAGE_CONFIG,
   EventId,
   boardCiStepsRefusal,
+  boardLoadSensitiveUpsert,
   boardProjectStageConfig,
   boardStageById,
   boardStageDefaultForProjects,
@@ -90,6 +91,8 @@ function nextConfig(
     warnings: change.warnings ?? [],
     lastChangedBy: changedBy ?? current.lastChangedBy,
     ...(isEmptyBoardProjectResources(resources) ? {} : { resources }),
+    // T3o (T3O-129): the board's own list survives every edit, import and Reset.
+    ...(current.loadSensitive === undefined ? {} : { loadSensitive: current.loadSensitive }),
   });
 }
 
@@ -234,6 +237,30 @@ export const decideProjectConfigCommand = Effect.fn("decideProjectConfigCommand"
         learned: command.learned,
       };
       return yield* emit(withBoardProjectConfigVersion({ ...current, resources }), "resources");
+    }
+    case "board.project.record-load-sensitive": {
+      // T3o (T3O-129): the board's own write, like the learned baseline: the version unmoved.
+      const loadSensitive = boardLoadSensitiveUpsert(
+        current.loadSensitive,
+        command.entries,
+        command.runId,
+        command.createdAt,
+      );
+      return yield* emit(
+        withBoardProjectConfigVersion({ ...current, loadSensitive }),
+        "load-sensitive",
+      );
+    }
+    case "board.project.remove-load-sensitive": {
+      const drop = new Set(command.keys ?? []);
+      const loadSensitive =
+        command.all === true
+          ? []
+          : (current.loadSensitive ?? []).filter((entry) => !drop.has(entry.key));
+      return yield* emit(
+        withBoardProjectConfigVersion({ ...current, loadSensitive }),
+        "load-sensitive",
+      );
     }
     case "board.project.set-ci-enabled": {
       const ci = boardStageById(board, BOARD_SEED_STAGE_IDS.ci);

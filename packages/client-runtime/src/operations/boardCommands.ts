@@ -89,6 +89,8 @@ export type SetBoardProjectCiStopOnFailureInput =
 export type ResetBoardProjectInput = SettingsCommandInput<"board.project.reset">;
 export type SetBoardProjectResourcesInput = SettingsCommandInput<"board.project.set-resources">;
 export type DismissBoardProjectImportInput = SettingsCommandInput<"board.project.dismiss-import">;
+export type RemoveBoardProjectLoadSensitiveInput =
+  SettingsCommandInput<"board.project.remove-load-sensitive">;
 export type StartBoardStageThreadInput = CommandInput<"board.card.start-stage-thread">;
 export type ApproveBoardPlansInput = CommandInput<"board.plans.approve">;
 export type StartBoardPlanReviewInput = CommandInput<"board.plan-review.start">;
@@ -597,6 +599,11 @@ export const setBoardProjectResources = dispatchSettings(
 export const dismissBoardProjectImport = dispatchSettings(
   "board.project.dismiss-import",
   "dismissBoardProjectImport",
+);
+/** T3o (T3O-129): take tests off the project's load-sensitive list, or clear it. */
+export const removeBoardProjectLoadSensitive = dispatchSettings(
+  "board.project.remove-load-sensitive",
+  "removeBoardProjectLoadSensitive",
 );
 
 /** A project's full delta, with the prompts the shell leaves out. */

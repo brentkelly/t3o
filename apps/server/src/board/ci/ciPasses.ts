@@ -15,7 +15,12 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FiberSet from "effect/FiberSet";
 
-import { boardCiLogDir, type BoardCiRunnerShape, type BoardCiRunResult } from "./BoardCiRunner.ts";
+import {
+  boardCiLogDir,
+  type BoardCiRunnerShape,
+  type BoardCiRunRequest,
+  type BoardCiRunResult,
+} from "./BoardCiRunner.ts";
 
 export interface BoardCiPassRequest {
   readonly cardId: BoardCardId;
@@ -34,6 +39,8 @@ export interface BoardCiPassRequest {
   /** T3o (T3O-127): `BoardCiRunRequest.loadThreshold` and `inconclusiveTargetAllowed`. */
   readonly loadThreshold?: number;
   readonly inconclusiveTargetAllowed?: boolean;
+  /** T3o (T3O-129): `BoardCiRunRequest.loadSensitive`. */
+  readonly loadSensitive?: BoardCiRunRequest["loadSensitive"];
   /** Where the steps run; this server's runner when absent. */
   readonly runner?: BoardCiRunnerShape;
 }
@@ -180,6 +187,7 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
           ...(request.inconclusiveTargetAllowed === true
             ? { inconclusiveTargetAllowed: true }
             : {}),
+          ...(request.loadSensitive === undefined ? {} : { loadSensitive: request.loadSensitive }),
         },
         (progress) => record(request, token, started, progress.index, progress.step),
       )
