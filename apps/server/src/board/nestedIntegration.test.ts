@@ -368,7 +368,7 @@ describe("archiving a group discards its subtree's work (T3O-28)", () => {
             yield* h.pumpDomain(archivedEvent(group, 1, true));
             yield* h.pumpDomain(archivedEvent(child, 2, true));
             yield* h.pumpDomain(archivedEvent(deferred, 3, true));
-            yield* h.reactor.drain;
+            yield* h.reactor.drainWorktreeSweep;
             assert.deepStrictEqual(yield* h.closePullRequestCalls, [{ number: 7 }]);
             assert.sameMembers(remoteDeletes(yield* h.gitInvocations), [
               "board/card-group",
@@ -631,7 +631,7 @@ describe("cancelling a started leaf's work to make it a parent (T3O-28)", () => 
 
             const started = (yield* h.board).cards.find((candidate) => candidate.id === leaf.id)!;
             yield* h.pumpDomain(workCancelledEvent(asCancelled(started), 2));
-            yield* h.reactor.drain;
+            yield* h.reactor.drainWorktreeSweep;
 
             const after = yield* h.board;
             const state = after.stepStates?.find((candidate) => candidate.cardId === leaf.id);
@@ -661,7 +661,7 @@ describe("cancelling a started leaf's work to make it a parent (T3O-28)", () => 
       (h) =>
         Effect.gen(function* () {
           yield* h.pumpDomain(workCancelledEvent(cancelled, 1));
-          yield* h.reactor.drain;
+          yield* h.reactor.drainWorktreeSweep;
           assert.deepStrictEqual(yield* h.removedWorktrees, []);
           assert.lengthOf(remoteDeletes(yield* h.gitInvocations), 0);
 
@@ -684,7 +684,7 @@ describe("cancelling a started leaf's work to make it a parent (T3O-28)", () => 
       (h) =>
         Effect.gen(function* () {
           yield* h.pumpDomain(workCancelledEvent(cancelled, 1));
-          yield* h.reactor.drain;
+          yield* h.reactor.drainWorktreeSweep;
           assert.deepStrictEqual(yield* h.removedWorktrees, []);
           h.setWorktreeUndurable(false);
           yield* h.reactor.sweepWorktrees();
@@ -706,7 +706,7 @@ describe("cancelling a started leaf's work to make it a parent (T3O-28)", () => 
       (h) =>
         Effect.gen(function* () {
           yield* h.pumpDomain(workCancelledEvent(cancelled, 1));
-          yield* h.reactor.drain;
+          yield* h.reactor.drainWorktreeSweep;
           assert.deepStrictEqual(yield* h.removedWorktrees, []);
           h.setWorktreeUndurable(false);
           const result = yield* h.reactor.checkWorktree(cancelled.id);
