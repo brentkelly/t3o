@@ -552,6 +552,17 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       }),
     }).pipe(Effect.asVoid);
 
+  // T3o: a failed write, like a closed stdout, is explained by the process exit (T3O-133).
+  // Neither implies exit, so wait a live-clock grace period.
+  const processExitOr = (fallback: AcpError.AcpError): Effect.Effect<AcpError.AcpError> =>
+    options.terminationError
+      ? options.terminationError.pipe(
+          Effect.timeoutOption("250 millis"),
+          Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+          Effect.map(Option.getOrElse(() => fallback)),
+        )
+      : Effect.succeed(fallback);
+
   const handleTermination = (classify: () => Effect.Effect<AcpError.AcpError>) =>
     Ref.modify(terminationHandled, (handled) => {
       if (handled) {
@@ -876,16 +887,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         return handleTermination(() => Effect.succeed(normalized));
       },
       onSuccess: () =>
-        handleTermination(() => {
-          const ended = new AcpError.AcpInputStreamEndedError({});
-          if (!options.terminationError) return Effect.succeed(ended);
-          // Stdout can close without process exit; use a live-clock diagnostic grace period.
-          return options.terminationError.pipe(
-            Effect.timeoutOption("250 millis"),
-            Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
-            Effect.map(Option.getOrElse(() => ended)),
-          );
-        }),
+        handleTermination(() => processExitOr(new AcpError.AcpInputStreamEndedError({}))),
     }),
     Effect.forkScoped,
   );
@@ -960,7 +962,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
             Effect.andThen(
               Cause.hasInterruptsOnly(cause)
                 ? Effect.void
-                : handleTermination(() => Effect.succeed(error)),
+                : handleTermination(() => processExitOr(error)),
             ),
           );
         },
