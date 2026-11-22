@@ -75,8 +75,6 @@ export function boardMergeQueueHeads(
     // A queued card waits its turn, even one that fixed on this base before.
     if (counts.fixBaseTip === null || counts.queuedAt !== null) return false;
     if (card.pullRequest?.state === "merged") return false;
-    // A blocked card's merge waits on its dependency, so it lets its base go.
-    if (card.blocked) return false;
     if (card.autoMergeHold !== null && card.autoMergeHold.retryAt === null) return false;
     const step = boardCardStepState(board, card.id);
     const live = step !== null && !isBoardTerminalStepStatus(step.status);
@@ -94,6 +92,8 @@ export function boardMergeQueueHeads(
       }
       return true;
     }
+    // A blocked card's merge waits on its dependency, so once its fix ends it lets its base go.
+    if (card.blocked) return false;
     return options.mergeStillPending?.(card) ?? true;
   });
 }

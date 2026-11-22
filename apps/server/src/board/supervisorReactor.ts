@@ -6688,7 +6688,7 @@ const make = Effect.gen(function* () {
     // A blocked card already shows the callout naming its dependency, so no hold and no rung are
     // recorded. The merge gate is not due while it is blocked and fires once it is not (T3O-116).
     if (card.blocked) return;
-    const outcome = yield* mergeCardPullRequest(card.id);
+    const outcome = yield* attemptCardMerge(card.id);
     yield* recordAutoMergeOutcome(card.id, outcome, { resetLadder: false });
     yield* hintMergeQueue(card.id);
   });
@@ -6795,7 +6795,7 @@ const make = Effect.gen(function* () {
    */
   const recordAutoMergeOutcome = Effect.fn("board-supervisor-recordAutoMergeOutcome")(function* (
     cardId: BoardCardId,
-    outcome: Effect.Success<ReturnType<typeof mergeCardPullRequest>>,
+    outcome: Effect.Success<ReturnType<typeof attemptCardMerge>>,
     options: { readonly resetLadder: boolean },
   ) {
     const fresh = yield* readCard(cardId);
@@ -6933,7 +6933,7 @@ const make = Effect.gen(function* () {
         mergeAwaitingChecks.add(String(cardId));
         outcome = justReadiedRefusal(recentPullRequest.number);
       } else {
-        outcome = yield* mergeCardPullRequest(cardId, {
+        outcome = yield* attemptCardMerge(cardId, {
           byHand: true,
           ...(options.bypassQueue === true ? { bypassQueue: true } : {}),
         });
@@ -9313,7 +9313,7 @@ const make = Effect.gen(function* () {
         }),
       );
       if (woken === null) return null;
-      const outcome = yield* mergeCardPullRequest(woken.cardId, {
+      const outcome = yield* attemptCardMerge(woken.cardId, {
         fromQueue: true,
         ...(woken.byHand ? { byHand: true } : {}),
         ...(woken.queuedAt === null ? {} : { queuedAt: woken.queuedAt }),
@@ -9389,7 +9389,7 @@ const make = Effect.gen(function* () {
       const key = boardMergeQueueKeyOf(card);
       if (key !== null) keys.set(boardMergeQueueKeyString(key), key);
     }
-    for (const key of keys.values()) yield* advanceMergeQueue(key);
+    for (const key of keys.values()) yield* mergeQueueWorker.enqueue(key);
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("board supervisor: merge queue sweep failed", {
@@ -9535,13 +9535,13 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Merge a card's pull request, then advance it. Always human-initiated. A conflict refusal starts
-   * the merge stage's conflict step, whose success finishes this merge; any other refusal reports
-   * the forge's reason and stops, with no automatic retry.
+   * Merge a card's pull request, then advance it. A conflict refusal starts the conflict step; any
+   * other refusal reports the forge's reason. Callers hint the base's merge queue after recording
+   * the outcome, since a hold they record may release the base (T3O-128).
    */
   const attemptCardMerge = Effect.fn("board-supervisor-attemptCardMerge")(function* (
     cardId: BoardCardId,
-    options: MergeAttemptOptions,
+    options: MergeAttemptOptions = {},
   ) {
     /** True when this call is the completion of a conflict fix rather than a
         fresh Merge click. Bounds the conflict→merge cycle (see below). */
@@ -9945,15 +9945,6 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Merge a card's pull request, then advance it. Each caller hints its base's merge queue once it
-   * has recorded the outcome, since a hold it records may be what releases the base (T3O-128).
-   */
-  const mergeCardPullRequest = (
-    cardId: BoardCardId,
-    options: MergeAttemptOptions = {},
-  ): Effect.Effect<BoardMergeAttemptResult> => attemptCardMerge(cardId, options);
-
-  /**
    * T3o: when the board merges into a base, tell every running conflict fix or branch update on
    * that base to merge it in again (T3O-128). Best-effort: a steer that fails is logged.
    */
@@ -10062,7 +10053,7 @@ const make = Effect.gen(function* () {
       card.stage,
       boardProjectStageConfig(board, card.projectId),
     );
-    // Read off the stage's own config, symmetrically with `mergeCardPullRequest`
+    // Read off the stage's own config, symmetrically with `attemptCardMerge`
     // reading the merge member's `strategy`. A build-role stage always resolves
     // to the build member, so the fallback is unreachable in practice and is
     // here so a hand-edited settings file cannot make the button do nothing.
@@ -11450,7 +11441,7 @@ const make = Effect.gen(function* () {
           if (finishedFix !== null) {
             mergeAwaitingChecks.add(String(card.id));
           }
-          const outcome = yield* mergeCardPullRequest(card.id, {
+          const outcome = yield* attemptCardMerge(card.id, {
             viaConflictFix: finishedFix === "conflict",
           });
           // Record on the ladder only for armed cards. A re-conflict comes back `refused` (via

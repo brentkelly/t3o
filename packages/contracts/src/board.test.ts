@@ -3256,6 +3256,12 @@ describe("automation (T3O-38)", () => {
           ["is hard-held", fixing("a", { autoMergeHold: hold() }), {}, false],
           ["is blocked by a dependency", fixing("a", { blocked: true }), {}, false],
           [
+            "is blocked while its fix still runs",
+            fixing("a", { blocked: true }),
+            { status: "running" },
+            true,
+          ],
+          [
             "is soft-held, waiting on CI",
             fixing("a", { autoMergeHold: hold({ retryAt: NOW }) }),
             {},
