@@ -62,6 +62,8 @@ export interface BoardCiFlake {
   readonly source: "script" | "agent";
   /** T3o (T3O-127): the step it flaked in ran under load. */
   readonly underLoad?: boolean;
+  /** T3o (T3O-129): the fix agent's own words name it, so no script could match a list entry. */
+  readonly agentWorded?: boolean;
 }
 
 export interface BoardCiFlakeFilingDeps {
@@ -226,7 +228,7 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     // T3o (T3O-129): a flake on a busy machine says nothing a card could act on. It goes onto
     // the load-sensitive list, which the nightly covers. A flake card's own target never does.
     if (loadCountsAsBusy && flake.underLoad === true && key !== testedTarget) {
-      if (flake.file === undefined) busyUnlisted.push(key);
+      if (flake.file === undefined || flake.agentWorded === true) busyUnlisted.push(key);
       else {
         loadSensitive.push(key);
         toList.push({ key, file: flake.file, title: flake.title, cardKey: card.key });
@@ -448,6 +450,7 @@ export function boardCiPassFlakes(
           ...(reported?.detail === undefined ? {} : { detail: reported.detail }),
           ...(repro === undefined ? {} : { repro }),
           ...(entry.inDiff === true ? { inDiff: true } : {}),
+          ...(entry.agentWorded === true ? { agentWorded: true } : {}),
           ...(entry.underLoad === true || step.underLoad === true ? { underLoad: true } : {}),
           source: entry.byAgent === true ? "agent" : "script",
         };

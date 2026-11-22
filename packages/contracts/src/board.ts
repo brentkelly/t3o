@@ -2173,6 +2173,9 @@ export const BoardCiPassStep = Schema.Struct({
         byAgent: Schema.optionalKey(Schema.Literal(true)),
         /** The test is in the card's own change. */
         inDiff: Schema.optionalKey(Schema.Literal(true)),
+        /** T3o (T3O-129): the fix agent's own words name the test, not the script's, so no
+            script can match it on the load-sensitive list. */
+        agentWorded: Schema.optionalKey(Schema.Literal(true)),
         /** T3o (T3O-127): the runner reported the test marked load-sensitive. */
         loadSensitive: Schema.optionalKey(Schema.Literal(true)),
         /** The step it flaked in ran under load. */

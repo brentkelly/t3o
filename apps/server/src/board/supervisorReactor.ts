@@ -6153,8 +6153,10 @@ const make = Effect.gen(function* () {
             : { repro: report.repro.trim().slice(0, 500) }),
           stepName: issue.stepName,
           command: step.command,
-          // T3o (T3O-129): under load, the agent's ruling lists the test like the script's.
+          // T3o (T3O-129): under load, the agent's ruling lists the test like the script's,
+          // unless only the agent's own words name it.
           ...(step.underLoad === true ? { underLoad: true } : {}),
+          ...(perFailure ? {} : { agentWorded: true }),
           source: "agent" as const,
         },
       ];
@@ -6263,6 +6265,7 @@ const make = Effect.gen(function* () {
           ...(whole.file === undefined ? {} : { file: whole.file }),
           ...(whole.repro === undefined ? {} : { repro: whole.repro }),
           byAgent: true,
+          agentWorded: true,
           ...(step.underLoad === true ? { underLoad: true as const } : {}),
         });
       }

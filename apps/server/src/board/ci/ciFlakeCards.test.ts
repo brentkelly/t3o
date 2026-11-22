@@ -285,7 +285,7 @@ it("reads a pass's flakes: passed-over ones with their error, and flagged ones b
         summary: null,
         failures: [{ title: "adds", file: "a.ts", detail: "boom", flaky: true }],
       },
-      flaky: [{ title: "adds", file: "a.ts", byAgent: true }],
+      flaky: [{ title: "adds", file: "a.ts", byAgent: true, agentWorded: true }],
     },
     {
       name: "E2E",
@@ -304,6 +304,7 @@ it("reads a pass's flakes: passed-over ones with their error, and flagged ones b
       title: "adds",
       file: "a.ts",
       detail: "boom",
+      agentWorded: true,
       source: "agent",
     },
     { stepName: "E2E", command: "vp e2e", title: "slow", repro: "vp e2e slow", source: "script" },
@@ -370,6 +371,18 @@ it.effect("a busy flake with no file is only noted", () =>
       ofType(commands, "board.card.record-note").at(-1)?.detail ?? "",
       "flaked under load, not filed: Test",
     );
+  }),
+);
+
+it.effect("a busy flake only the fix agent's words name is only noted, never listed", () =>
+  Effect.gen(function* () {
+    const { deps, commands } = yield* fakeBoard([tested]);
+    const result = yield* file(deps, [
+      flake("the slow one", { underLoad: true, source: "agent", agentWorded: true }),
+    ]);
+    assert.deepStrictEqual(result.busyUnlisted, ["src/a.test.ts › the slow one"]);
+    assert.lengthOf(ofType(commands, "board.card.create"), 0);
+    assert.lengthOf(ofType(commands, "board.project.record-load-sensitive"), 0);
   }),
 );
 

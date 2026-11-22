@@ -2219,6 +2219,47 @@ it.effect.each([
     }),
 );
 
+// T3o (T3O-129): the agent's own words name a whole-step flake, so no script can match them.
+it.effect("T3O-129: a whole-step flaky ruling marks its entry agent-worded", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures: [] } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card("whole-step-agent-worded", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const runId = (yield* live(h, subject.id)).ci!.runId;
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 1),
+            {
+              verdict: "flaky",
+              issues: [{ id: "s0", status: "flaky", title: "the slow one", file: "src/x.ts" }],
+            },
+            2,
+          ),
+        );
+        yield* h.reactor.drainCi;
+        const rewritten = ciRecords(yield* h.decided)
+          .map((record) => record.payload.action)
+          .find(
+            (action) =>
+              action.kind === "step" &&
+              action.runId === runId &&
+              action.index === 0 &&
+              action.step.status === "passed",
+          );
+        assert.deepStrictEqual(rewritten?.kind === "step" ? rewritten.step.flaky : undefined, [
+          { title: "the slow one", file: "src/x.ts", byAgent: true, agentWorded: true },
+        ]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
 it.effect.each([
   { label: "a failure the agent never called flaky", worktreeDirty: false, real: true },
   { label: "an uncommitted edit in the worktree", worktreeDirty: true, real: false },

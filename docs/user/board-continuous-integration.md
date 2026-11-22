@@ -144,8 +144,10 @@ Both settings are on the project's **Resources** tab, or in `t3o.json` under `re
 (say 8 for a suite that runs 8 browsers). The larger reservation is best effort: when the cores
 aren't free, the pass runs on the card's own reservation rather than waiting.
 
-**The load-sensitive list.** A test that the script reports `flaky` in a step that ran under load
-goes onto the list, and no bug card is filed for it; the card it flaked on gets a note. An entry
+**The load-sensitive list.** A test that the script reports `flaky` in a step that ran under load,
+or one of its failures that the fix agent finds passes alone, goes onto the list, and no bug card is
+filed for it; the card it flaked on gets a note. A flake the script never named (the fix agent's
+ruling on a whole step) is only noted, since no entry could match it. An entry
 expires 14 days after the test's last flake under load, and each new one gives it another 14 days.
 Since a listed test is skipped while the machine is busy, it usually leaves the list 14 days after it
 joined, and rejoins with no card on its next busy flake. The list holds at most 50 tests; past that
