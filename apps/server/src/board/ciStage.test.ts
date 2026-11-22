@@ -2713,6 +2713,57 @@ it.effect("T3O-130: a skipped agent step is abandoned and its late verdict chang
   }),
 );
 
+it.effect(
+  "T3O-130: an agent step marked as it started fails nothing when its verdict ends it skipped",
+  () =>
+    Effect.gen(function* () {
+      const gated = gatedRunner();
+      const subject = card("mark-agent-race", review);
+      const board = boardWith([subject], mixedConfig([SCRIPT_A, AUDIT, SCRIPT_B]));
+      yield* withGovernor({ board, settings }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCi(h, subject, 1);
+          yield* gated.started("Lint");
+          yield* gated.settle("Lint", "passed");
+          yield* h.reactor.drain;
+          const runId = (yield* live(h, subject.id)).ci!.runId;
+          assert.lengthOf(ciAgentSelects(yield* h.commands, "ci@"), 1);
+          // The race: a mark that landed before the running record leaves a running row marked.
+          yield* Ref.update(h.model, (current) => ({
+            ...current,
+            board: {
+              ...current.board!,
+              cards: current.board!.cards.map((entry) =>
+                entry.id === subject.id && entry.ci !== null
+                  ? { ...entry, ci: { ...entry.ci, skippedSteps: [AUDIT.id] } }
+                  : entry,
+              ),
+            },
+          }));
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiAgentStepId(runId, 1),
+              { verdict: "failed", summary: "It broke", failures: [] },
+              2,
+            ),
+          );
+          yield* h.reactor.drain;
+          assert.lengthOf(ciAgentSelects(yield* h.commands, "ci-fix@"), 0);
+          yield* gated.started("Test");
+          yield* gated.settle("Test", "passed");
+          yield* h.reactor.drainCi;
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "skipped",
+            "passed",
+          ]);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+    }),
+);
+
 const PARALLEL_B: BoardCiStep = { ...SCRIPT_B, parallel: true };
 
 it.effect("T3O-130: skipping a parallel member restarts its group without it", () =>

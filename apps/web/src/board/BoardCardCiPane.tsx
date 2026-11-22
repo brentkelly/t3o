@@ -340,7 +340,13 @@ function StepRow({
           )}
         </div>
         {skipControl === null || onSkip === undefined ? null : (
-          <BoardHint label="Skip until the card leaves CI">
+          <BoardHint
+            label={
+              skipControl === "skip"
+                ? "Skip until the card leaves CI"
+                : "Run this step when the pass reaches it"
+            }
+          >
             <button
               aria-label={`${skipControl === "skip" ? "Skip" : "Unskip"} ${step.name}`}
               className="h-[22px] shrink-0 rounded-md border border-border bg-popover px-1.75 text-board-11 font-medium text-muted-foreground hover:bg-accent hover:text-foreground"

@@ -5183,6 +5183,17 @@ const make = Effect.gen(function* () {
     return outcome.kind === "landed";
   });
 
+  /** T3o (T3O-130): whether a step's landed terminal record was stored skipped: a mark that
+      landed as an agent or forge step started ends its result skipped, and the pass goes on. */
+  const ciStepEndedSkipped = Effect.fn("board-supervisor-ciStepEndedSkipped")(function* (
+    cardId: BoardCardId,
+    runId: string,
+    index: number,
+  ) {
+    const fresh = yield* readCard(cardId);
+    return fresh?.ci?.runId === runId && fresh.ci.steps[index]?.status === "skipped";
+  });
+
   /** T3o (T3O-130): record a marked step skipped as the pass reaches it. Quiet: a row
       already skipped is the decider's no-op, and the pass goes on either way. */
   const recordCiStepSkipped = Effect.fn("board-supervisor-recordCiStepSkipped")(function* (
@@ -5837,7 +5848,11 @@ const make = Effect.gen(function* () {
           // T3o (T3O-130): a refused record is a step a human skipped, whose skip carries the
           // pass on. A fault leaves the pass to the orphan sweep, which holds it.
           if (!recorded) return;
-          if (status === "passed" || card.ci?.continueOnFailure === true) {
+          if (
+            status === "passed" ||
+            card.ci?.continueOnFailure === true ||
+            (yield* ciStepEndedSkipped(card.id, entry.runId, entry.index))
+          ) {
             yield* runCiSegment(card.id, entry.runId, steps, entry.index + 1);
             return;
           }
@@ -5969,7 +5984,11 @@ const make = Effect.gen(function* () {
       if (!recorded) return;
       // Without stop on failure a failed agent step is recorded and
       // the pass carries on; the end of the pass fails it.
-      if (passed || card.ci.continueOnFailure === true) {
+      if (
+        passed ||
+        card.ci.continueOnFailure === true ||
+        (yield* ciStepEndedSkipped(card.id, plan.runId, plan.index))
+      ) {
         yield* runCiSegment(card.id, plan.runId, steps, plan.index + 1);
         return;
       }
