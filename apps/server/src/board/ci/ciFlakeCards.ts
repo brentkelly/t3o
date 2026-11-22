@@ -323,9 +323,10 @@ export const fileBoardCiFlakes = Effect.fn("BoardCiFlakeCards.file")(function* (
     const taken = new Set(matches.map((candidate) => candidate.externalRef?.id));
     let refId = base;
     for (let n = 2; taken.has(refId); n++) refId = `${base}${REF_SUFFIX}${n}`;
-    // T3o (T3O-127): archived cards count too, so a test gets one optimisation attempt.
-    const earlier = matches.at(-1) ?? null;
-    const earlierPerformance = matches.findLast(isPerformanceCard) ?? null;
+    // T3o (T3O-127): a card that reached Done counts even archived; one archived unworked does not.
+    const worked = matches.filter((candidate) => candidate.stage === BOARD_SEED_STAGE_IDS.done);
+    const earlier = worked.at(-1) ?? null;
+    const earlierPerformance = worked.findLast(isPerformanceCard) ?? null;
     const cardId = flakeCardId(seed);
     const settings = yield* deps.settings;
     const planStage = boardStageWithRole(board, "plan");

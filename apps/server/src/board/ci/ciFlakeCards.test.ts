@@ -351,6 +351,20 @@ it.effect("a test that already had a performance card, even archived, is only ma
   }),
 );
 
+it.effect("a card archived before Done is no earlier attempt", () =>
+  Effect.gen(function* () {
+    const abandoned = flakeCard("t3o-30", "slow", {
+      title: "Slow under load: src/a.test.ts › slow",
+      archivedAt: NOW,
+    });
+    const { deps, commands } = yield* fakeBoard([tested, abandoned]);
+    yield* file(deps, [flake("slow", { underLoad: true })]);
+    const [create] = ofType(commands, "board.card.create");
+    assert.include(create?.brief ?? "", "Make the test cheaper");
+    assert.notInclude(create?.brief ?? "", "T3O-30");
+  }),
+);
+
 it.effect("a load-sensitive flake under load files nothing and uses none of the caps", () =>
   Effect.gen(function* () {
     const { deps, commands } = yield* fakeBoard([tested]);

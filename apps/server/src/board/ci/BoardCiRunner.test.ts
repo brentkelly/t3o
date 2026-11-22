@@ -899,6 +899,13 @@ it.live("tells each step the host's CPU pressure, and whether that is under load
           { ...request(cwd, [step]), ...(loadThreshold === undefined ? {} : { loadThreshold }) },
           emit,
           pressure,
+        ).pipe(
+          // The server itself may run as a loaded CI step: its own reading must not leak in.
+          Effect.provideService(HostProcess.Environment, {
+            ...process.env,
+            T3O_CPU_PRESSURE: "99",
+            T3O_UNDER_LOAD: "1",
+          }),
         );
         return events.at(-1)!.step;
       });

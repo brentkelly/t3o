@@ -353,10 +353,12 @@ interface BoardCiStepInput {
 
 const runStepWithEnv = (
   input: BoardCiStepInput,
-  hostEnv: NodeJS.ProcessEnv,
+  inheritedEnv: NodeJS.ProcessEnv,
   launch: { readonly command: string; readonly args: ReadonlyArray<string> } | null,
 ): Effect.Effect<StepExit> =>
   Effect.callback<StepExit>((resume) => {
+    // The board sets these per step: a reading inherited from the server's own CI must not leak in.
+    const { T3O_CPU_PRESSURE: _pressure, T3O_UNDER_LOAD: _underLoad, ...hostEnv } = inheritedEnv;
     const timing = input.timing ?? DEFAULT_STEP_TIMING;
     const log = NodeFS.createWriteStream(input.logPath, { flags: "w" });
     let logBroken = false;

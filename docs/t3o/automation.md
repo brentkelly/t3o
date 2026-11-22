@@ -62,7 +62,7 @@ included.
   card (`ciFlakeCards.ts`).
 - **Load-born flakes (`T3O-127`).** A flake in a step that ran under load (host CPU pressure at or
   above the project's `ciLoadThreshold`) files a `Slow under load:` performance card instead of a
-  race card; a test that already had one, archived included, gets a "mark it, don't optimise"
+  race card; a test whose earlier one reached Done (archived or not) gets a "mark it, don't optimise"
   brief. A flake the script reports `loadSensitive`, under load, not in the card's change and not a
   flake card's own test, files nothing and counts toward no cap. A CI pass's `ciCpuCores`
   reservation is one best-effort grow at admit: it never delays the pass.
