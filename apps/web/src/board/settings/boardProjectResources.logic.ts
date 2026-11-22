@@ -199,6 +199,8 @@ export function boardResourcesDraftOf(
     setupTimeoutMinutes: declared(resources?.setupTimeoutMinutes),
     readinessPath: resources?.readinessPath ?? "",
     readinessTimeoutSeconds: declared(resources?.readinessTimeoutSeconds),
+    ciCpuCores: declared(resources?.ciCpuCores),
+    ciLoadThreshold: declared(resources?.ciLoadThreshold),
   };
 }
 
@@ -248,6 +250,19 @@ export function boardResourcesOf(
   if (readinessTimeout.value === null && (draft.readinessTimeoutSeconds ?? "").trim() !== "") {
     return { error: "The readiness timeout must be positive." };
   }
+  // T3o (T3O-127): the CI pass's CPU reservation and the under-load threshold.
+  const ciCpuCores = optional("ciCpuCores");
+  if (ciCpuCores.value === null && (draft.ciCpuCores ?? "").trim() !== "") {
+    return { error: "The CI CPU reservation must be a positive number of cores." };
+  }
+  const thresholdText = (draft.ciLoadThreshold ?? "").trim();
+  const ciLoadThreshold = thresholdText === "" ? null : Number(thresholdText);
+  if (
+    ciLoadThreshold !== null &&
+    !(Number.isInteger(ciLoadThreshold) && ciLoadThreshold >= 1 && ciLoadThreshold <= 100)
+  ) {
+    return { error: "The under-load threshold must be a whole percent from 1 to 100." };
+  }
   const rawPath = (draft.readinessPath ?? "").trim();
   const readinessPath = rawPath === "" ? null : normalizeBoardReadinessPath(rawPath);
   if (rawPath !== "" && readinessPath === null) {
@@ -261,6 +276,8 @@ export function boardResourcesOf(
       readinessTimeoutSeconds: readinessTimeout.value,
       // T3o (T3O-124): checks come from t3o.json; the form keeps them as they are.
       readinessChecks: previous?.readinessChecks ?? [],
+      ...(ciCpuCores.value === null ? {} : { ciCpuCores: ciCpuCores.value }),
+      ...(ciLoadThreshold === null ? {} : { ciLoadThreshold }),
     },
   };
 }

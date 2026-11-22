@@ -6,6 +6,7 @@
 import {
   boardReadinessRequest,
   boardRepositoryGroupingKey,
+  DEFAULT_BOARD_CI_LOAD_THRESHOLD,
   DEFAULT_BOARD_READINESS_SCRIPT_PATH,
   boardBaselineWithLearned,
   EMPTY_BOARD_PROJECT_RESOURCES,
@@ -286,6 +287,24 @@ export function BoardProjectResourcesTab(props: {
             </Button>
           </div>
         </details>
+      </section>
+      <section className="flex flex-col gap-2">
+        <h3 className="text-board-13 font-medium">CI under load</h3>
+        <div className="flex flex-wrap gap-3">
+          {field("ciCpuCores", "CI CPU reservation", "cores", "Card's own")}
+          {field(
+            "ciLoadThreshold",
+            "Under-load threshold",
+            "%",
+            String(DEFAULT_BOARD_CI_LOAD_THRESHOLD),
+          )}
+        </div>
+        <p className="text-board-12 text-muted-foreground">
+          A CI pass asks its worker for this many cores while it runs, and runs on the card's own
+          reservation when they aren't free. Each CI step is told the host's CPU pressure; at or
+          above the threshold it runs with T3O_UNDER_LOAD=1, so tests the project marked
+          load-sensitive can skip.
+        </p>
       </section>
       {canWrite ? (
         <div className="flex items-center gap-2">

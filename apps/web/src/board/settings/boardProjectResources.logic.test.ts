@@ -251,4 +251,30 @@ describe("the Resources form", () => {
       boardResourcesOf({ ...boardResourcesDraftOf(null), cpuCores: "3" }, null),
     ).toHaveProperty("error");
   });
+
+  it("keeps the CI reservation and threshold, and refuses a bad one (T3O-127)", () => {
+    const previous = {
+      baseline: null,
+      setupTimeoutMinutes: null,
+      readinessPath: null,
+      readinessTimeoutSeconds: null,
+      readinessChecks: [],
+      ciCpuCores: 8,
+      ciLoadThreshold: 60,
+    };
+    const draft = boardResourcesDraftOf(previous);
+    expect(draft["ciCpuCores"]).toBe("8");
+    expect(boardResourcesOf(draft, previous)).toEqual({ ok: previous });
+    // Cleared, it follows the default again.
+    const cleared = boardResourcesOf({ ...draft, ciCpuCores: "", ciLoadThreshold: "" }, previous);
+    expect("ok" in cleared && cleared.ok).not.toHaveProperty("ciCpuCores");
+    expect("ok" in cleared && cleared.ok).not.toHaveProperty("ciLoadThreshold");
+    expect(boardResourcesOf({ ...draft, ciCpuCores: "-2" }, previous)).toHaveProperty("error");
+    expect(boardResourcesOf({ ...draft, ciLoadThreshold: "150" }, previous)).toHaveProperty(
+      "error",
+    );
+    expect(boardResourcesOf({ ...draft, ciLoadThreshold: "50.5" }, previous)).toHaveProperty(
+      "error",
+    );
+  });
 });

@@ -273,12 +273,28 @@ function StepRow({
           {step.note === undefined ? null : (
             <span className="text-board-11 text-muted-foreground">{step.note}</span>
           )}
+          {/* T3o (T3O-127): the host's load when the step started; amber under load. */}
+          {step.cpuPressure === undefined ? null : (
+            <span
+              className={cn(
+                "text-board-11",
+                step.underLoad === true ? "text-warning-foreground" : "text-muted-foreground",
+              )}
+            >
+              {step.underLoad === true ? "Ran under load · " : ""}CPU pressure{" "}
+              {Math.round(step.cpuPressure)} %
+              {step.skippedUnderLoad === undefined || step.skippedUnderLoad === 0
+                ? ""
+                : ` · ${step.skippedUnderLoad} ${step.skippedUnderLoad === 1 ? "test" : "tests"} skipped under load`}
+            </span>
+          )}
           {flakes.length === 0 ? null : (
             <span className="text-board-11 text-warning-foreground">
               Flaky, passed alone:{" "}
               {flakes
-                .map((flake) =>
-                  flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`,
+                .map(
+                  (flake) =>
+                    `${flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`}${flake.loadSensitive === true ? " (load-sensitive)" : ""}`,
                 )
                 .join(", ")}
             </span>
