@@ -50,7 +50,7 @@ included.
   in a CI entry passes with no agent after that. A verdict whose branch moved counts as a fix. The
   only stop is the loop guard: 10 flaky checks in one entry stops the card as a flake storm.
 - **Flake cards are the one place the board turns automation on by itself.** Each flaky test files
-  a bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
+  a low-priority bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
   sign-off and Auto-build on, Auto-merge explicitly off (board-wide Auto-merge still locks it on,
   as for every card), and an unattended plan review. If the toggles are refused it stays in
   Backlog. It is

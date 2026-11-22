@@ -116,6 +116,7 @@ it.effect("the first flake files one bug card, auto-built but never auto-merged"
     const [create] = ofType(commands, "board.card.create");
     assert.deepStrictEqual(create?.labels, [BOARD_SEED_LABEL_IDS.bug]);
     assert.strictEqual(create?.keyPrefix, "T3O");
+    assert.strictEqual(create?.priority, "low");
     assert.strictEqual(create?.planReview?.unattended, true);
     assert.deepStrictEqual(create?.externalRef, {
       system: "t3o-flaky",

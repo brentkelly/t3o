@@ -111,7 +111,7 @@ A flaky test never stops a card. A failure counts as flaky when:
 
 A test that flaked once in a visit to CI passes with no agent if it flakes again in that visit.
 
-Each flaky test becomes a **bug card** in the same project, labelled `bug`, with Auto-plan, Auto
+Each flaky test becomes a low-priority **bug card** in the same project, labelled `bug`, with Auto-plan, Auto
 sign-off and Auto-build on but not Auto-merge: you come back to a fix ready to merge (unless
 Auto-merge is on for the whole board, which merges every card). Its brief names
 the test, how to re-run it, the error and the card it flaked on. Tests are matched by their exact
