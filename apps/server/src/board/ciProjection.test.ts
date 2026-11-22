@@ -485,7 +485,7 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-skip-"))("a CI step skip (T3O-130
         id: ciSteps[1]!.id,
         status: "skipped",
         finishedAt: at,
-        note: "Skipped by Ana",
+        note: "Skipped",
         tail: "half",
       });
       assert.deepStrictEqual(detail!.card.ci?.skippedSteps, [ciSteps[1]!.id]);

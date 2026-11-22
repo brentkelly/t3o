@@ -2512,7 +2512,7 @@ it.effect("T3O-130: skipping a running script lets the pass pass and move on", (
         assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
         assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "skipped"]);
         const row = (yield* h.ciPasses(subject.id)).at(-1)!.steps[1]!;
-        assert.match(row.note ?? "", /^Skipped by /);
+        assert.strictEqual(row.note, "Skipped");
         assert.strictEqual((yield* h.ciPasses(subject.id)).at(-1)!.outcome, "passed");
         assert.lengthOf(gated.requests(), 1);
         const skips = ciRecords(yield* h.decided).filter(
@@ -2531,6 +2531,28 @@ it.effect("T3O-130: skipping a running script lets the pass pass and move on", (
       }),
     ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
   }),
+);
+
+it.effect(
+  "T3O-130: a pass whose step records were lost, with nothing skipped, is not held as all-skipped",
+  () =>
+    Effect.gen(function* () {
+      // The runner passes but none of its step reports land, as when each record faults.
+      const runner: BoardCiRunnerShape = {
+        run: () => Effect.succeed({ result: "passed" as const, failedIndex: null, ranAll: true }),
+      };
+      const subject = card("skip-lost-records", review);
+      const board = boardWith([subject], mixedConfig([SCRIPT_A]));
+      yield* withGovernor({ board, settings }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCi(h, subject, 1);
+          yield* h.reactor.drainCi;
+          const after = yield* live(h, subject.id);
+          assert.notStrictEqual(after.ci?.stopReason, "Every step was skipped. Use Skip CI.");
+          assert.strictEqual(after.stage, merge);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
 );
 
 it.effect("T3O-130: a later step marked mid-segment is restarted past when it starts", () =>
@@ -2589,6 +2611,68 @@ it.effect("T3O-130: marked agent and forge steps are recorded skipped and never 
         assert.lengthOf(yield* h.mergeStateProbes, 0);
       }),
     ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+it.effect("T3O-130: skipping a running forge step drops its in-flight read", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+    const subject = card("skip-forge", review, { pullRequest: prOpen as never });
+    const forgeNext: BoardCiStep = { ...FORGE, id: "gh-next", name: "Next checks" };
+    let state = mergeStateWith({ passed: 1, pending: 1, failed: 0 });
+    let stuck = false;
+    const asked = yield* Deferred.make<void>();
+    const answer = yield* Deferred.make<void>();
+    yield* withGovernor(
+      {
+        board: boardWith([subject], mixedConfig([SCRIPT_A, FORGE, forgeNext])),
+        settings,
+        pullRequest: foundPr,
+        mergeStateOf: () => state,
+        mergeStateGate: Effect.suspend(() =>
+          stuck
+            ? Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer)))
+            : Effect.void,
+        ),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          assert.deepStrictEqual(
+            (yield* live(h, subject.id)).ci?.steps.map((step) => step.status),
+            ["passed", "running", "pending"],
+          );
+          // The first forge step's next read hangs, and the step is skipped meanwhile.
+          stuck = true;
+          yield* TestClock.adjust("30 seconds");
+          yield* Deferred.await(asked);
+          stuck = false;
+          assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "skipped" });
+          yield* h.reactor.drain;
+          assert.deepStrictEqual(
+            (yield* live(h, subject.id)).ci?.steps.map((step) => step.status),
+            ["passed", "skipped", "running"],
+          );
+          // The stale read answers green: it settles neither the skipped step nor the next one.
+          state = mergeStateWith({ passed: 2, pending: 0, failed: 0 });
+          yield* Deferred.succeed(answer, undefined);
+          yield* h.reactor.drainCi;
+          assert.deepStrictEqual(
+            (yield* live(h, subject.id)).ci?.steps.map((step) => step.status),
+            ["passed", "skipped", "running"],
+          );
+          assert.strictEqual(cardStage(yield* h.board, subject.id), ci);
+          // The next step's own read then passes it, once.
+          yield* h.reactor.sweep;
+          yield* h.reactor.drainCi;
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "skipped",
+            "passed",
+          ]);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
   }),
 );
 

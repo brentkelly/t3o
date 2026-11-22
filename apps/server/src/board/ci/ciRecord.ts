@@ -262,7 +262,7 @@ export function decideBoardCiRecord(
                 stepRow: {
                   runId: action.runId,
                   index: action.index,
-                  patch: { status: "skipped", finishedAt: at, note: `Skipped by ${action.actor}` },
+                  patch: { status: "skipped", finishedAt: at, note: "Skipped" },
                 },
               }
             : {}),

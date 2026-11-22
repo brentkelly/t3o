@@ -5001,7 +5001,10 @@ const make = Effect.gen(function* () {
           return;
         }
         // T3o (T3O-130): a pass where nothing ran vouches for nothing, so it never moves on.
-        if (!read.steps.some((step) => step.status === "passed")) {
+        if (
+          read.steps.some((step) => step.status === "skipped") &&
+          !read.steps.some((step) => step.status === "passed")
+        ) {
           yield* holdCiPass(card, runId, BOARD_CI_ALL_SKIPPED_REASON);
           return;
         }
@@ -5164,13 +5167,20 @@ const make = Effect.gen(function* () {
     index: number,
     step: BoardCiPassStep,
   ) {
-    return yield* dispatchLanded({
+    // A refusal is a skip race (the row was skipped), so only a fault is warned about.
+    const outcome = yield* dispatchOutcome({
       type: "board.card.record-ci",
       commandId: yield* commandId("ci-step"),
       cardId,
       action: { kind: "step", runId, index, step },
       createdAt: yield* nowIso,
     });
+    if (outcome.kind === "refused") {
+      yield* Effect.logDebug("board supervisor: CI step record refused", {
+        detail: outcome.detail,
+      });
+    }
+    return outcome.kind === "landed";
   });
 
   /** T3o (T3O-130): record a marked step skipped as the pass reaches it. Quiet: a row
@@ -5191,7 +5201,7 @@ const make = Effect.gen(function* () {
         kind: "step",
         runId,
         index,
-        step: { ...row, status: "skipped", finishedAt: yield* nowIso, note: "Skipped by you" },
+        step: { ...row, status: "skipped", finishedAt: yield* nowIso, note: "Skipped" },
       },
       createdAt: yield* nowIso,
     });
@@ -5824,7 +5834,8 @@ const make = Effect.gen(function* () {
             note,
             tail: status === "passed" ? "" : note,
           });
-          // T3o (T3O-130): a refused record is a step a human skipped; the skip carries on.
+          // T3o (T3O-130): a refused record is a step a human skipped, whose skip carries the
+          // pass on. A fault leaves the pass to the orphan sweep, which holds it.
           if (!recorded) return;
           if (status === "passed" || card.ci?.continueOnFailure === true) {
             yield* runCiSegment(card.id, entry.runId, steps, entry.index + 1);
@@ -5901,7 +5912,14 @@ const make = Effect.gen(function* () {
     const key = `${note}|${reading.passed}|${reading.total}|${reading.running.join(",")}`;
     if (key === entry.lastKey) return;
     entry.lastKey = key;
-    yield* recordCiStep(card.id, entry.runId, entry.index, { ...row, checks: reading, note });
+    // T3o (T3O-130): `row` is the pending template; the step is running while it waits, so a
+    // skip of it is a running skip, not a mark.
+    yield* recordCiStep(card.id, entry.runId, entry.index, {
+      ...row,
+      status: "running",
+      checks: reading,
+      note,
+    });
   });
 
   /** Poll every forge-check step in flight; on the board's sweep tick. */

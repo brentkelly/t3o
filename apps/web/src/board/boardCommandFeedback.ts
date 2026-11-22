@@ -206,7 +206,6 @@ export function describeBoardCheckWorktreeOutcome(
   }
 }
 
-/** The toast "Skip CI" leaves. `stageLabel` names where it went. */
 /** T3o (T3O-130): what a step skip's answer says, or null when it did what was asked. */
 export function describeBoardCiSkipStepOutcome(
   result: BoardCiSkipStepResult,
@@ -246,6 +245,7 @@ export function describeBoardCiSkipStepOutcome(
   }
 }
 
+/** The toast "Skip CI" leaves. `stageLabel` names where it went. */
 export function describeBoardSkipCiOutcome(
   result: BoardSkipCiResult,
   cardKey: string,

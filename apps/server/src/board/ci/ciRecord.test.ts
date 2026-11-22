@@ -300,7 +300,7 @@ it("T3O-130: skipping a running step settles it skipped, marks its id and patche
   assert.deepStrictEqual(decided.payload.stepRow, {
     runId: "run-1",
     index: 1,
-    patch: { status: "skipped", finishedAt: NOW, note: "Skipped by Ana" },
+    patch: { status: "skipped", finishedAt: NOW, note: "Skipped" },
   });
   assert.deepStrictEqual(decided.payload.activity, {
     kind: "card-ci-step-skip",
