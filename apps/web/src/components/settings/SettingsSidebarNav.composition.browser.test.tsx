@@ -2,6 +2,8 @@ import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
+// T3o: the board's nav entries read General and Projects under the Board heading.
+import { boardSettingsNavLabel } from "../../board/settings/boardSettingsPaths";
 import { SidebarProvider } from "../ui/sidebar";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
 import { SETTINGS_NAV_GROUPS, SETTINGS_SECTION_LABELS } from "./settingsSearch";
@@ -77,7 +79,8 @@ it("moves Tab through every settings section", async () => {
   await userEvent.click(page.getByRole("combobox", { name: "Search settings" }));
 
   const sections = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths).map(
-    (to) => SETTINGS_SECTION_LABELS[to],
+    // T3o: the board's own nav labels.
+    (to) => boardSettingsNavLabel(to) ?? SETTINGS_SECTION_LABELS[to],
   );
   const tabbed: string[] = [];
   for (let step = 0; step < sections.length; step += 1) {

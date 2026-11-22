@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import "~/index.css";
-import { applyAppearanceFontVariables } from "./appearanceFonts";
+import { applyAppearanceFontVariables, DEFAULT_SANS_FONT_STACK } from "./appearanceFonts";
 
 function renderedFontSize(style: (probe: HTMLElement) => void): string {
   const probe = document.createElement("div");
@@ -80,8 +80,12 @@ describe("applyAppearanceFontVariables", () => {
       }
     };
     try {
-      // `0. ` in a 14px monospace font is about 25px, past the 20px default.
-      expect(gutter("monospace")).toBeGreaterThan(24);
+      // T3o: measure the marker; a CJK host's `monospace` draws `0. ` at 21px, not ~25px.
+      const context = document.createElement("canvas").getContext("2d")!;
+      context.font = `14px monospace, ${DEFAULT_SANS_FONT_STACK}`;
+      const marker = context.measureText("0. ").width;
+      expect(marker).toBeGreaterThan(20);
+      expect(gutter("monospace")).toBeCloseTo(marker, 1);
       expect(gutter("sans-serif")).toBe(20);
     } finally {
       if (style === null) root.removeAttribute("style");
