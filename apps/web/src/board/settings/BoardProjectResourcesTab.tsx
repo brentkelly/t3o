@@ -30,7 +30,7 @@ import { setBoardProjectSetting } from "../../components/settings/BoardSettingsP
 import { Button } from "../../components/ui/button";
 import { Switch } from "../../components/ui/switch";
 import { Input } from "../../components/ui/input";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { boardEnvironment } from "../../state/board";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -88,7 +88,7 @@ export function BoardProjectResourcesTab(props: {
   const updateBoardSettings = useUpdateBoardSettings();
   const trusted = boardSettings.projects[props.projectId]?.trustReadinessScript ?? false;
   const [confirming, setConfirming] = useState<string | null>(null);
-  const starter = useCopyToClipboard({ target: "starter script" });
+  const starter = useCopyToClipboard({ target: namedClipboardTarget("starter script") });
   const setResources = useAtomCommand(boardEnvironment.setProjectResources, {
     reportFailure: false,
   });

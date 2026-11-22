@@ -13,30 +13,33 @@ const REFUSAL =
 const normalizedUrl = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
 
 /** Why the board refuses this merge, or null when it is not the board's to make. */
-const refusalReason = (sql: SqlClient.SqlClient, callerThreadId: string, pullRequestUrl: string) =>
-  Effect.gen(function* () {
-    // Central: any thread a card ever linked, retired links included.
-    const linked = yield* sql<{ readonly found: number }>`
+const refusalReason = Effect.fn("board.prMergeGuard.refusalReason")(function* (
+  sql: SqlClient.SqlClient,
+  callerThreadId: string,
+  pullRequestUrl: string,
+) {
+  // Central: any thread a card ever linked, retired links included.
+  const linked = yield* sql<{ readonly found: number }>`
       SELECT 1 AS found FROM boards.board_card_thread_links WHERE thread_id = ${callerThreadId}
       LIMIT 1
     `;
-    if (linked.length > 0) return "card-thread";
-    // Worker: a thread a central board started here.
-    const relayed = yield* sql<{ readonly found: number }>`
+  if (linked.length > 0) return "card-thread";
+  // Worker: a thread a central board started here.
+  const relayed = yield* sql<{ readonly found: number }>`
       SELECT 1 AS found FROM boards.board_relayed_threads WHERE thread_id = ${callerThreadId}
       LIMIT 1
     `;
-    if (relayed.length > 0) return "card-thread";
-    // Any caller naming a card's PR, such as a thread an agent spawned.
-    const url = normalizedUrl(pullRequestUrl);
-    const cardPrs = yield* sql<{ readonly url: string }>`
+  if (relayed.length > 0) return "card-thread";
+  // Any caller naming a card's PR, such as a thread an agent spawned.
+  const url = normalizedUrl(pullRequestUrl);
+  const cardPrs = yield* sql<{ readonly url: string }>`
       SELECT json_extract(pull_request, '$.url') AS url FROM boards.board_cards
       WHERE pull_request IS NOT NULL
     `;
-    if (cardPrs.some((row) => typeof row.url === "string" && normalizedUrl(row.url) === url))
-      return "card-pull-request";
-    return null;
-  });
+  if (cardPrs.some((row) => typeof row.url === "string" && normalizedUrl(row.url) === url))
+    return "card-pull-request";
+  return null;
+});
 
 /**
  * Fails when a card's thread asks to merge, in any form (stack, auto), or anyone names a card's

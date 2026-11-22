@@ -134,7 +134,7 @@ import {
   parsePositiveIntInput,
   setBoardStageExecution,
 } from "./BoardSettingsPanel.logic";
-import { searchableSetting } from "./settingsSearch";
+import { boardSearchableSetting } from "../../board/boardSettingsSearch";
 import { SettingsSection } from "./settingsLayout";
 import { BoardHint } from "../../board/BoardHint";
 import {
@@ -628,7 +628,7 @@ function orderKeepsSpine(stages: ReadonlyArray<BoardStageDefinition>): boolean {
 export function BoardPipelineSection() {
   const board = useBoardSettings((settings) => settings.board);
   const update = useUpdateBoardSettings();
-  const anchor = searchableSetting("board-pipeline");
+  const anchor = boardSearchableSetting("board-pipeline");
   const environmentId = useBoardEnvironmentId();
   const stageList = useAtomValue(
     boardEnvironment.stageListAtom(environmentId ?? ("" as EnvironmentId)),

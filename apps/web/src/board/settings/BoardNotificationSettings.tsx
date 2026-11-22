@@ -5,7 +5,7 @@
 import type { BoardNotificationSettings as BoardNotificationSettingsValue } from "@t3tools/contracts";
 
 import { SettingsRow } from "../../components/settings/settingsLayout";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { boardSearchableSetting } from "../boardSettingsSearch";
 import { Switch } from "../../components/ui/switch";
 import { updateClientSettings, useClientSettings } from "../../hooks/useSettings";
 
@@ -44,7 +44,7 @@ export function BoardNotificationSettings() {
   return (
     <>
       <SettingsRow
-        {...searchableSetting("board-card-notifications")}
+        {...boardSearchableSetting("board-card-notifications")}
         description="Alert when a card on your board needs you. Uses the notification and in-app settings above. Clicking an alert opens the card."
         control={
           <Switch
@@ -72,7 +72,7 @@ export function BoardNotificationSettings() {
         : null}
       {settings.enabled ? (
         <SettingsRow
-          {...searchableSetting("board-mute-routine-thread-alerts")}
+          {...boardSearchableSetting("board-mute-routine-thread-alerts")}
           description="Skip “Thread completed” and usage-limit alerts for card threads. Their questions and failures still alert."
           control={
             <Switch

@@ -239,7 +239,8 @@ const fs = require("node:fs");
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
   if (context.childVersion !== context.update.targetVersion) throw new Error("wrong trial version");
-  if (fs.readFileSync(${JSON.stringify(path.dirname(backupPath))} + "/" + context.update.id + "/database", "utf8") !== "before trial") {
+  // T3o: the fork names each database's snapshot after its file (statev2.sqlite).
+  if (fs.readFileSync(${JSON.stringify(path.dirname(backupPath))} + "/" + context.update.id + "/statev2.sqlite", "utf8") !== "before trial") {
     throw new Error("missing original backup");
   }
   if (${JSON.stringify(scenario)} === "trial exit") {

@@ -973,7 +973,10 @@ const make = Effect.fn("makeWithDatabase")(function* (
     options.readerWorker && isFileDatabase
       ? yield* Effect.forEach(Array.from({ length: READER_POOL_SIZE }), () =>
           Effect.map(
-            Effect.all([makeReader(options.filename, readerPool, options.readerAttachments), Semaphore.make(1)]),
+            Effect.all([
+              makeReader(options.filename, readerPool, options.readerAttachments),
+              Semaphore.make(1),
+            ]),
             ([acquire, lock]) => ({
               acquire,
               lock,

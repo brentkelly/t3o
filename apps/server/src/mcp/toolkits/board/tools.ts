@@ -45,7 +45,6 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Path from "effect/Path";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Context from "effect/Context";
-import * as Fiber from "effect/Fiber";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -846,16 +845,11 @@ const BoardSetAutomationTool = Tool.make("board_set_automation", {
 }).annotate(Tool.Title, "Set a board card's automation");
 
 /**
- * `McpSchema.EnabledWhen` for every board tool: each acts for the calling thread's card, so an MCP
- * client that is not a thread (an app connected over OAuth) is not shown them. Handlers still
- * refuse such a caller.
+ * Every board tool acts for the calling thread's card, so an MCP client that is not a thread (an app
+ * connected over OAuth) is not shown them; handlers still refuse such a caller. Upstream's own
+ * predicate, which its toolkit registration requires of every thread-bound tool.
  */
-const shownToThreads = (): boolean => {
-  const fiber = Fiber.getCurrent();
-  const scope =
-    fiber && Context.getOrUndefined(fiber.context, McpInvocationContext.McpInvocationContext);
-  return scope?.thread !== undefined;
-};
+const shownToThreads = McpInvocationContext.hiddenFromOutsideClients;
 
 export const BoardToolkit = Toolkit.make(
   BoardGetCardContextTool.annotate(McpSchema.EnabledWhen, shownToThreads),

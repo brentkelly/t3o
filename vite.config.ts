@@ -642,6 +642,13 @@ export default defineConfig({
           "**/{test-fixtures,*TestFixtures}.ts",
           "apps/mobile/src/features/development/**",
           "packages/client-runtime/src/rpc/**",
+          // T3o: the board is English-only; its own files never take catalog keys (T3O-133).
+          "apps/web/src/board/**",
+          "apps/web/src/components/t3o/**",
+          "apps/web/src/components/settings/{Board,T3o,board}*",
+          "apps/web/src/routes/{board,board_.*,_chat.settings.board*}.tsx",
+          "apps/web/src/state/board*.ts",
+          "packages/client-runtime/src/{state,operations}/board*.ts",
         ],
         rules: { "t3code/no-untranslated-copy": "error" },
       },

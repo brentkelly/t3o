@@ -14,7 +14,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../ui/switch";
 import { NumberStepper } from "./BoardPipelineSection";
 import { BoardSettingsCard, BoardSettingsCardRow } from "../../board/settings/boardSettingsCards";
-import { searchableSetting } from "./settingsSearch";
+import { boardSearchableSetting } from "../../board/boardSettingsSearch";
 import { SettingsSection } from "./settingsLayout";
 import { BoardServerSection } from "../../board/BoardServerSettings";
 import {
@@ -56,8 +56,8 @@ type UpdateFn = ReturnType<typeof useUpdateBoardSettings>;
 // ── Display ────────────────────────────────────────────────────────────
 
 function DisplaySection({ board, update }: { board: BoardSettings; update: UpdateFn }) {
-  const anchor = searchableSetting("board-auto-collapse-empty-stages");
-  const emphasis = searchableSetting("board-cost-emphasis");
+  const anchor = boardSearchableSetting("board-auto-collapse-empty-stages");
+  const emphasis = boardSearchableSetting("board-cost-emphasis");
   return (
     <SettingsSection id="board-display" title="Display" variant="plain">
       <BoardSettingsCard id="board-auto-collapse-empty-stages">
@@ -108,8 +108,8 @@ const WORKTREE_AT_DONE_LABELS: Record<BoardWorktreeAtDone, string> = {
 const WORKTREE_AT_DONE_MODES = Object.keys(WORKTREE_AT_DONE_LABELS) as BoardWorktreeAtDone[];
 
 function LifecycleSection({ board, update }: { board: BoardSettings; update: UpdateFn }) {
-  const anchor = searchableSetting("board-worktree-at-done");
-  const autoArchive = searchableSetting("board-auto-archive-done");
+  const anchor = boardSearchableSetting("board-worktree-at-done");
+  const autoArchive = boardSearchableSetting("board-auto-archive-done");
   return (
     <SettingsSection id="board-lifecycle" title="Lifecycle" variant="plain">
       <BoardSettingsCard id="board-worktree-at-done">

@@ -18,7 +18,7 @@ import {
   normalizeKeyPrefixInput,
   setBoardProjectSetting,
 } from "../../components/settings/BoardSettingsPanel.logic";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { boardSearchableSetting } from "../boardSettingsSearch";
 import { SettingsSection } from "../../components/settings/settingsLayout";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
@@ -66,7 +66,7 @@ function ProjectsSection({
   environmentId: EnvironmentId;
   update: UpdateFn;
 }) {
-  const anchor = searchableSetting("board-projects");
+  const anchor = boardSearchableSetting("board-projects");
   return (
     <SettingsSection id="board-projects" title={anchor.title} variant="plain">
       <p className="mb-2 max-w-xl px-3 text-board-13 leading-board-1-55 text-muted-foreground/80 sm:px-4">

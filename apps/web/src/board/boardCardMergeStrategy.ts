@@ -9,24 +9,28 @@ import {
   type BoardMergeStrategy,
 } from "@t3tools/contracts";
 
+// Upstream's `fast-forward` is labelled but not offered: it refuses any branch behind its base.
 const BOARD_MERGE_STRATEGIES: ReadonlyArray<BoardMergeStrategy> = ["squash", "merge", "rebase"];
 
 const LABELS: Record<BoardMergeStrategy, string> = {
   squash: "Squash",
   merge: "Merge commit",
   rebase: "Rebase",
+  "fast-forward": "Fast-forward",
 };
 
 const NOTES: Record<BoardMergeStrategy, string> = {
   squash: "One commit; the branch's history is dropped.",
   merge: "Keeps the branch's ancestry; required for upstream syncs.",
   rebase: "Replays the branch's commits linearly onto the base.",
+  "fast-forward": "Moves the base to the branch; refuses unless the branch contains it.",
 };
 
 const VERBS: Record<BoardMergeStrategy, string> = {
   squash: "Squashes into one commit",
   merge: "Merges with a merge commit",
   rebase: "Rebases onto the base",
+  "fast-forward": "Fast-forwards the base",
 };
 
 export interface BoardCardMergeStrategyOption {

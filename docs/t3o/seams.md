@@ -843,6 +843,51 @@ Parity again: nothing new upstream offers is adopted.
   restyle findings in `board/usage/BoardUsagePopovers.tsx` (`T3O-77`) and 1 long comment in
   `board/supervisor.ts`.
 
+### Decisions recorded on the `v0.1.11` sync (`T3O-133`)
+
+- **No graft.** `v0.1.9` was still an ancestor of `t3o`; one merge to `v0.1.11`, not two steps.
+- **Untranslated copy.** Upstream's `t3code/no-untranslated-copy` lint rule errors on English
+  copy in `apps/web/src`, `apps/mobile/src` and `packages/client-runtime/src`. The board stays
+  English-only: one `T3o:` `excludeFiles` entry in the root `vite.config.ts` lists every
+  T3o-owned path. Board copy inside an upstream-owned file moves into a board-owned module (the
+  Scheduled tasks "Board rule" badge is `BoardRuleBadge`) or keeps a plain string (settings nav
+  labels, which `m()` passes through untranslated). Never add catalog keys: `i18n:check` wants
+  each in all nine locale catalogs, which would add ten upstream-owned files to every sync.
+- **Upstream's merge tool.** `pull_request_merge` (and its `stack` and `auto` forms) would let a
+  card's agent merge past Ready for merge and Auto-merge. Its handler calls
+  `board/prMergeGuard.ts`, which refuses a thread any card linked, a thread a central board
+  relayed to this worker, and any caller naming a card's recorded PR, and refuses when the board
+  cannot be read. The board's own merge and the human UI merge do not go through the MCP
+  handler. Two gaps are accepted: a plain thread on a worker naming a card's PR (the worker has
+  no card table), and `gh pr merge` from a shell. The fixed envelope line
+  `BOARD_ENVELOPE_MERGE_GUARD` covers both, and also forbids watching a PR until it merges,
+  which since `v0.1.11` keeps a thread Working until the merge.
+- **SQLite writer worker.** Upstream moved the writer to a worker thread. The board's `ATTACH`
+  is SQL on that connection, so it rides along; the reader attachments (`T3O-41`) pass through
+  `makeWorkerConnection`. The boot order is unchanged: `initialiseBoardDatabase`, then
+  upstream's migrations (or the CLI's owner-locked variant), then board migrations.
+- **Launcher protocol.** Upstream reached protocol 4 and still accepts 3. The fork's own bump to
+  4 (`T3O-54`) is superseded rather than bumped to 5: T3o runs `dist/bin.mjs serve` from
+  `install-t3o-service` and never under upstream's launcher. The launcher still snapshots every
+  database if it is used.
+- **Storage cleanup.** Upstream now removes clean detached worktrees. The `boardKept` gate still
+  comes first after the existence check, and its test table has a detached card worktree.
+- **Window title.** Upstream titles the window after the open thread (with a screen-reader
+  variant). On desktop that now runs; in a browser tab the board's tab identity (`T3O-65`) keeps
+  the title and favicon, so the screen-reader option only affects desktop.
+- **MCP tool search.** Board tools register beside upstream's new `tool_search`. A deferring
+  client (ACP) finds them by search like any other tool.
+- **Sparse checkouts.** Board worktrees follow `t3.json`'s `worktreeSparsePatternsPath` like
+  upstream threads; a missing pattern file fails worktree creation, which the supervisor already
+  turns into a card block.
+- **Desktop WM class.** Upstream matches `StartupWMClass` to Electron's `setDesktopName` id, so
+  the fork's is `com.brentkelly.t3o`.
+- **Node.** Upstream pins `engines.node` to `26.13.1`. Every host needs it before this merges:
+  the readiness check reads the default branch's `package.json`.
+- **Workflows.** New: `issue-vouch.yml` and `pr-limits.yml`, contribution gates like `pr-vouch`.
+  `desktop-macos-preview-publish.yml` gained a `pull_request_target` trigger and
+  `mobile-android-apk.yml` an hourly cron; both were already off.
+
 ### Unmarked edits (debt)
 
 Upstream-owned files the fork changes **without** a `T3o` marker, measured after the `v0.0.45`
@@ -1624,6 +1669,9 @@ only once GitHub lists it, which is after it reaches the default branch or has r
 | `mobile-eas-preview-fork.yml`     | (since `v0.1.6`) Builds EAS previews for labelled fork PRs on `pull_request_target`. Same missing EAS credentials as `mobile-eas-preview.yml` (D17).                                                                                               |
 | `mobile-fingerprint-label.yml`    | (since `v0.1.6`) Labels PRs after `mobile-fingerprint-check.yml` runs. That workflow is off, so this one has nothing to follow.                                                                                                                    |
 | `mobile-dev-client.yml`           | (since `v0.1.9`) Builds mobile dev clients into upstream's native-client cache on push to `main` and on PRs that touch it. Mobile is out of scope (D17). Disabled right after the mirror push started its first run.                               |
+| `issue-vouch.yml`                 | (since `v0.1.11`) Upstream's issue contribution gate, which also fires on a push to `main` that touches `.github/VOUCHED.td`. Meaningless here, like `pr-vouch.yml`. Disable right after the mirror push and cancel the run it starts.             |
+| `pr-limits.yml`                   | (since `v0.1.11`) Upstream's open-PR limit sweep, on `pull_request_target` and a daily cron. Inert unless `PR_LIMITS_ENFORCE` is set; disabled anyway, as a contribution gate. Disable right after the mirror push.                                |
+| `mobile-android-apk.yml`          | Builds Android APKs on an hourly cron. Mobile is out of scope (D17). Listed and already off.                                                                                                                                                       |
 
 **On:** only `Dependency Graph`, GitHub's own. `issue-labels.yml` shows as disabled too (state read
 on the `v0.1.9` sync, 2026-11-15).

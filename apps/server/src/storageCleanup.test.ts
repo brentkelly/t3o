@@ -479,48 +479,48 @@ const cleanupFixture = (
         sqlOverride ??
           (((strings: TemplateStringsArray) =>
             // T3o: the board's worktree query answers from boardWorktreePaths.
-              strings.join("").includes("boards.board_cards")
-                ? boardWorktreePaths === "unreadable"
-                  ? Effect.fail({ _tag: "BoardTablesUnreadable" } as const)
-                  : Effect.succeed(boardWorktreePaths.map((path) => ({ path })))
-                : Effect.sync(() =>
-              strings.join("").includes("retained_checkpoint_threads")
-                ? []
-                : openSessionCwd !== null &&
-                    strings.join("").includes("projection_provider_sessions")
-                  ? [
-                      {
-                        payload_json: JSON.stringify({
-                          id: "session-1",
-                          driver: "codex",
-                          providerInstanceId: "codex",
-                          status: "ready",
-                          cwd: openSessionCwd,
-                          model: null,
-                          capabilities: CodexProviderCapabilitiesV2,
-                          createdAt: "2026-06-01T12:00:00.000Z",
-                          updatedAt: "2026-06-01T12:00:00.000Z",
-                          lastError: null,
-                        }),
-                      },
-                    ]
-                  : outboxStatus !== null &&
-                      strings.join("").includes("orchestration_v2_effect_outbox")
-                    ? [{ status: outboxStatus }]
-                    : strings.join("").includes("deleted_at IS NOT NULL")
-                      ? deletedThreads.map((thread) => ({
-                          payload_json: JSON.stringify(thread),
-                          workspaceRoot: repo,
-                        }))
-                      : strings.join("").includes('AS "worktreePath"')
-                        ? [
-                            ...threads.flatMap((thread) => thread.worktreePath ?? []),
-                            ...storedWorktreePaths,
-                          ].map((worktreePath) => ({ worktreePath }))
-                        : strings.join("").includes("scheduled_tasks")
-                          ? scheduledThreadIds.map((threadId) => ({ threadId }))
-                          : [],
-            )) as unknown as SqlClient.SqlClient),
+            strings.join("").includes("boards.board_cards")
+              ? boardWorktreePaths === "unreadable"
+                ? Effect.fail({ _tag: "BoardTablesUnreadable" } as const)
+                : Effect.succeed(boardWorktreePaths.map((path) => ({ path })))
+              : Effect.sync(() =>
+                  strings.join("").includes("retained_checkpoint_threads")
+                    ? []
+                    : openSessionCwd !== null &&
+                        strings.join("").includes("projection_provider_sessions")
+                      ? [
+                          {
+                            payload_json: JSON.stringify({
+                              id: "session-1",
+                              driver: "codex",
+                              providerInstanceId: "codex",
+                              status: "ready",
+                              cwd: openSessionCwd,
+                              model: null,
+                              capabilities: CodexProviderCapabilitiesV2,
+                              createdAt: "2026-06-01T12:00:00.000Z",
+                              updatedAt: "2026-06-01T12:00:00.000Z",
+                              lastError: null,
+                            }),
+                          },
+                        ]
+                      : outboxStatus !== null &&
+                          strings.join("").includes("orchestration_v2_effect_outbox")
+                        ? [{ status: outboxStatus }]
+                        : strings.join("").includes("deleted_at IS NOT NULL")
+                          ? deletedThreads.map((thread) => ({
+                              payload_json: JSON.stringify(thread),
+                              workspaceRoot: repo,
+                            }))
+                          : strings.join("").includes('AS "worktreePath"')
+                            ? [
+                                ...threads.flatMap((thread) => thread.worktreePath ?? []),
+                                ...storedWorktreePaths,
+                              ].map((worktreePath) => ({ worktreePath }))
+                            : strings.join("").includes("scheduled_tasks")
+                              ? scheduledThreadIds.map((threadId) => ({ threadId }))
+                              : [],
+                )) as unknown as SqlClient.SqlClient),
       ),
       Effect.provideService(GitManager.GitManager, {
         invalidateStatus: () => Effect.void,

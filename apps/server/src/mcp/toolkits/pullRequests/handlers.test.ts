@@ -1046,7 +1046,11 @@ describe("source control tools", () => {
   // T3o: the board owns a card's merge; every form of the tool refuses it (T3O-133).
   it.effect.each([
     { case: "a card's thread merging", board: { cardThreads: ["thread-1"] }, refused: true },
-    { case: "a worker's relayed card thread", board: { relayedThreads: ["thread-1"] }, refused: true },
+    {
+      case: "a worker's relayed card thread",
+      board: { relayedThreads: ["thread-1"] },
+      refused: true,
+    },
     {
       case: "any thread naming a card's PR",
       board: { cardPullRequestUrls: ["https://github.com/T3Tools/t3code/pull/42/"] },
