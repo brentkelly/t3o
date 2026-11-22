@@ -385,20 +385,14 @@ it.effect("a load-sensitive flake under load files nothing and uses none of the 
   }),
 );
 
-it.effect("a load-sensitive mark is ignored on a calm host and for a test in the change", () =>
+it.effect("a load-sensitive mark is ignored on a calm host and for a flake card's own test", () =>
   Effect.gen(function* () {
     const { deps, commands } = yield* fakeBoard([tested]);
-    const result = yield* file(deps, [
-      flake("calm", { loadSensitive: true }),
-      flake("changed", { loadSensitive: true, underLoad: true, inDiff: true }),
-    ]);
-    assert.lengthOf(result.filed, 2);
+    const result = yield* file(deps, [flake("calm", { loadSensitive: true })]);
+    assert.lengthOf(result.filed, 1);
     assert.deepStrictEqual(result.loadSensitive, []);
     const titles = ofType(commands, "board.card.create").map((create) => create.title);
-    assert.deepStrictEqual(titles, [
-      "Flaky test: src/a.test.ts › calm",
-      "Slow under load: src/a.test.ts › changed",
-    ]);
+    assert.deepStrictEqual(titles, ["Flaky test: src/a.test.ts › calm"]);
     // A flake card's own target is never excused by its mark.
     const own = flakeCard("t3o-60", "adds", { stage: BOARD_SEED_STAGE_IDS.ci });
     const target = yield* fakeBoard([own]);

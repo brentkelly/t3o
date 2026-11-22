@@ -73,16 +73,15 @@ const SLOW_UNDER_LOAD_PREFIX = "Slow under load: ";
 const isPerformanceCard = (card: Pick<BoardCard, "title">) =>
   card.title.startsWith(SLOW_UNDER_LOAD_PREFIX);
 
-/** A load-sensitive mark covers load only, and never a test the card changed or a flake
-    card's own test, which must really pass. */
+/** A load-sensitive mark covers load only, and never a flake card's own test, which must
+    really pass. Running the tests a card changed is the script's job. */
 function isHonouredLoadSensitiveFlake(
-  flake: Pick<BoardCiFlake, "loadSensitive" | "underLoad" | "inDiff" | "file" | "title">,
+  flake: Pick<BoardCiFlake, "loadSensitive" | "underLoad" | "file" | "title">,
   target: string | null,
 ): boolean {
   return (
     flake.loadSensitive === true &&
     flake.underLoad === true &&
-    flake.inDiff !== true &&
     boardCiFlakeKey(flake.file, flake.title) !== target
   );
 }

@@ -154,8 +154,8 @@ many tests were skipped as `"skippedUnderLoad": 4`; the CI tab shows the count.
 **Slow under load** bug card instead of a race card: make the test cheaper, re-measure it, and if it
 still can't pass on a busy host, mark it load-sensitive in the same pull request. A test that already
 had one of those cards gets a card asking only to mark it. A marked test that flakes under load files
-nothing, and doesn't count toward the bug-card limits. A marked test that flakes on a calm host, or one
-the card itself changed, files a card as usual.
+nothing, and doesn't count toward the bug-card limits. A marked test that flakes on a calm host files a
+card as usual.
 
 On a bug card's own CI, under load, its target test may be reported flaky. If the card won't be
 merged automatically, the step records the test as inconclusive under load and the card goes on to
@@ -166,7 +166,7 @@ Recommendations:
 - Keep one run that never skips (a nightly, say) and report its marked-test failures, so marked tests
   still run somewhere. With the default threshold on a host that is always busy, marked tests run only
   in calm windows or that run.
-- Always run the tests a card changed, marked or not.
+- Always run the tests a card changed, marked or not, and never report them `loadSensitive`.
 - Add marks only through a reviewed bug card.
 - Under load, judge a test that timed out by one solo re-run on one worker: it is `flaky` only if it
   passes within its own normal timeout. Otherwise report a real failure: a broken page often looks
