@@ -11,7 +11,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 // T3o: the board database boots on upstream's connection (t3o-26).
-import { initialiseBoardDatabase, runBoardMigrations } from "../board/migrations/index.ts";
+import { hasPendingBoardMigrations, withBoardDatabase } from "../board/migrations/index.ts";
 import { boardReaderAttachments } from "../board/boardDatabase.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
@@ -56,7 +56,9 @@ const damagedDatabaseError = (dbPath: string, cause: SqlError.SqlError) =>
 // CLI commands open the server's database from another process; migrating behind its owner changes the schema it runs on.
 const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")(function* () {
   // With nothing pending, runMigrations only validates the recorded history and writes nothing.
-  if (!(yield* hasPendingMigrations())) return yield* runMigrations();
+  // T3o: board migrations count as pending too, and run inside the lock (T3O-133).
+  const pending = (yield* hasPendingMigrations()) || (yield* hasPendingBoardMigrations());
+  if (!pending) return yield* withBoardDatabase(runMigrations());
   const { serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
   yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
     Effect.catchTags({
@@ -64,7 +66,8 @@ const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")
         Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
     }),
   );
-  yield* runMigrations();
+  // T3o: the board lineage runs while the lock is held (T3O-133).
+  yield* withBoardDatabase(runMigrations());
 }, Effect.scoped);
 
 const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
@@ -90,13 +93,8 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       yield* sql`PRAGMA temp_store = MEMORY;`;
       // PASSIVE checkpoints retain peak WAL size until the last connection closes.
       yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
-      // T3o: attach boards.sqlite and heal legacy board layouts BEFORE upstream
-      // migrations run. See board/migrations/index.ts.
-      yield* initialiseBoardDatabase().pipe(Effect.orDie);
+      // T3o: `migrate` carries the board lineage via withBoardDatabase. See board/migrations/index.ts.
       yield* migrate;
-      // T3o: board migrations are a separate lineage (own ledger table), run after
-      // upstream so upstream tables exist first. See board/migrations/index.ts.
-      yield* runBoardMigrations().pipe(Effect.orDie);
       // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
       // Connections cache stats; reload after deleting them.
       const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
@@ -107,7 +105,8 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
     }).pipe(Effect.withSpan("Sqlite.setup")),
   );
 
-const layerSetup = makeLayerSetup(runMigrations());
+// T3o: the board lineage wraps upstream's migrations (t3o-26).
+const layerSetup = makeLayerSetup(withBoardDatabase(runMigrations()));
 
 const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
   Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {

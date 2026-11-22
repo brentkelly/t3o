@@ -5,6 +5,7 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpServer } from "effect/ai";
 
 import { AssetSigner } from "../assets/AssetSigner.ts";
@@ -76,6 +77,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProviderRegistry)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(PullRequestService)({}),
+  Layer.succeed(SqlClient.SqlClient, {} as unknown as SqlClient.SqlClient), // T3o: the board merge guard (T3O-133).
   Layer.mock(GitManager)({}),
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(ScheduledTaskService)({}),

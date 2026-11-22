@@ -23,6 +23,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -110,6 +111,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
       Layer.mock(ProjectService.ProjectService)({}),
       Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
       Layer.mock(PullRequestService.PullRequestService)({}),
+      Layer.succeed(SqlClient.SqlClient, {} as unknown as SqlClient.SqlClient), // T3o: the board merge guard (T3O-133).
       Layer.mock(GitManager.GitManager)({}),
       Layer.mock(Orchestrator.OrchestratorV2)({}),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
@@ -1798,6 +1800,7 @@ it.effect(
               McpToolAccessTestkit.liveThreadsLayer,
               Layer.mock(ProjectService.ProjectService)({}),
               Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+              Layer.succeed(SqlClient.SqlClient, {} as unknown as SqlClient.SqlClient), // T3o: the board merge guard (T3O-133).
               Layer.mock(PullRequestService.PullRequestService)({
                 servesProject: (projectId) => Effect.succeed(projectId !== "project-noForgeToken"),
               }),

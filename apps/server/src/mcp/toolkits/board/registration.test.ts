@@ -16,6 +16,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 
@@ -98,6 +99,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(IssueService)({}),
   Layer.mock(ThreadIssueService)({}),
   Layer.mock(PullRequestService.PullRequestService)({}),
+  Layer.succeed(SqlClient.SqlClient, {} as unknown as SqlClient.SqlClient), // T3o: the board merge guard (T3O-133).
   // T3o: the board toolkit registers on the same server; unused here.
   Layer.mock(BoardEngine)({}),
   Layer.mock(BoardQueries)({}),

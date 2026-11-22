@@ -4,7 +4,6 @@
 // same connection, central or worker.
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 const REFUSAL =
@@ -24,14 +23,14 @@ const hostOf = (url: string) => {
 export interface BoardMergeTarget {
   readonly url: string;
   readonly number: number;
-  readonly headBranch: Effect.Effect<string, unknown>;
+  readonly headBranch: Effect.Effect<string, Error>;
 }
 
 /** Another layer of the named PR's stack: same repository, so only the trailing number differs. */
 export const boardMergeTarget = (
   namedUrl: string,
   number: number,
-  headBranch: Effect.Effect<string, unknown>,
+  headBranch: Effect.Effect<string, Error>,
 ): BoardMergeTarget => ({
   url: namedUrl.trim().replace(/\d+\/*$/, String(number)),
   number,
@@ -93,22 +92,20 @@ const refusalReason = Effect.fn("board.prMergeGuard.refusalReason")(function* (
 
 /**
  * Fails when a card's thread asks to merge, in any form (stack, auto), or any target, a stack's
- * lower layers included, is a card's pull request. Fails closed: an unreadable board, or no database at all, refuses too.
+ * lower layers included, is a card's pull request. Fails closed: an unreadable board refuses too.
  */
 export const refuseBoardOwnedMerge = Effect.fn("board.refuseBoardOwnedMerge")(function* (
+  sql: SqlClient.SqlClient,
   callerThreadId: string,
   targets: ReadonlyArray<BoardMergeTarget>,
 ) {
-  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
-  const reason = Option.isNone(sql)
-    ? "board-unreadable"
-    : yield* refusalReason(sql.value, callerThreadId, targets).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("board merge guard could not read the board; refusing", {
-            error,
-          }).pipe(Effect.as("board-unreadable" as const)),
-        ),
-      );
+  const reason = yield* refusalReason(sql, callerThreadId, targets).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("board merge guard could not read the board; refusing", {
+        error,
+      }).pipe(Effect.as("board-unreadable" as const)),
+    ),
+  );
   if (reason === null) return;
   return yield* new OrchestratorMcpFailure({
     code: "capability_denied",

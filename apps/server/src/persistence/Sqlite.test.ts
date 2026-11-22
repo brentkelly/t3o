@@ -19,6 +19,8 @@ import { vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
+import { attachBoardDatabase } from "../board/boardDatabase.ts";
+import { BOARD_MIGRATIONS } from "../board/migrations/index.ts";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 
@@ -152,6 +154,8 @@ it.effect("upgrades an existing database on a read-write worker connection", () 
       requireWal: false,
       allowExtension: false,
       prepareCacheSize: 200,
+      // T3o: the worker carries the board attachments; the writer attaches via SQL (T3O-41).
+      attachments: [],
     });
   }).pipe(
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
@@ -233,9 +237,44 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 
+  // T3o: the board lineage is behind the same lock (T3O-133).
+  it.effect("does not run board migrations behind a running server", () =>
+    Effect.gen(function* () {
+      const { dbPath } = yield* ServerConfig.ServerConfig;
+      yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerConfig));
+      const latestBoardId = Math.max(...BOARD_MIGRATIONS.map(([id]) => id));
+      const boardLedger = (statement: "delete" | "read") =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* attachBoardDatabase();
+          if (statement === "delete") {
+            yield* sql`DELETE FROM boards.t3o_sql_migrations WHERE migration_id = ${latestBoardId}`;
+          }
+          const rows = yield* sql<{ readonly id: number }>`
+            SELECT MAX(migration_id) AS id FROM boards.t3o_sql_migrations
+          `;
+          return rows[0]?.id;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+      yield* boardLedger("delete");
+      yield* ownT3Home();
+
+      const opened = yield* Effect.void.pipe(
+        Effect.provide(SqlitePersistence.layerCliConfig),
+        Effect.result,
+      );
+
+      assert.equal(yield* boardLedger("read"), latestBoardId - 1);
+      assert.equal(opened._tag, "Failure");
+      if (opened._tag === "Failure") {
+        assert.instanceOf(opened.failure, SqlitePersistence.ServerOwnsDatabaseError);
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
   it.effect("opens a current T3 home while a running server owns it", () =>
     Effect.gen(function* () {
-      yield* migrateTo();
+      // T3o: layerConfig also brings the board lineage current (T3O-133).
+      yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerConfig));
       yield* ownT3Home();
 
       yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig));

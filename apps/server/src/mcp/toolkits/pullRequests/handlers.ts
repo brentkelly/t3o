@@ -41,6 +41,7 @@ import {
 } from "../../../sourceControl/threadPullRequests.ts";
 // T3o: the board owns card merges (T3O-133).
 import { boardMergeTarget, refuseBoardOwnedMerge } from "../../../board/prMergeGuard.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { threadNotFound } from "../../threadAccess.ts";
@@ -266,6 +267,8 @@ const make = Effect.gen(function* () {
 
   const projects = yield* ProjectService.ProjectService;
   const random = yield* SecureRandom.SecureRandom;
+  // T3o: the board merge guard reads the board; required here so a missing database is a type error.
+  const boardSql = yield* SqlClient.SqlClient;
 
   const commandId = (tag: string, threadId: ThreadId) =>
     random.uuidV4().pipe(
@@ -1168,10 +1171,11 @@ const make = Effect.gen(function* () {
             number,
             pullRequests.summary({ ...ref, number }).pipe(Effect.map((pr) => pr.headBranch)),
           );
-        yield* refuseBoardOwnedMerge(thread.id, [boardTarget(ref.number)]);
-        const stack = input.stack === true ? yield* stackMergeScope(ref, input) : {};
-        if ("expectedStackHeads" in stack)
+        yield* refuseBoardOwnedMerge(boardSql, thread.id, [boardTarget(ref.number)]);
+        const stack = input.stack === true ? yield* stackMergeScope(ref, input) : undefined;
+        if (stack !== undefined)
           yield* refuseBoardOwnedMerge(
+            boardSql,
             thread.id,
             stack.expectedStackHeads.map((layer) => boardTarget(layer.number)),
           );

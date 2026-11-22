@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -34,15 +35,22 @@ const seed = Effect.gen(function* () {
   `;
 });
 
+class ForgeDown extends Schema.TaggedError<ForgeDown>()("ForgeDown", {}) {}
+
 const unread = Effect.die("a URL match must not read the head branch");
 const refused = (
   threadId: string,
   url: string,
-  headBranch: Effect.Effect<string, unknown> = unread,
+  headBranch: Effect.Effect<string, Error> = unread,
 ) =>
-  refuseBoardOwnedMerge(threadId, [
-    boardMergeTarget(url, Number(/(\d+)\/*$/.exec(url)?.[1]), headBranch),
-  ]).pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => null }));
+  SqlClient.SqlClient.pipe(
+    Effect.flatMap((sql) =>
+      refuseBoardOwnedMerge(sql, threadId, [
+        boardMergeTarget(url, Number(/(\d+)\/*$/.exec(url)?.[1]), headBranch),
+      ]),
+    ),
+    Effect.match({ onFailure: (error) => error.message, onSuccess: () => null }),
+  );
 
 describe("refuseBoardOwnedMerge", () => {
   it.effect("refuses a card's threads and any thread naming a card's PR", () =>
@@ -69,7 +77,7 @@ describe("refuseBoardOwnedMerge", () => {
       assert.isNull(yield* refused("plain-thread", "https://gitlab.com/acme/app/pull/42"));
       assert.isNull(yield* refused("plain-thread", "https://github.com/acme/renamed-app/pull/43"));
       assert.include(
-        yield* refused("plain-thread", renamed, Effect.fail("forge down")),
+        yield* refused("plain-thread", renamed, Effect.fail(new ForgeDown())),
         "Couldn't confirm",
       );
     }).pipe(Effect.provide(database)),
@@ -80,7 +88,8 @@ describe("refuseBoardOwnedMerge", () => {
       yield* seed;
       const top = "https://github.com/acme/app/pull/43";
       const layers = [43, 42].map((number) => boardMergeTarget(top, number, unread));
-      const exit = yield* refuseBoardOwnedMerge("plain-thread", layers).pipe(Effect.flip);
+      const sql = yield* SqlClient.SqlClient;
+      const exit = yield* refuseBoardOwnedMerge(sql, "plain-thread", layers).pipe(Effect.flip);
       assert.include(exit.message, "The board merges");
     }).pipe(Effect.provide(database)),
   );
@@ -91,11 +100,5 @@ describe("refuseBoardOwnedMerge", () => {
       yield* sql`DETACH DATABASE boards`;
       assert.include(yield* refused("plain-thread", CARD_PR), "Couldn't confirm");
     }).pipe(Effect.provide(database)),
-  );
-
-  it.effect("fails closed with no database at all", () =>
-    Effect.gen(function* () {
-      assert.include(yield* refused("plain-thread", CARD_PR), "Couldn't confirm");
-    }),
   );
 });
