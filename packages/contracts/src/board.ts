@@ -3071,6 +3071,11 @@ export const BoardActivityActor = Schema.Struct({
   providerInstanceId: Schema.NullOr(ProviderInstanceId),
   /** The agent's thread, so the rail can link back to the conversation. */
   threadId: Schema.NullOr(ThreadId),
+  /** An agent writing to a card other than its own: its card's key, frozen at write time.
+      Absent for a schedule run, which has no card. */
+  sourceCardKey: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Present only when the writing agent ran on a different worker than the card. */
+  sourceWorkerId: Schema.optionalKey(BoardWorkerId),
 });
 export type BoardActivityActor = typeof BoardActivityActor.Type;
 
@@ -3172,6 +3177,9 @@ export const BoardCardActivityPayload = Schema.Struct({
   ciOutcome: Schema.optionalKey(BoardCiPassOutcome),
   ciStepName: Schema.optionalKey(TrimmedNonEmptyString),
   ciFixAttempts: Schema.optionalKey(NonNegativeInt),
+  /** card-edited from another worker: what kind of write it was, when there is no
+      incremental edit to describe. */
+  editKind: Schema.optionalKey(Schema.Literals(["regrouped", "moved", "automation", "details"])),
 });
 export type BoardCardActivityPayload = typeof BoardCardActivityPayload.Type;
 

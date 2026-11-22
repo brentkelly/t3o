@@ -68,9 +68,11 @@ export function boardCardGroupOf(board: BoardState, card: BoardCard): BoardCardG
 }
 
 /** A partial write of a group's settings, as `board.card.set-group-settings` carries it. */
-export type BoardGroupSettingsChange = Partial<
-  Pick<BoardCardGroup, "target" | "autoBuild" | "autoMerge" | "autoPlan" | "autoSignOff">
->;
+export type BoardGroupSettingsChange = {
+  readonly [K in "target" | "autoBuild" | "autoMerge" | "autoPlan" | "autoSignOff"]?:
+    | BoardCardGroup[K]
+    | undefined;
+};
 
 /**
  * The group a settings change produces. A real target change with auto-merge omitted sets

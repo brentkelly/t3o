@@ -111,7 +111,12 @@ import type { BoardQueriesShape } from "../../../board/projection.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ServerConfig from "../../../config.ts";
 import { boardCardAttachmentManifest } from "../../../board/attachments.ts";
-import { boardAgentActor, stampBoardActivityActor } from "../../../board/activityActors.ts";
+import {
+  boardAgentActor,
+  stampBoardActivityActor,
+  stampBoardActivitySource,
+  type BoardActivitySource,
+} from "../../../board/activityActors.ts";
 import { boardBriefVersion } from "../../../board/briefEdits.ts";
 import { createBoardCard, resolveBoardCardKeyPrefix } from "../../../board/createCard.ts";
 import { isKeptStepThread, keptPlanningStepId } from "../../../board/planningThreadKeep.ts";
@@ -187,6 +192,8 @@ interface BoardToolDeps {
   /** For the brief-attachment manifest's absolute paths. */
   readonly stateDir: string;
   readonly path: Path.Path;
+  /** The worker the calling thread runs on: the relay's, else this server. */
+  readonly workerId: BoardWorkerId;
 }
 
 /** T3o: a card's size, reservation, worker and queue reason, for an agent (T3O-86). */
@@ -354,6 +361,7 @@ const boardToolDeps = Effect.gen(function* () {
     board,
     stateDir: Option.isSome(relayed) ? relayed.value.stateDir : config.stateDir,
     path,
+    workerId: Option.isSome(relayed) ? relayed.value.workerId : BOARD_LOCAL_WORKER_ID,
   } satisfies BoardToolDeps;
 });
 
@@ -862,24 +870,67 @@ const describeDependencies = (board: BoardState, card: BoardCard) => {
   });
 };
 
+/** The actor an MCP tool call is recorded as. */
+const agentActor = (deps: BoardToolDeps) =>
+  boardAgentActor({
+    providerInstanceId: deps.scope.thread.providerInstanceId,
+    threadId: deps.scope.thread.threadId,
+  });
+
+/** The cards a command names, the ones it adopts included; cascades are not named. */
+const commandTargetCardIds = (command: BoardCommand): ReadonlyArray<BoardCardId> => {
+  const ids = new Set<BoardCardId>();
+  if ("cardId" in command && typeof command.cardId === "string") ids.add(command.cardId);
+  if ("cardIds" in command) for (const id of command.cardIds) ids.add(id);
+  if ("adoptCardIds" in command) for (const id of command.adoptCardIds ?? []) ids.add(id);
+  return [...ids];
+};
+
+/**
+ * Stamp where a write comes from, so each target card's activity names the source card and,
+ * across workers, the source worker (T3O-114). Only a caller with a card, or a schedule run,
+ * has a source; a plain chat thread is just the agent.
+ */
+const stampActivitySource = Effect.fn("BoardToolkit.stampActivitySource")(function* (
+  deps: BoardToolDeps,
+  command: Pick<BoardCommand, "commandId">,
+  targetCardIds: ReadonlyArray<BoardCardId>,
+  editKind: BoardActivitySource["editKind"],
+) {
+  const board = yield* readBoardState(deps);
+  const own = resolveBoardCardForThread(board, deps.scope.thread.threadId);
+  if (own === null && (yield* scheduleCaller(deps.scope.thread.threadId)) === null) return;
+  // An unplaced card, a group and a card not yet created belong to no worker: the board server.
+  const workerOf = (id: BoardCardId): BoardWorkerId => {
+    const card = board.cards.find((candidate) => candidate.id === id);
+    if (card === undefined || card.group !== null) return BOARD_LOCAL_WORKER_ID;
+    return boardCardPlacementTarget(card) ?? BOARD_LOCAL_WORKER_ID;
+  };
+  stampBoardActivitySource(command.commandId, {
+    sourceCardId: own?.id ?? null,
+    sourceCardKey: own?.key ?? null,
+    sourceWorkerId: deps.workerId,
+    targetCardIds,
+    crossWorkerCardIds: targetCardIds.filter((id) => workerOf(id) !== deps.workerId),
+    ...(editKind === undefined ? {} : { editKind }),
+  });
+});
+
 /**
  * Dispatch a board command stamped with the AGENT actor, which the projector reads back for
  * Activity. The provider instance and thread come from the invocation scope, never tool input,
- * so an agent cannot misreport itself.
+ * so an agent cannot misreport itself. `editKind` is how a cross-worker write that records no
+ * row of its own shows on the target's rail.
  */
-const dispatch = (
+const dispatch = Effect.fn("BoardToolkit.dispatch")(function* (
   deps: BoardToolDeps,
   command: BoardCommand,
-): Effect.Effect<{ readonly sequence: number }, BoardToolError> => {
-  stampBoardActivityActor(
-    command.commandId,
-    boardAgentActor({
-      providerInstanceId: deps.scope.thread.providerInstanceId,
-      threadId: deps.scope.thread.threadId,
-    }),
-  );
-  return deps.boardEngine.dispatch(command).pipe(Effect.mapError(dispatchError));
-};
+  editKind?: BoardActivitySource["editKind"],
+): Effect.fn.Return<{ readonly sequence: number }, BoardToolError> {
+  stampBoardActivityActor(command.commandId, agentActor(deps));
+  yield* stampActivitySource(deps, command, commandTargetCardIds(command), editKind);
+  return yield* deps.boardEngine.dispatch(command).pipe(Effect.mapError(dispatchError));
+});
 
 /** `approved` is the agent's own word; a run with no human in the loop has
     nobody who could have given it, and a delegated child never spoke to one. */
@@ -964,7 +1015,13 @@ const dispatchMoveCards = Effect.fn("BoardToolkit.dispatchMoveCards")(function* 
     ...(input.beforeCardId === undefined ? {} : { beforeCardId: input.beforeCardId }),
     createdAt: yield* nowIso,
   };
-  yield* dispatch(deps, command);
+  // A move that keeps every card in its group is a reorder, not a regroup.
+  const before = yield* readBoardState(deps);
+  const reorder = input.cardIds.every(
+    (id) =>
+      (before.cards.find((card) => card.id === id)?.parentCardId ?? null) === input.parentCardId,
+  );
+  yield* dispatch(deps, command, reorder ? "moved" : "regrouped");
   const after = yield* readBoardState(deps);
   const parentKey =
     input.parentCardId === null
@@ -1415,15 +1472,14 @@ const rawBoardHandlers = {
     // natively, so the card lands whole — no follow-up update whose
     // rejection or a mid-write crash could strand a half-built card while
     // the tool reports an error (inviting a retry that mints a duplicate).
+    const commandId = yield* mintCommandId;
+    yield* stampActivitySource(deps, { commandId }, [cardId], undefined);
     yield* createBoardCard({
       engine: deps.boardEngine,
-      actor: boardAgentActor({
-        providerInstanceId: deps.scope.thread.providerInstanceId,
-        threadId: deps.scope.thread.threadId,
-      }),
+      actor: agentActor(deps),
       projectTitle,
       create: {
-        commandId: yield* mintCommandId,
+        commandId,
         cardId,
         projectId,
         title: input.title,
@@ -1637,7 +1693,7 @@ const rawBoardHandlers = {
         ...(input.size === undefined ? {} : { size: input.size, sizeEditor: "agent" as const }),
         createdAt: yield* nowIso,
       };
-      yield* dispatch(deps, command);
+      yield* dispatch(deps, command, "details");
     }
     if (pullRequest !== undefined) {
       // When the field changes have already landed, a failure here must say
@@ -1710,7 +1766,7 @@ const rawBoardHandlers = {
       keyPrefix: yield* resolveCardKeyPrefix(first.projectId, projectTitle),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, create);
+    yield* dispatch(deps, create, "regrouped");
     const after = yield* readBoardState(deps);
     const groupKey = after.cards.find((card) => card.id === groupCardId)?.key ?? groupCardId;
     return { groupCardId, groupKey, cardIds: create.adoptCardIds ?? [] };
@@ -1743,7 +1799,7 @@ const rawBoardHandlers = {
       keyPrefix: yield* resolveCardKeyPrefix(plan.started.projectId, projectTitle),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, create);
+    yield* dispatch(deps, create, "regrouped");
     const after = yield* readBoardState(deps);
     const groupKey = after.cards.find((card) => card.id === groupCardId)?.key ?? groupCardId;
     return { groupCardId, groupKey, cardIds: plan.cardIds };
@@ -1779,7 +1835,7 @@ const rawBoardHandlers = {
       keyPrefix: yield* resolveCardKeyPrefix(plan.group.projectId, projectTitle),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, create);
+    yield* dispatch(deps, create, "regrouped");
     const after = yield* readBoardState(deps);
     const groupKey = after.cards.find((card) => card.id === groupCardId)?.key ?? groupCardId;
     return { groupCardId, groupKey, cardIds: plan.cardIds };
@@ -1854,7 +1910,7 @@ const rawBoardHandlers = {
       ...(input.autoSignOff === undefined ? {} : { autoSignOff: input.autoSignOff }),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, command);
+    yield* dispatch(deps, command, "automation");
     return { cardId: card.id, key: card.key };
   }),
 
@@ -2282,7 +2338,7 @@ const rawBoardHandlers = {
       ...(input.autoMerge === undefined ? {} : { autoMerge: input.autoMerge }),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, command);
+    yield* dispatch(deps, command, "automation");
     const after = yield* readBoardState(deps);
     const updated = after.cards.find((candidate) => candidate.id === card.id) ?? card;
     const resolved = resolveBoardCardAutomationIn({
