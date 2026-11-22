@@ -432,6 +432,11 @@ describe("routeKey", () => {
         expected: { kind: "board", projectId: null },
       },
       {
+        name: "a board filtered to several projects has no project tile",
+        matches: [match("/board", {}, { project: "p,q" })],
+        expected: { kind: "board", projectId: null },
+      },
+      {
         name: "a thread",
         matches: [
           match("__root__"),

@@ -15,6 +15,7 @@ import {
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../../branding";
 import { resolveServerBackedAppDisplayName } from "../../branding.logic";
 import { resolveThreadRouteTarget } from "../../threadRoutes";
+import { boardSingleProjectScope, parseBoardProjectScope } from "../boardProjectScope";
 import { boardLabelForeground } from "../labelColour";
 import { projectAccent, projectIconColorOf } from "../projectAccent";
 import type { TabStatus } from "./tabStatus.logic";
@@ -67,7 +68,10 @@ export function routeKey(
         return { kind: "guest" };
       case "/board":
       case "/list": {
-        const projectId = searchString(match.search, "project") as ProjectId | null;
+        // A project tile only for exactly one selected project; several read as the whole board.
+        const projectId = boardSingleProjectScope(
+          parseBoardProjectScope(searchString(match.search, "project") ?? undefined),
+        );
         const scope: BoardScopeKey = { kind: "board", projectId };
         const cardId = searchString(match.search, "card");
         return cardId === null ? scope : { kind: "card", cardId, scope };
