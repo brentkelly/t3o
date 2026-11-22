@@ -832,8 +832,8 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
               headline,
               flaky: settledAs.status === "passed" ? flakes.flaky : [],
               note:
-                settledAs.status === "passed" && flakes.inconclusive.length > 0
-                  ? `Target test inconclusive under load (CPU pressure ${Math.round(load?.cpuPressure ?? 0)} %): ${flakes.inconclusive.join(", ")}. It failed in the run and passed alone; a human judges the change.`
+                settledAs.status === "passed" && flakes.inconclusive.length > 0 && load !== null
+                  ? `Target test inconclusive under load (CPU pressure ${load.cpuPressure} %): ${flakes.inconclusive.join(", ")}. It failed in the run and passed alone; a human judges the change.`
                   : null,
             };
           }),
