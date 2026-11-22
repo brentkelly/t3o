@@ -909,6 +909,9 @@ export interface BoardCiFixFailure {
   readonly exitCode: number | null;
   readonly tail: string;
   readonly logPath: string | null;
+  /** T3o (T3O-127): host CPU pressure when the step started, and whether that was under load. */
+  readonly cpuPressure?: number;
+  readonly underLoad?: boolean;
   /** What the step reported in its result file. */
   readonly result?: {
     readonly summary: string | null;
@@ -1039,6 +1042,13 @@ export function composeBoardCiFixPrompt(input: {
       `\`${failure.command}\` ${ended}.`,
       ...(failure.logPath === null ? [] : [`The full log is at \`${failure.logPath}\`.`]),
       ...(summary === null ? [] : [`The step reported: ${summary}`]),
+      ...(failure.cpuPressure === undefined
+        ? []
+        : [
+            failure.underLoad === true
+              ? `It ran with the host under load (CPU pressure ${Math.round(failure.cpuPressure)} %). A timeout here may be the host's load, not the code: if the test passes when re-run alone, report it flaky rather than loosening a timeout.`
+              : `It ran at host CPU pressure ${Math.round(failure.cpuPressure)} %.`,
+          ]),
       "The last lines of its output:",
       "```",
       tail.length > 0 ? tail : "(no output)",

@@ -4600,9 +4600,16 @@ const make = Effect.gen(function* () {
             Effect.flatMap((card) =>
               card === null
                 ? Effect.succeed(true)
-                : capacityAdmission.value
-                    .ensureHeavy(card, null, false)
-                    .pipe(Effect.map((hold) => hold === null)),
+                : capacityAdmission.value.ensureHeavy(card, null, false).pipe(
+                    // T3o (T3O-127): once heavy, one best-effort try at the CI reservation.
+                    Effect.flatMap((hold) =>
+                      hold === null
+                        ? capacityAdmission.value
+                            .ensureCiReservation(card.id)
+                            .pipe(Effect.as(true))
+                        : Effect.succeed(false),
+                    ),
+                  ),
             ),
           ),
     dispatch: (command) => dispatch(command),
@@ -5230,6 +5237,8 @@ const make = Effect.gen(function* () {
         logPath: pass.logDir == null ? null : `${pass.logDir}/${index}.log`,
         result,
         headline: step.headline ?? null,
+        ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
+        ...(step.underLoad === true ? { underLoad: true } : {}),
       });
     }
     return {

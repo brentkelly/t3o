@@ -111,6 +111,9 @@ export interface BoardCiFailure {
   readonly exitCode: number | null;
   readonly tail: string;
   readonly logPath: string | null;
+  /** T3o (T3O-127): the step's load reading. */
+  readonly cpuPressure?: number;
+  readonly underLoad?: boolean;
   /** What the step reported in its result file. */
   readonly result?: BoardCiStepResult | null;
   /** What failed and why, as the runner read it. */
