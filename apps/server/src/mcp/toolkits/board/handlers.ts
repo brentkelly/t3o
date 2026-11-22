@@ -1534,7 +1534,7 @@ const rawBoardHandlers = {
     }
     // Regrouping first, so a stage move lands in the new group.
     if (input.parentCardId !== undefined) {
-        const target = yield* requireTargetCard(board, input.cardId);
+      const target = yield* requireTargetCard(board, input.cardId);
       const parent =
         input.parentCardId === null ? null : yield* findCardByKeyOrId(board, input.parentCardId);
       const after =

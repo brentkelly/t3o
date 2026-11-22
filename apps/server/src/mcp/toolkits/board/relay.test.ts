@@ -398,7 +398,11 @@ describe("the board MCP relay", () => {
           assert.strictEqual(edited[0]?.actor.sourceWorkerId, WORKER_ID);
 
           // An incremental edit from another worker is one row, not two.
-          yield* onWorker(world, threadId, updateCard({ cardId: elsewhere, briefAppend: "A note" }));
+          yield* onWorker(
+            world,
+            threadId,
+            updateCard({ cardId: elsewhere, briefAppend: "A note" }),
+          );
           const appended = (yield* queries.boardCardActivity(elsewhere)).filter(
             (entry) => entry.kind === "card-edited",
           );

@@ -1931,66 +1931,61 @@ it.layer(makeLayer("t3o-board-mcp-test-"))("board mcp toolkit", (it) => {
     }),
   );
 
-  it.effect(
-    "board_set_group_settings needs a human only to turn a group flag on (T3O-114)",
-    () =>
-      Effect.gen(function* () {
-        yield* seed();
-        const own = yield* seedOwnCard("unattended-group-settings");
-        yield* startStep({ ...own, suffix: "unattended-group-settings" });
-        const group = yield* boardHandlers
-          .board_create_card({ projectId, title: "G", stage: BoardStageId.make("backlog") })
-          .pipe(withScope(orphanThread));
-        yield* boardHandlers
-          .board_create_card({ projectId, title: "Inside G", parentCardId: group.key })
-          .pipe(withScope(orphanThread));
-        const groupOf = Effect.map(
-          readCards,
-          (cards) => cards.find((card) => card.id === group.cardId)?.group,
-        );
-        const settings = (
-          change: Omit<
-            Parameters<typeof boardHandlers.board_set_group_settings>[0],
-            "cardId"
-          >,
-          scope = withScope(orphanThread),
-        ) => boardHandlers.board_set_group_settings({ cardId: group.key, ...change }).pipe(scope);
+  it.effect("board_set_group_settings needs a human only to turn a group flag on (T3O-114)", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const own = yield* seedOwnCard("unattended-group-settings");
+      yield* startStep({ ...own, suffix: "unattended-group-settings" });
+      const group = yield* boardHandlers
+        .board_create_card({ projectId, title: "G", stage: BoardStageId.make("backlog") })
+        .pipe(withScope(orphanThread));
+      yield* boardHandlers
+        .board_create_card({ projectId, title: "Inside G", parentCardId: group.key })
+        .pipe(withScope(orphanThread));
+      const groupOf = Effect.map(
+        readCards,
+        (cards) => cards.find((card) => card.id === group.cardId)?.group,
+      );
+      const settings = (
+        change: Omit<Parameters<typeof boardHandlers.board_set_group_settings>[0], "cardId">,
+        scope = withScope(orphanThread),
+      ) => boardHandlers.board_set_group_settings({ cardId: group.key, ...change }).pipe(scope);
 
-        // Switching to its own branch turns Auto-merge on, so it needs approved.
-        const toOwn = yield* Effect.flip(settings({ target: "own" }));
-        assert.strictEqual(toOwn.code, "invalid-input");
-        assert.include(toOwn.message, "Auto-merge");
-        assert.include(toOwn.message, "approved: true");
-        assert.strictEqual((yield* groupOf)?.target, "inherit");
-        // Not when Auto-merge is kept off.
-        yield* settings({ target: "own", autoMerge: false });
-        assert.strictEqual((yield* groupOf)?.target, "own");
-        // Switching back to inherit turns nothing on.
-        yield* settings({ target: "inherit" });
-        assert.strictEqual((yield* groupOf)?.target, "inherit");
+      // Switching to its own branch turns Auto-merge on, so it needs approved.
+      const toOwn = yield* Effect.flip(settings({ target: "own" }));
+      assert.strictEqual(toOwn.code, "invalid-input");
+      assert.include(toOwn.message, "Auto-merge");
+      assert.include(toOwn.message, "approved: true");
+      assert.strictEqual((yield* groupOf)?.target, "inherit");
+      // Not when Auto-merge is kept off.
+      yield* settings({ target: "own", autoMerge: false });
+      assert.strictEqual((yield* groupOf)?.target, "own");
+      // Switching back to inherit turns nothing on.
+      yield* settings({ target: "inherit" });
+      assert.strictEqual((yield* groupOf)?.target, "inherit");
 
-        // Turning Auto-build on: refused without approved, and from an unattended run with it.
-        const unapproved = yield* Effect.flip(settings({ autoBuild: true }));
-        assert.include(unapproved.message, "Auto-build");
-        const unattended = yield* Effect.flip(
-          settings({ autoBuild: true, approved: true }, withScope(own.ownThread)),
-        );
-        assert.include(unattended.message, "unattended");
-        const delegated = yield* Effect.flip(
-          settings(
-            { autoBuild: true, approved: true },
-            withSubagentScope(ThreadId.make("thread-child")),
-          ),
-        );
-        assert.include(delegated.message, "delegated task");
-        assert.isFalse((yield* groupOf)?.autoBuild ?? true);
+      // Turning Auto-build on: refused without approved, and from an unattended run with it.
+      const unapproved = yield* Effect.flip(settings({ autoBuild: true }));
+      assert.include(unapproved.message, "Auto-build");
+      const unattended = yield* Effect.flip(
+        settings({ autoBuild: true, approved: true }, withScope(own.ownThread)),
+      );
+      assert.include(unattended.message, "unattended");
+      const delegated = yield* Effect.flip(
+        settings(
+          { autoBuild: true, approved: true },
+          withSubagentScope(ThreadId.make("thread-child")),
+        ),
+      );
+      assert.include(delegated.message, "delegated task");
+      assert.isFalse((yield* groupOf)?.autoBuild ?? true);
 
-        // With a human's approval it lands, and turning it off again needs nothing.
-        yield* settings({ autoBuild: true, approved: true });
-        assert.isTrue((yield* groupOf)?.autoBuild ?? false);
-        yield* settings({ autoBuild: false }, withScope(own.ownThread));
-        assert.isFalse((yield* groupOf)?.autoBuild ?? true);
-      }),
+      // With a human's approval it lands, and turning it off again needs nothing.
+      yield* settings({ autoBuild: true, approved: true });
+      assert.isTrue((yield* groupOf)?.autoBuild ?? false);
+      yield* settings({ autoBuild: false }, withScope(own.ownThread));
+      assert.isFalse((yield* groupOf)?.autoBuild ?? true);
+    }),
   );
 
   it.effect("refuses destructive flows and auto-plan from an unattended run", () =>
@@ -2046,80 +2041,76 @@ it.layer(makeLayer("t3o-board-mcp-test-"))("board mcp toolkit", (it) => {
     }),
   );
 
-  it.effect(
-    "regroups: create inside, indent, outdent, group into new, settings",
-    () =>
-      Effect.gen(function* () {
-        yield* seed();
-        const a = yield* boardHandlers
-          .board_create_card({ projectId, title: "A", stage: BoardStageId.make("backlog") })
-          .pipe(withScope(orphanThread));
-        const inside = yield* boardHandlers
-          .board_create_card({
-            projectId,
-            title: "Inside A",
-            stage: BoardStageId.make("backlog"),
-            parentCardId: a.key,
-          })
-          .pipe(withScope(orphanThread));
-        let cards = yield* readCards;
-        assert.strictEqual(cards.find((card) => card.id === inside.cardId)?.parentCardId, a.cardId);
-        assert.isNotNull(cards.find((card) => card.id === a.cardId)?.group ?? null);
-        // A is a group now, so creating another card inside it is no regroup.
-        const second = yield* boardHandlers
-          .board_create_card({
-            projectId,
-            title: "Also inside A",
-            stage: BoardStageId.make("backlog"),
-            parentCardId: a.key,
-          })
-          .pipe(withScope(orphanThread));
-        cards = yield* readCards;
-        assert.strictEqual(cards.find((card) => card.id === second.cardId)?.parentCardId, a.cardId);
+  it.effect("regroups: create inside, indent, outdent, group into new, settings", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const a = yield* boardHandlers
+        .board_create_card({ projectId, title: "A", stage: BoardStageId.make("backlog") })
+        .pipe(withScope(orphanThread));
+      const inside = yield* boardHandlers
+        .board_create_card({
+          projectId,
+          title: "Inside A",
+          stage: BoardStageId.make("backlog"),
+          parentCardId: a.key,
+        })
+        .pipe(withScope(orphanThread));
+      let cards = yield* readCards;
+      assert.strictEqual(cards.find((card) => card.id === inside.cardId)?.parentCardId, a.cardId);
+      assert.isNotNull(cards.find((card) => card.id === a.cardId)?.group ?? null);
+      // A is a group now, so creating another card inside it is no regroup.
+      const second = yield* boardHandlers
+        .board_create_card({
+          projectId,
+          title: "Also inside A",
+          stage: BoardStageId.make("backlog"),
+          parentCardId: a.key,
+        })
+        .pipe(withScope(orphanThread));
+      cards = yield* readCards;
+      assert.strictEqual(cards.find((card) => card.id === second.cardId)?.parentCardId, a.cardId);
 
-        const b = yield* boardHandlers
-          .board_create_card({ projectId, title: "B", stage: BoardStageId.make("backlog") })
-          .pipe(withScope(orphanThread));
-        // B sits below A in the column, so indenting it lands it inside A.
-        const indented = yield* boardHandlers
-          .board_indent_cards({ cardIds: [b.key] })
-          .pipe(withScope(orphanThread));
-        assert.strictEqual(indented.parentKey, a.key);
+      const b = yield* boardHandlers
+        .board_create_card({ projectId, title: "B", stage: BoardStageId.make("backlog") })
+        .pipe(withScope(orphanThread));
+      // B sits below A in the column, so indenting it lands it inside A.
+      const indented = yield* boardHandlers
+        .board_indent_cards({ cardIds: [b.key] })
+        .pipe(withScope(orphanThread));
+      assert.strictEqual(indented.parentKey, a.key);
 
-        const outdented = yield* boardHandlers
-          .board_outdent_cards({ cardIds: [b.key] })
-          .pipe(withScope(orphanThread));
-        assert.isNull(outdented.parentKey);
-        cards = yield* readCards;
-        assert.isNull(cards.find((card) => card.id === b.cardId)?.parentCardId ?? null);
+      const outdented = yield* boardHandlers
+        .board_outdent_cards({ cardIds: [b.key] })
+        .pipe(withScope(orphanThread));
+      assert.isNull(outdented.parentKey);
+      cards = yield* readCards;
+      assert.isNull(cards.find((card) => card.id === b.cardId)?.parentCardId ?? null);
 
-        const grouped = yield* boardHandlers
-          .board_group_cards({ cardIds: [b.key], title: "Phase 2" })
-          .pipe(withScope(orphanThread));
-        cards = yield* readCards;
-        assert.strictEqual(
-          cards.find((card) => card.id === b.cardId)?.parentCardId,
-          grouped.groupCardId,
-        );
-        assert.isTrue(
-          cards.find((card) => card.id === grouped.groupCardId)?.group?.heading ?? false,
-        );
+      const grouped = yield* boardHandlers
+        .board_group_cards({ cardIds: [b.key], title: "Phase 2" })
+        .pipe(withScope(orphanThread));
+      cards = yield* readCards;
+      assert.strictEqual(
+        cards.find((card) => card.id === b.cardId)?.parentCardId,
+        grouped.groupCardId,
+      );
+      assert.isTrue(cards.find((card) => card.id === grouped.groupCardId)?.group?.heading ?? false);
 
-        yield* boardHandlers
-          .board_set_group_settings({ cardId: grouped.groupKey, autoBuild: true, approved: true })
-          .pipe(withScope(orphanThread));
-        cards = yield* readCards;
-        assert.isTrue(
-          cards.find((card) => card.id === grouped.groupCardId)?.group?.autoBuild ?? false,
-        );
+      yield* boardHandlers
+        .board_set_group_settings({ cardId: grouped.groupKey, autoBuild: true, approved: true })
+        .pipe(withScope(orphanThread));
+      cards = yield* readCards;
+      assert.isTrue(
+        cards.find((card) => card.id === grouped.groupCardId)?.group?.autoBuild ?? false,
+      );
 
-        // board_move_card's parent argument moves it back to the top level.
-        yield* boardHandlers
-          .board_move_card({ cardId: b.cardId, parentCardId: null })
-          .pipe(withScope(orphanThread));
-        cards = yield* readCards;
-        assert.isNull(cards.find((card) => card.id === b.cardId)?.parentCardId ?? null);
-      }),
+      // board_move_card's parent argument moves it back to the top level.
+      yield* boardHandlers
+        .board_move_card({ cardId: b.cardId, parentCardId: null })
+        .pipe(withScope(orphanThread));
+      cards = yield* readCards;
+      assert.isNull(cards.find((card) => card.id === b.cardId)?.parentCardId ?? null);
+    }),
   );
 
   it.effect(

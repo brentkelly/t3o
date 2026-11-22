@@ -81,11 +81,7 @@ export function boardActivityActorForCard(
 ): BoardActivityActor {
   const actor = boardActivityActorFor(commandId);
   const source = boardActivitySourceFor(commandId);
-  if (
-    source === null ||
-    source.sourceCardId === cardId ||
-    !source.targetCardIds.includes(cardId)
-  ) {
+  if (source === null || source.sourceCardId === cardId || !source.targetCardIds.includes(cardId)) {
     return actor;
   }
   const crossWorker = source.crossWorkerCardIds.includes(cardId);
