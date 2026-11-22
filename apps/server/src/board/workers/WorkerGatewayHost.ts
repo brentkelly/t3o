@@ -503,6 +503,10 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
             // T3o (T3O-126): flaky rules travel with the pass.
             ...(input.knownFlaky === undefined ? {} : { knownFlaky: input.knownFlaky }),
             ...(input.notFlakyTitle === undefined ? {} : { notFlakyTitle: input.notFlakyTitle }),
+            ...(input.loadThreshold === undefined ? {} : { loadThreshold: input.loadThreshold }),
+            ...(input.inconclusiveTargetAllowed === true
+              ? { inconclusiveTargetAllowed: true }
+              : {}),
           },
           (progress) =>
             Queue.offer(queue, { _tag: "step", ...progress } as const).pipe(Effect.asVoid),

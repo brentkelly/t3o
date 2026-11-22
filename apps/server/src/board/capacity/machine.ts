@@ -27,7 +27,28 @@ export interface BoardMachineShape {
   readonly freeDiskBytes: (path: string) => Effect.Effect<number | null>;
   /** A worktree's size, bounded in time; null when `du` fails or runs out of time. */
   readonly diskUsageBytes: (path: string) => Effect.Effect<number | null>;
+  /** T3o (T3O-127): host CPU pressure, percent; null when unknown (not Linux, PSI off). */
+  readonly cpuPressure: Effect.Effect<number | null>;
 }
+
+/** `/proc/pressure/cpu`'s `some` line as max(avg10, avg60), so a 10-second lull at a
+    step's start doesn't read as calm for a step that runs for minutes. */
+export function parseCpuPressure(text: string): number | null {
+  const line = text.split("\n").find((entry) => entry.startsWith("some "));
+  if (line === undefined) return null;
+  const avg10 = Number(/\bavg10=([\d.]+)/.exec(line)?.[1]);
+  const avg60 = Number(/\bavg60=([\d.]+)/.exec(line)?.[1]);
+  const known = [avg10, avg60].filter((value) => Number.isFinite(value));
+  return known.length === 0 ? null : Math.max(...known);
+}
+
+const readCpuPressure = Effect.sync((): number | null => {
+  try {
+    return parseCpuPressure(NodeFS.readFileSync("/proc/pressure/cpu", "utf8"));
+  } catch {
+    return null;
+  }
+});
 
 const readMemAvailable = Effect.sync((): number | null => {
   try {
@@ -82,6 +103,7 @@ export class BoardMachine extends Context.Reference<BoardMachineShape>(
         return yield* disk.freeBytes(path);
       }),
       diskUsageBytes: duBytes,
+      cpuPressure: readCpuPressure,
     }),
   },
 ) {}

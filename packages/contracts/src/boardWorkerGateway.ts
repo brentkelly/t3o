@@ -533,6 +533,11 @@ export const BoardWorkerRunCiInput = Schema.Struct({
       which never is. An older worker ignores both and fails the step as before. */
   knownFlaky: Schema.optionalKey(Schema.Array(Schema.String)),
   notFlakyTitle: Schema.optionalKey(Schema.String),
+  /** T3o (T3O-127): the project's under-load threshold (percent of host CPU pressure), and
+      whether a flake card's own test may be ruled inconclusive under load. An older worker
+      ignores both: it reports no pressure and fails the target as before. */
+  loadThreshold: Schema.optionalKey(Schema.Number),
+  inconclusiveTargetAllowed: Schema.optionalKey(Schema.Boolean),
 });
 export type BoardWorkerRunCiInput = typeof BoardWorkerRunCiInput.Type;
 
@@ -548,8 +553,10 @@ const WireCiStepResult = Schema.Struct({
       machine: Schema.optionalKey(Schema.Boolean),
       flaky: Schema.optionalKey(Schema.Boolean),
       repro: Schema.optionalKey(TrimmedNonEmptyString),
+      loadSensitive: Schema.optionalKey(Schema.Boolean),
     }),
   ),
+  skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
 });
 
 /** `BoardCiHeadline` with loose strings: the board clamps them, so
@@ -590,6 +597,11 @@ export const BoardWorkerCiProgress = Schema.Union([
       ),
       silentSince: Schema.optionalKey(Schema.String),
       headline: Schema.optionalKey(WireCiHeadline),
+      /** T3o (T3O-127): `BoardCiPassStep`'s load reading and the board's note. */
+      note: Schema.optionalKey(Schema.String),
+      cpuPressure: Schema.optionalKey(Schema.Number),
+      underLoad: Schema.optionalKey(Schema.Literal(true)),
+      skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
       /** `BoardCiPassStep.flaky`: the step passed over these flaky tests. */
       flaky: Schema.optionalKey(
         Schema.Array(
@@ -597,6 +609,8 @@ export const BoardWorkerCiProgress = Schema.Union([
             title: TrimmedNonEmptyString,
             file: Schema.optionalKey(TrimmedNonEmptyString),
             repro: Schema.optionalKey(TrimmedNonEmptyString),
+            loadSensitive: Schema.optionalKey(Schema.Literal(true)),
+            underLoad: Schema.optionalKey(Schema.Literal(true)),
           }),
         ),
       ),

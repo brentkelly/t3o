@@ -56,6 +56,7 @@ const makeMachine = () => {
         totalMemoryBytes: Effect.succeed(32 * GiB),
         availableMemoryBytes: Effect.succeed(null),
         agentSliceMemoryHighBytes: Effect.succeed(null),
+        cpuPressure: Effect.succeed(null),
         freeDiskBytes: () => Effect.succeed(null),
         diskUsageBytes: () => Effect.succeed(7 * 1000 ** 3),
       }),

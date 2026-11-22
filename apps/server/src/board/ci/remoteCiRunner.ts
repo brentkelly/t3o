@@ -129,6 +129,10 @@ export const remoteCiRunner = (
           ...(request.stopOnFailure === false ? { stopOnFailure: false } : {}),
           ...(request.knownFlaky === undefined ? {} : { knownFlaky: request.knownFlaky }),
           ...(request.notFlakyTitle === undefined ? {} : { notFlakyTitle: request.notFlakyTitle }),
+          ...(request.loadThreshold === undefined ? {} : { loadThreshold: request.loadThreshold }),
+          ...(request.inconclusiveTargetAllowed === true
+            ? { inconclusiveTargetAllowed: true }
+            : {}),
         })
         .pipe(
           Stream.runForEach((progress) =>

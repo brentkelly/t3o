@@ -2034,6 +2034,39 @@ it.effect(
     }),
 );
 
+it.effect.each([
+  { label: "Auto-merge off", merge: undefined, own: undefined, allowed: true },
+  { label: "board-wide Auto-merge on", merge: { autoMerge: true }, own: undefined, allowed: false },
+  { label: "the card's own Auto-merge on", merge: undefined, own: true, allowed: false },
+])(
+  "T3O-127: a flake card's own test may be inconclusive under load, with $label",
+  ({ merge: mergeSettings, own, allowed }) =>
+    Effect.gen(function* () {
+      const { runner, requests } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+      const subject = card(`inconclusive-${String(allowed)}-${String(own)}`, review, {
+        externalRef: {
+          system: "t3o-flaky",
+          id: `${projectId}:src/math.test.ts › adds two numbers`,
+          url: null,
+        },
+        ...(own === undefined ? {} : { autoMergeSetting: own }),
+      });
+      const withMerge = settingsWith({
+        building: [codexStep],
+        globalMaxConcurrent: 3,
+        ...(mergeSettings === undefined ? {} : { merge: mergeSettings }),
+      });
+      yield* withGovernor({ board: boardWith([subject]), settings: withMerge }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          const request = (yield* requests)[0]!;
+          assert.strictEqual(request.notFlakyTitle, "src/math.test.ts › adds two numbers");
+          assert.strictEqual(request.inconclusiveTargetAllowed === true, allowed);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
 it.effect("T3O-126: a mixed step's fix sees only the real failures; its flake is still filed", () =>
   Effect.gen(function* () {
     const { runner } = yield* scriptedRunner([

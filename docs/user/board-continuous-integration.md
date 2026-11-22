@@ -117,7 +117,63 @@ Auto-merge is on for the whole board, which merges every card). Its brief names
 the test, how to re-run it, the error and the card it flaked on. Tests are matched by their exact
 `file › title`, so a test that flakes again adds a note to its open bug card instead of making a
 second. At most 3 new bug cards are filed per pass and none once a project has 10 open; the rest are
-listed on the card that flaked. A bug card's own test is never treated as flaky on that card.
+listed on the card that flaked. A bug card's own test is never treated as flaky on that card, with
+one exception under load (see **Running under load**).
+
+## Running under load
+
+On a busy machine, a test can fail only because the host is starved of CPU. CI tells each script step
+how busy the host is, so the project can skip tests that are already as cheap as they can be:
+
+- `T3O_CPU_PRESSURE` is the host's CPU pressure as a whole percent (`/proc/pressure/cpu`, the larger
+  of the 10- and 60-second averages), read just before the step's group starts. It's unset when the
+  machine can't say (not Linux).
+- `T3O_UNDER_LOAD=1` is set when that pressure is at or above the project's **Under-load threshold**
+  (50 % by default). The step's row in the CI tab shows the reading, in amber when under load.
+
+Both settings are on the project's **Resources** tab, or in `t3o.json` under `resources`:
+`ciLoadThreshold` (percent) and `ciCpuCores`, the cores a CI pass asks its worker for while it runs
+(say 8 for a suite that runs 8 browsers). The larger reservation is best effort: when the cores
+aren't free, the pass runs on the card's own reservation rather than waiting.
+
+**Mark a load-sensitive test** with your test runner's own convention, and skip marked tests when
+`T3O_UNDER_LOAD` is set:
+
+| Runner     | Mark                          | Skip under load                   |
+| ---------- | ----------------------------- | --------------------------------- |
+| Playwright | a `@load-sensitive` tag       | `--grep-invert @load-sensitive`   |
+| pytest     | `@pytest.mark.load_sensitive` | `-m 'not load_sensitive'`         |
+| PHPUnit    | `#[Group('load-sensitive')]`  | `--exclude-group load-sensitive`  |
+| Rust, Go   | a name convention             | `--skip` / `-skip`                |
+| Anything   | a check in the test           | skip when `T3O_UNDER_LOAD` is set |
+
+In the result file, add `"loadSensitive": true` to a marked test's flaky failure, and report how
+many tests were skipped as `"skippedUnderLoad": 4`; the CI tab shows the count.
+
+**What a flake under load files.** A test that flakes while the step ran under load gets a
+**Slow under load** bug card instead of a race card: make the test cheaper, re-measure it, and if it
+still can't pass on a busy host, mark it load-sensitive in the same pull request. A test that already
+had one of those cards gets a card asking only to mark it. A marked test that flakes under load files
+nothing, and doesn't count toward the bug-card limits. A marked test that flakes on a calm host files a
+card as usual.
+
+On a bug card's own CI, under load, its target test may be reported flaky. If the card won't be
+merged automatically, the step records the test as inconclusive under load and the card goes on to
+you to merge; put the re-measured timings in the pull request. Otherwise the test must pass.
+
+Recommendations:
+
+- Keep one run that never skips (a nightly, say) and report its marked-test failures, so marked tests
+  still run somewhere. With the default threshold on a host that is always busy, marked tests run only
+  in calm windows or that run.
+- Always run the tests a card changed, marked or not, and never report them `loadSensitive`.
+- Add marks only through a reviewed bug card.
+- Under load, judge a test that timed out by one solo re-run on one worker: it is `flaky` only if it
+  passes within its own normal timeout. Otherwise report a real failure: a broken page often looks
+  like a timeout.
+- If a step does long setup before its heaviest part, re-read `/proc/pressure/cpu` there.
+- Don't report a load-born failure that isn't a test (a server that boots slowly, a lock wait) as
+  `"machine": true`, which holds the card for you. Retry or wait longer in the script instead.
 
 ## Following a run
 

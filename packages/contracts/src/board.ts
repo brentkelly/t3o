@@ -1569,6 +1569,9 @@ export const BoardCiFailureDetail = Schema.Struct({
   flaky: Schema.optionalKey(Schema.Boolean),
   /** The command that re-runs just this test, for the flake's bug card. */
   repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+  /** T3o (T3O-127): the project marked this test load-sensitive by its runner's own
+      convention. Meaningful only with `flaky: true`; an honoured one files no flake card. */
+  loadSensitive: Schema.optionalKey(Schema.Boolean),
 });
 export type BoardCiFailureDetail = typeof BoardCiFailureDetail.Type;
 
@@ -1596,6 +1599,8 @@ export function isBoardCiFailureFlaky(
 export const BoardCiStepResult = Schema.Struct({
   summary: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1_000))),
   failures: Schema.Array(BoardCiFailureDetail),
+  /** T3o (T3O-127): tests the script skipped because `T3O_UNDER_LOAD` was set. */
+  skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
 });
 export type BoardCiStepResult = typeof BoardCiStepResult.Type;
 
@@ -1652,11 +1657,18 @@ export function parseBoardCiResultFile(text: string): {
     return decoded._tag === "Some" ? [decoded.value] : [];
   });
   const dropped = listed.length - failures.length;
+  const skipped = record.skippedUnderLoad;
+  const skippedUnderLoad =
+    typeof skipped === "number" && Number.isInteger(skipped) && skipped >= 0 ? skipped : null;
   return {
-    result: { summary, failures: failures.slice(0, BOARD_CI_MAX_FAILURES) },
+    result: {
+      summary,
+      failures: failures.slice(0, BOARD_CI_MAX_FAILURES),
+      ...(skippedUnderLoad === null ? {} : { skippedUnderLoad }),
+    },
     warning:
       dropped > 0
-        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro? }; ignored.`
+        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro?, loadSensitive? }; ignored.`
         : null,
     complete: dropped === 0 && failures.length <= BOARD_CI_MAX_FAILURES,
   };
@@ -2085,6 +2097,14 @@ export const BoardCiPassStep = Schema.Struct({
   silentSince: Schema.optionalKey(IsoDateTime),
   /** A failed or timed-out step's headline: what failed and why. */
   headline: Schema.optionalKey(BoardCiHeadline),
+  /** T3o (T3O-127): host CPU pressure (`/proc/pressure/cpu` some, max of avg10/avg60,
+      percent) read before the step's group started; absent when unknown. */
+  cpuPressure: Schema.optionalKey(Schema.Number),
+  /** The reading was at or above the project's under-load threshold, so the step ran
+      with `T3O_UNDER_LOAD=1`. */
+  underLoad: Schema.optionalKey(Schema.Literal(true)),
+  /** Tests the step skipped under load, as its result file reported. */
+  skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
   /** The step passed, but only because every failure it had was a flake: these
       tests (T3O-126). Its status is `passed`. */
   flaky: Schema.optionalKey(
@@ -2097,6 +2117,10 @@ export const BoardCiPassStep = Schema.Struct({
         byAgent: Schema.optionalKey(Schema.Literal(true)),
         /** The test is in the card's own change. */
         inDiff: Schema.optionalKey(Schema.Literal(true)),
+        /** T3o (T3O-127): the runner reported the test marked load-sensitive. */
+        loadSensitive: Schema.optionalKey(Schema.Literal(true)),
+        /** The step it flaked in ran under load. */
+        underLoad: Schema.optionalKey(Schema.Literal(true)),
       }),
     ),
   ),

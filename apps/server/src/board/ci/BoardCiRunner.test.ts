@@ -26,6 +26,24 @@ import {
   type BoardCiRunRequest,
 } from "./BoardCiRunner.ts";
 import { BoardDiskSpace } from "./diskSpace.ts";
+import { BoardMachine } from "../capacity/machine.ts";
+
+/** A pass against a stubbed host CPU pressure: null (unknown) unless a test sets one, so no
+    test reads this host's real load. */
+const runPass = (
+  pass: BoardCiRunRequest,
+  emit: (progress: BoardCiStepProgress) => Effect.Effect<void>,
+  pressure: number | null | (() => number | null) = null,
+) =>
+  Effect.gen(function* () {
+    const machine = yield* BoardMachine;
+    return yield* runBoardCiPass(pass, emit).pipe(
+      Effect.provideService(BoardMachine, {
+        ...machine,
+        cpuPressure: Effect.sync(() => (typeof pressure === "function" ? pressure() : pressure)),
+      }),
+    );
+  });
 
 const workdir = () => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o-ci-"));
 
@@ -48,7 +66,7 @@ it.live("runs every step in the worktree and passes", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Where", command: "pwd", timeoutMinutes: 1 },
         { name: "Both streams", command: "echo out; echo err 1>&2", timeoutMinutes: 1 },
@@ -78,7 +96,7 @@ it.live("stops at the first failing step", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Fails", command: "echo broken; exit 3", timeoutMinutes: 1 },
         { name: "Never runs", command: "touch ran", timeoutMinutes: 1 },
@@ -113,7 +131,7 @@ it.live("times a step out and kills it", () =>
     const cwd = workdir();
     const { events, emit } = collect();
     // A fractional minute: 0.0005 min is 30 ms.
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Hangs", command: "sleep 30", timeoutMinutes: 0.0005 }]),
       emit,
     );
@@ -133,7 +151,7 @@ it.live("a step settles when its shell exits, even if an escaped child holds the
     const cwd = workdir();
     // setsid puts the sleeper outside the step's process group, so the group
     // kill misses it and it keeps stdout open well past the project timeout.
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Daemon", command: "setsid sleep 600 & echo started", timeoutMinutes: 5 },
       ]),
@@ -146,7 +164,7 @@ it.live("a step settles when its shell exits, even if an escaped child holds the
 it.live("a step's log is complete by the time the step settles", () =>
   Effect.gen(function* () {
     const cwd = workdir();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Loud", command: "head -c 8000000 /dev/zero | tr '\\0' a", timeoutMinutes: 1 },
       ]),
@@ -175,7 +193,7 @@ it.live("a group member that ignores TERM is killed after the step exits", () =>
     // Stays in the step's group with its pipes closed, so the step settles,
     // and ignores the TERM sent on exit; only the SIGKILL fallback stops it.
     const stubborn = `sh -c 'trap "" TERM; echo $$ > ${pidFile}; exec sleep 600' >/dev/null 2>&1 & while [ ! -s ${pidFile} ]; do sleep 0.05; done`;
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Leaves one", command: stubborn, timeoutMinutes: 1 }]),
       () => Effect.void,
     );
@@ -188,7 +206,7 @@ it.live("a step that leaves nothing running arms no SIGKILL fallback", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     using timers = vi.spyOn(globalThis, "setTimeout");
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Clean", command: "true", timeoutMinutes: 1 }]),
       () => Effect.void,
     );
@@ -225,7 +243,7 @@ it.live("an interrupted pass kills the step's whole process group", () =>
     // The shell forks a grandchild that would outlive a kill of the shell
     // alone; it records the TERM the process-group kill sends it.
     const grandchild = `sh -c 'trap "echo gone > ${gone}; exit 0" TERM; echo up > ${started}; while :; do sleep 1; done' & wait`;
-    const fiber = yield* runBoardCiPass(
+    const fiber = yield* runPass(
       request(cwd, [{ name: "Long", command: grandchild, timeoutMinutes: 5 }]),
       () => Effect.void,
     ).pipe(Effect.forkChild);
@@ -240,7 +258,7 @@ it.live("decodes a multi-byte character split across output chunks", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    yield* runBoardCiPass(
+    yield* runPass(
       request(cwd, [
         // ✓ is \342\234\223; the pause makes the two writes separate pipe chunks.
         {
@@ -304,8 +322,8 @@ it.live("keeps its logs out of git status in a repo that does not ignore .t3/", 
     NodeChildProcess.execFileSync("git", ["init", "-q"], { cwd });
     const { emit } = collect();
     const steps = [{ name: "Say", command: "echo hi", timeoutMinutes: 1 }];
-    yield* runBoardCiPass(request(cwd, steps), emit);
-    yield* runBoardCiPass(request(cwd, steps), emit);
+    yield* runPass(request(cwd, steps), emit);
+    yield* runPass(request(cwd, steps), emit);
     assert.isTrue(NodeFS.existsSync(NodePath.join(cwd, ".t3", "ci", "run-1", "0.log")));
     const status = NodeChildProcess.execFileSync("git", ["status", "--porcelain"], {
       cwd,
@@ -325,7 +343,7 @@ it.live("a log directory it cannot create makes the pass unavailable, not a cras
     const cwd = workdir();
     NodeFS.writeFileSync(NodePath.join(cwd, ".t3"), "a file, not a directory");
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Say", command: "echo hi", timeoutMinutes: 1 }]),
       emit,
     );
@@ -339,7 +357,7 @@ it.live("runs a parallel group together and stops later groups once it finishes"
     const cwd = workdir();
     const { events, emit } = collect();
     // Each waits for the other's marker, so they only pass when run together.
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         {
           name: "A",
@@ -379,7 +397,7 @@ it.live("reads the step's result file, which adds detail and never overrides the
     const cwd = workdir();
     const { events, emit } = collect();
     const write = `printf '%s' '{"summary":"1 of 3 failed","failures":[{"title":"boom","file":"src/a.ts","line":4},{"nope":1}]}' > "$T3O_CI_RESULT"`;
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Reports", command: `${write}; exit 0`, timeoutMinutes: 1 }]),
       emit,
     );
@@ -391,7 +409,7 @@ it.live("reads the step's result file, which adds detail and never overrides the
     });
     assert.include(
       final.tail,
-      "weren't { title, detail?, file?, line?, machine?, flaky?, repro? }",
+      "weren't { title, detail?, file?, line?, machine?, flaky?, repro?, loadSensitive? }",
     );
   }),
 );
@@ -403,7 +421,7 @@ it.live("a step whose every failure is flaky passes over them; a real one beside
     const { events, emit } = collect();
     const flakyOnly = `printf '%s' '{"failures":[{"title":"adds","file":"a.test.ts","flaky":true,"repro":"vp test a"}]}' > "$T3O_CI_RESULT"; exit 1`;
     const mixed = `printf '%s' '{"failures":[{"title":"real"},{"title":"adds","file":"a.test.ts","flaky":true}]}' > "$T3O_CI_RESULT"; exit 1`;
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Flaky only", command: flakyOnly, timeoutMinutes: 1 },
         { name: "Mixed", command: mixed, timeoutMinutes: 1 },
@@ -431,7 +449,7 @@ it.live("a flaky step with a reported failure the parser dropped still fails", (
     const cwd = workdir();
     const { events, emit } = collect();
     const dropped = `printf '%s' '{"failures":[{"title":"adds","flaky":true},{"detail":"no title"}]}' > "$T3O_CI_RESULT"; exit 1`;
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Dropped", command: dropped, timeoutMinutes: 1 }]),
       emit,
     );
@@ -448,7 +466,7 @@ it.live("a test already ruled flaky passes unflagged, except on its own flake ca
     const write = (titles: string) =>
       `printf '%s' '{"failures":[${titles}]}' > "$T3O_CI_RESULT"; exit 1`;
     const known = yield* Effect.sync(collect);
-    const passed = yield* runBoardCiPass(
+    const passed = yield* runPass(
       {
         ...request(cwd, [
           {
@@ -468,7 +486,7 @@ it.live("a test already ruled flaky passes unflagged, except on its own flake ca
     ]);
 
     const own = yield* Effect.sync(collect);
-    const failed = yield* runBoardCiPass(
+    const failed = yield* runPass(
       {
         ...request(cwd, [
           {
@@ -501,7 +519,7 @@ it.live("a ::t3o-failure:: line can say a step failed only on a flake", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         {
           name: "Line",
@@ -526,7 +544,7 @@ it.live("fails a group that leaves tracked changes in the worktree", () =>
     git(["add", "tracked.txt"]);
     git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]);
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Formats", command: "echo two > tracked.txt", timeoutMinutes: 1 }]),
       emit,
     );
@@ -537,13 +555,13 @@ it.live("fails a group that leaves tracked changes in the worktree", () =>
     );
     assert.include(events.at(-1)!.step.tail, "left tracked changes");
     // An edit that was there before the group ran is not the group's.
-    const again = yield* runBoardCiPass(
+    const again = yield* runPass(
       request(cwd, [{ name: "Reads", command: "cat tracked.txt", timeoutMinutes: 1 }]),
       () => Effect.void,
     );
     assert.deepStrictEqual(again, { result: "passed", failedIndex: null, ranAll: true });
     // Re-editing an already-dirty file is still this group's doing.
-    const reedit = yield* runBoardCiPass(
+    const reedit = yield* runPass(
       request(cwd, [{ name: "Formats", command: "echo three > tracked.txt", timeoutMinutes: 1 }]),
       () => Effect.void,
     );
@@ -551,7 +569,7 @@ it.live("fails a group that leaves tracked changes in the worktree", () =>
     // Without stop on failure the dirty group still fails, and the next runs
     // against the changed tree.
     const carriesOn = collect();
-    const continued = yield* runBoardCiPass(
+    const continued = yield* runPass(
       {
         ...request(cwd, [
           { name: "Formats", command: "echo four > tracked.txt", timeoutMinutes: 1 },
@@ -578,7 +596,7 @@ it.live("without stop on failure, runs every step after a failure or a timeout",
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       {
         ...request(cwd, [
           { name: "Build", command: "true", timeoutMinutes: 1 },
@@ -636,7 +654,7 @@ it.live("delivers every output line to onLine, by pass index, before the step se
   Effect.gen(function* () {
     const cwd = workdir();
     const seen: Array<[number, BoardCiLine]> = [];
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       {
         ...request(cwd, [
           { name: "Says", command: "printf 'one\\ntwo\\nthree'", timeoutMinutes: 1 },
@@ -699,7 +717,7 @@ it.live("a full disk makes the pass unavailable as a machine problem before any 
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Say", command: "touch ran", timeoutMinutes: 1 }]),
       emit,
     ).pipe(
@@ -719,7 +737,7 @@ it.live("a full disk makes the pass unavailable as a machine problem before any 
 it.live("a disk that can't be read never blocks the pass", () =>
   Effect.gen(function* () {
     const cwd = workdir();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [{ name: "Say", command: "echo hi", timeoutMinutes: 1 }]),
       () => Effect.void,
     ).pipe(Effect.provideService(BoardDiskSpace, { freeBytes: () => Effect.die("statfs broke") }));
@@ -733,7 +751,7 @@ it.live("reports a script's progress while it runs, and its settled row keeps th
     const { events, emit } = collect();
     const line = (done: number) =>
       `echo '::t3o-progress::{"message":"Testing","done":${done},"total":4}'`;
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         {
           name: "Tests",
@@ -771,7 +789,7 @@ it.live("a failed step's headline points at its line and byte offset in <n>.log"
       "echo 'error: later'",
       "exit 1",
     ].join("; ");
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Ok", command: "true", timeoutMinutes: 1 },
         { name: "Panel", command: script, timeoutMinutes: 1 },
@@ -798,7 +816,7 @@ it.live("a missing tool is a machine problem, and an empty result file is said",
   Effect.gen(function* () {
     const cwd = workdir();
     const { emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         {
           name: "Browser",
@@ -823,7 +841,7 @@ it.live("a machine problem in a parallel group outranks an earlier code failure"
   Effect.gen(function* () {
     const cwd = workdir();
     const { emit } = collect();
-    const result = yield* runBoardCiPass(
+    const result = yield* runPass(
       request(cwd, [
         { name: "Lint", command: "echo 'error: bad style'; exit 1", timeoutMinutes: 1 },
         {
@@ -838,7 +856,7 @@ it.live("a machine problem in a parallel group outranks an earlier code failure"
     assert.deepInclude(result, { result: "failed", failedIndex: 1, exitCode: 127 });
     assert.strictEqual(result.result === "failed" ? result.headline?.machine : null, true);
     // Without stop on failure, a later group's machine problem outranks too.
-    const later = yield* runBoardCiPass(
+    const later = yield* runPass(
       {
         ...request(cwd, [
           { name: "Lint", command: "echo 'error: bad style'; exit 1", timeoutMinutes: 1 },
@@ -857,10 +875,140 @@ it.live("a passing step carries no headline", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
-    yield* runBoardCiPass(
+    yield* runPass(
       request(cwd, [{ name: "Ok", command: "echo 'error: not really'", timeoutMinutes: 1 }]),
       emit,
     );
     assert.isUndefined(events.at(-1)!.step.headline);
+  }),
+);
+
+// T3o (T3O-127): the board tells each step the host's load.
+it.live("tells each step the host's CPU pressure, and whether that is under load", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const step = {
+      name: "Env",
+      command: 'echo "P=${T3O_CPU_PRESSURE:-none} U=${T3O_UNDER_LOAD:-none}"',
+      timeoutMinutes: 1,
+    };
+    const runAt = (pressure: number | null, loadThreshold?: number) =>
+      Effect.gen(function* () {
+        const { events, emit } = collect();
+        yield* runPass(
+          { ...request(cwd, [step]), ...(loadThreshold === undefined ? {} : { loadThreshold }) },
+          emit,
+          pressure,
+        ).pipe(
+          // The server itself may run as a loaded CI step: its own reading must not leak in.
+          Effect.provideService(HostProcess.Environment, {
+            ...process.env,
+            T3O_CPU_PRESSURE: "99",
+            T3O_UNDER_LOAD: "1",
+          }),
+        );
+        return events.at(-1)!.step;
+      });
+    const loaded = yield* runAt(72.44);
+    assert.include(loaded.tail, "P=72 U=1");
+    assert.strictEqual(loaded.cpuPressure, 72);
+    assert.strictEqual(loaded.underLoad, true);
+    const calm = yield* runAt(30);
+    assert.include(calm.tail, "P=30 U=none");
+    assert.strictEqual(calm.cpuPressure, 30);
+    assert.isUndefined(calm.underLoad);
+    // The project's own threshold decides; at it is under load.
+    const atThreshold = yield* runAt(30, 30);
+    assert.include(atThreshold.tail, "P=30 U=1");
+    // What the step is told is what decides: a reading shown as 50 is under a 50 threshold.
+    const roundsUp = yield* runAt(49.6, 50);
+    assert.include(roundsUp.tail, "P=50 U=1");
+    assert.strictEqual(roundsUp.underLoad, true);
+    const unknown = yield* runAt(null);
+    assert.include(unknown.tail, "P=none U=none");
+    assert.isUndefined(unknown.cpuPressure);
+    assert.isUndefined(unknown.underLoad);
+  }),
+);
+
+it.live("reads the pressure once per step group, before the group starts", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const { events, emit } = collect();
+    const readings = [80, 20];
+    let reads = 0;
+    yield* runPass(
+      request(cwd, [
+        { name: "A", command: "true", timeoutMinutes: 1 },
+        { name: "B", command: "true", timeoutMinutes: 1, parallel: true },
+        { name: "C", command: "true", timeoutMinutes: 1 },
+      ]),
+      emit,
+      () => readings[reads++] ?? null,
+    );
+    assert.strictEqual(reads, 2);
+    const settled = events.filter((event) => event.step.status === "passed");
+    assert.deepStrictEqual(
+      settled.map((event) => [event.step.name, event.step.cpuPressure, event.step.underLoad]),
+      [
+        ["A", 80, true],
+        ["B", 80, true],
+        ["C", 20, undefined],
+      ],
+    );
+    // The running row carries the reading too.
+    assert.strictEqual(events[0]!.step.status, "running");
+    assert.strictEqual(events[0]!.step.cpuPressure, 80);
+  }),
+);
+
+it.live("carries a runner's load-sensitive flakes and its skipped-under-load count", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const { events, emit } = collect();
+    const command = `printf '%s' '{"skippedUnderLoad":4,"failures":[{"title":"adds","file":"a.test.ts","flaky":true,"loadSensitive":true}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const result = yield* runPass(
+      request(cwd, [{ name: "E2e", command, timeoutMinutes: 1 }]),
+      emit,
+      90,
+    );
+    assert.strictEqual(result.result, "passed");
+    const final = events.at(-1)!.step;
+    assert.strictEqual(final.skippedUnderLoad, 4);
+    assert.deepStrictEqual(final.flaky, [
+      { title: "adds", file: "a.test.ts", loadSensitive: true, underLoad: true },
+    ]);
+  }),
+);
+
+it.live("a flake card's own test is inconclusive under load only where a human merges", () =>
+  Effect.gen(function* () {
+    const cwd = workdir();
+    const command = `printf '%s' '{"failures":[{"title":"adds","file":"a.test.ts","flaky":true}]}' > "$T3O_CI_RESULT"; exit 1`;
+    const runWith = (pressure: number, allowed: boolean) =>
+      Effect.gen(function* () {
+        const { events, emit } = collect();
+        const result = yield* runPass(
+          {
+            ...request(cwd, [{ name: "E2e", command, timeoutMinutes: 1 }]),
+            notFlakyTitle: "a.test.ts › adds",
+            ...(allowed ? { inconclusiveTargetAllowed: true } : {}),
+          },
+          emit,
+          pressure,
+        );
+        return { result, step: events.at(-1)!.step };
+      });
+    const inconclusive = yield* runWith(90, true);
+    assert.strictEqual(inconclusive.result.result, "passed");
+    // Never a flake, so a later calm run still tests it.
+    assert.isUndefined(inconclusive.step.flaky);
+    assert.include(inconclusive.step.note ?? "", "inconclusive under load");
+    assert.deepStrictEqual(inconclusive.step.result?.failures, [
+      { title: "adds", file: "a.test.ts" },
+    ]);
+    // Auto-merge on, or a calm host: the target fails as before.
+    assert.strictEqual((yield* runWith(90, false)).result.result, "failed");
+    assert.strictEqual((yield* runWith(10, true)).result.result, "failed");
   }),
 );
