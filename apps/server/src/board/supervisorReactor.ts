@@ -6153,9 +6153,8 @@ const make = Effect.gen(function* () {
             : { repro: report.repro.trim().slice(0, 500) }),
           stepName: issue.stepName,
           command: step.command,
-          // T3o (T3O-127): never load-sensitive (the agent can't see marks), but under load.
+          // T3o (T3O-129): under load, the agent's ruling lists the test like the script's.
           ...(step.underLoad === true ? { underLoad: true } : {}),
-          ...(step.cpuPressure === undefined ? {} : { cpuPressure: step.cpuPressure }),
           source: "agent" as const,
         },
       ];

@@ -389,8 +389,8 @@ export function decideBoardCiRecord(
             phase: "running",
             fixAttempts:
               fixTriage === true ? current.fixAttempts : Math.max(0, current.fixAttempts - 1),
-            // Counts the fix agent's own rulings only; runner-reported flakes, under load
-            // or load-sensitive (T3O-127), never feed the storm guard.
+            // Counts the fix agent's own rulings only; runner-reported flakes, under load or
+            // not, never feed the storm guard.
             flakyChecks: (current.flakyChecks ?? 0) + 1,
             flakyTitles: boardCiMergeFlakyTitles(current.flakyTitles, action.titles),
           },

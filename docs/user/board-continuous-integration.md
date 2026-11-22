@@ -111,51 +111,76 @@ A flaky test never stops a card. A failure counts as flaky when:
 
 A test that flaked once in a visit to CI passes with no agent if it flakes again in that visit.
 
-Each flaky test becomes a low-priority **bug card** in the same project, labelled `bug`, with Auto-plan, Auto
-sign-off and Auto-build on but not Auto-merge: you come back to a fix ready to merge (unless
-Auto-merge is on for the whole board, which merges every card). Its brief names
-the test, how to re-run it, the error and the card it flaked on. Tests are matched by their exact
-`file › title`, so a test that flakes again adds a note to its open bug card instead of making a
-second. At most 3 new bug cards are filed per pass and none once a project has 10 open; the rest are
-listed on the card that flaked. A bug card's own test is never treated as flaky on that card, with
-one exception under load (see **Running under load**).
+A flake on a calm machine is probably a real race. Each one becomes a low-priority **bug card** in
+the same project, labelled `bug`, with Auto-plan, Auto sign-off and Auto-build on but not
+Auto-merge: you come back to a fix ready to merge (unless Auto-merge is on for the whole board,
+which merges every card). Its brief names the test, how to re-run it, the error and the card it
+flaked on. Tests are matched by their exact `file › title`, so a test that flakes again adds a note
+to its open bug card instead of making a second. At most 3 new bug cards are filed per pass and none
+once a project has 10 open; the rest are listed on the card that flaked. A bug card's own test is
+never treated as flaky on that card, with one exception under load (see **Running under load**).
+
+A flake on a busy machine files no card: the test goes onto the project's load-sensitive list
+instead (see **Running under load**).
 
 ## Running under load
 
-On a busy machine, a test can fail only because the host is starved of CPU. CI tells each script step
-how busy the host is, so the project can skip tests that are already as cheap as they can be:
+On a busy machine any end-to-end test can run past its time limit, and a failure there says nothing
+a card could fix. CI tells each script step how busy the host is, and hands it the tests that have
+flaked under load before, so the script can leave them to the project's nightly run.
 
 - `T3O_CPU_PRESSURE` is the host's CPU pressure as a whole percent (`/proc/pressure/cpu`, the larger
   of the 10- and 60-second averages), read just before the step's group starts. It's unset when the
   machine can't say (not Linux).
-- `T3O_UNDER_LOAD=1` is set when that pressure is at or above the project's **Under-load threshold**
-  (50 % by default). The step's row in the CI tab shows the reading, in amber when under load.
+- `T3O_UNDER_LOAD=1` is set when that pressure is above the project's **Under-load threshold** (50 %
+  by default). The step's row in the CI tab shows the reading, in amber when under load.
+- `T3O_CI_LOAD_SENSITIVE` is the path of a JSON file listing the project's load-sensitive tests, as
+  `[{ "file": "e2e/checkout.spec.ts", "title": "pays with a saved card" }]`, `[]` when there are
+  none. It is a snapshot taken once per run, so every step of a pass reads the same list. Treat a
+  missing variable as an empty list, and match on the exact `file` and `title` your script reported.
 
 Both settings are on the project's **Resources** tab, or in `t3o.json` under `resources`:
 `ciLoadThreshold` (percent) and `ciCpuCores`, the cores a CI pass asks its worker for while it runs
 (say 8 for a suite that runs 8 browsers). The larger reservation is best effort: when the cores
 aren't free, the pass runs on the card's own reservation rather than waiting.
 
-**Mark a load-sensitive test** with your test runner's own convention, and skip marked tests when
-`T3O_UNDER_LOAD` is set:
+**The load-sensitive list.** A test that the script reports `flaky` in a step that ran under load
+goes onto the list, and no bug card is filed for it; the card it flaked on gets a note. An entry
+expires 14 days after the test's last flake under load, and each new one gives it another 14 days.
+Since a listed test is skipped while the machine is busy, it usually leaves the list 14 days after it
+joined, and rejoins with no card on its next busy flake. The list holds at most 50 tests; past that
+the oldest is replaced. A full list means the threshold is too low for this machine or CI is
+oversubscribed. A flake with no file (a whole-step failure line) is only noted. A bug card's own test
+is never on its own CI's list. See the list, remove a test or clear it on the project's **CI** tab,
+under **Load-sensitive tests**.
 
-| Runner     | Mark                          | Skip under load                   |
-| ---------- | ----------------------------- | --------------------------------- |
-| Playwright | a `@load-sensitive` tag       | `--grep-invert @load-sensitive`   |
-| pytest     | `@pytest.mark.load_sensitive` | `-m 'not load_sensitive'`         |
-| PHPUnit    | `#[Group('load-sensitive')]`  | `--exclude-group load-sensitive`  |
-| Rust, Go   | a name convention             | `--skip` / `-skip`                |
-| Anything   | a check in the test           | skip when `T3O_UNDER_LOAD` is set |
+**What your script does with it.** The board knows nothing about your test runner, so these are the
+script's duties:
 
-In the result file, add `"loadSensitive": true` to a marked test's flaky failure, and report how
-many tests were skipped as `"skippedUnderLoad": 4`; the CI tab shows the count.
+- Skip listed tests only when `T3O_UNDER_LOAD=1`.
+- Never skip a listed test whose spec is in the card's change, or which covers a changed file. Only
+  the script can map tests to files, and skipping one would let a card break it and merge green.
+- Under load, never report a failure in such a test as `flaky`: it is a real failure of the card.
+- Report every test you skipped as `deferred` in the result file:
+  `"deferred": [{ "file": "e2e/checkout.spec.ts", "title": "pays with a saved card" }]`. The CI tab
+  shows "N load-sensitive tests deferred to the nightly" in grey, a passing pass reads
+  "Passed · N deferred", and the card gets a note listing them.
 
-**What a flake under load files.** A test that flakes while the step ran under load gets a
-**Slow under load** bug card instead of a race card: make the test cheaper, re-measure it, and if it
-still can't pass on a busy host, mark it load-sensitive in the same pull request. A test that already
-had one of those cards gets a card asking only to mark it. A marked test that flakes under load files
-nothing, and doesn't count toward the bug-card limits. A marked test that flakes on a calm host files a
-card as usual.
+The result file's older `"loadSensitive": true` mark and test tags in code are no longer needed; the
+board ignores the mark and keeps the list itself.
+
+**Run a nightly on a quiet machine.** The nightly is what covers deferred tests, so run it with a
+pinned worker count when the machine is otherwise idle, never skip listed tests there (it may run
+them with repeats to catch races), and report its failures somewhere a person sees them, or file a
+card. The board doesn't hold CI for a nightly: it has no idea which run that is.
+
+**Known gap.** The reading is taken before each step group. A spike from other CI that starts during
+a step goes unseen, so a flake then files a low-priority bug card as on a calm machine. If a step does
+long setup before its heaviest part, re-read `/proc/pressure/cpu` there.
+
+**Turning it off.** A threshold of 100 means the machine is never busy: no step is told
+`T3O_UNDER_LOAD`, nothing is skipped or listed, and every flake files a bug card. An empty list only
+stops the skipping.
 
 On a bug card's own CI, under load, its target test may be reported flaky. If the card won't be
 merged automatically, the step records the test as inconclusive under load and the card goes on to
@@ -163,15 +188,9 @@ you to merge; put the re-measured timings in the pull request. Otherwise the tes
 
 Recommendations:
 
-- Keep one run that never skips (a nightly, say) and report its marked-test failures, so marked tests
-  still run somewhere. With the default threshold on a host that is always busy, marked tests run only
-  in calm windows or that run.
-- Always run the tests a card changed, marked or not, and never report them `loadSensitive`.
-- Add marks only through a reviewed bug card.
 - Under load, judge a test that timed out by one solo re-run on one worker: it is `flaky` only if it
   passes within its own normal timeout. Otherwise report a real failure: a broken page often looks
   like a timeout.
-- If a step does long setup before its heaviest part, re-read `/proc/pressure/cpu` there.
 - Don't report a load-born failure that isn't a test (a server that boots slowly, a lock wait) as
   `"machine": true`, which holds the card for you. Retry or wait longer in the script instead.
 
