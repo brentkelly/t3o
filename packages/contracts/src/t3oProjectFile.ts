@@ -537,7 +537,11 @@ function decodeResources(value: unknown, warnings: string[]): BoardProjectResour
     return undefined;
   }
   for (const key of Object.keys(value)) {
-    if (!["baseline", "setupTimeoutMinutes", "readiness"].includes(key)) {
+    if (
+      !["baseline", "setupTimeoutMinutes", "readiness", "ciCpuCores", "ciLoadThreshold"].includes(
+        key,
+      )
+    ) {
       warnings.push(`resources.${key}: unknown key; ignored.`);
     }
   }
@@ -611,6 +615,28 @@ function decodeResources(value: unknown, warnings: string[]): BoardProjectResour
     readinessPath,
     readinessTimeoutSeconds,
     readinessChecks,
+    ...decodeCiLoadResources(value, warnings),
+  };
+}
+
+/** T3o (T3O-127): the CI reservation and under-load threshold; absent keys stay absent. */
+function decodeCiLoadResources(
+  value: Record<string, unknown>,
+  warnings: string[],
+): Pick<BoardProjectResources, "ciCpuCores" | "ciLoadThreshold"> {
+  const ciCpuCores = positiveNumber(value.ciCpuCores, "resources.ciCpuCores", warnings);
+  let ciLoadThreshold: number | null = null;
+  if (value.ciLoadThreshold !== undefined) {
+    const raw = value.ciLoadThreshold;
+    if (typeof raw === "number" && Number.isInteger(raw) && raw >= 1 && raw <= 100) {
+      ciLoadThreshold = raw;
+    } else {
+      warnings.push("resources.ciLoadThreshold: expected a whole percent from 1 to 100; ignored.");
+    }
+  }
+  return {
+    ...(ciCpuCores === null ? {} : { ciCpuCores }),
+    ...(ciLoadThreshold === null ? {} : { ciLoadThreshold }),
   };
 }
 
@@ -837,6 +863,8 @@ export function buildT3oProjectFile(input: {
           : { timeoutSeconds: resources.readinessTimeoutSeconds }),
       };
     }
+    if (resources.ciCpuCores !== undefined) block.ciCpuCores = resources.ciCpuCores;
+    if (resources.ciLoadThreshold !== undefined) block.ciLoadThreshold = resources.ciLoadThreshold;
     if (Object.keys(block).length > 0) file.resources = block;
   }
   if (input.schedules !== undefined) {

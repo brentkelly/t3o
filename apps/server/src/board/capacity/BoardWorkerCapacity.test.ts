@@ -85,6 +85,7 @@ const withMachine = (fakes: Fakes) =>
     totalMemoryBytes: Effect.succeed(128 * GiB),
     availableMemoryBytes: Effect.sync(() => fakes.availableBytes),
     agentSliceMemoryHighBytes: Effect.succeed(null),
+    cpuPressure: Effect.succeed(null),
     freeDiskBytes: () => Effect.sync(() => fakes.freeDiskBytes),
     diskUsageBytes: () => Effect.succeed(1000 ** 3),
   });
@@ -486,6 +487,7 @@ it.effect(
         totalMemoryBytes: Effect.succeed(128 * GiB),
         availableMemoryBytes: Effect.succeed(500 * GiB),
         agentSliceMemoryHighBytes: Effect.succeed(null),
+        cpuPressure: Effect.succeed(null),
         freeDiskBytes: () => Effect.succeed(1000 * 1000 ** 3),
         diskUsageBytes: (path: string) =>
           Effect.sync(() => {
@@ -517,6 +519,7 @@ it.effect("a disk measurement finishing after its board left doesn't bring it ba
       totalMemoryBytes: Effect.succeed(128 * GiB),
       availableMemoryBytes: Effect.succeed(500 * GiB),
       agentSliceMemoryHighBytes: Effect.succeed(null),
+      cpuPressure: Effect.succeed(null),
       freeDiskBytes: () => Effect.succeed(1000 * 1000 ** 3),
       diskUsageBytes: () => Effect.suspend(() => duringDu).pipe(Effect.as(1000 ** 3)),
     }),

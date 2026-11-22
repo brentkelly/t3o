@@ -179,6 +179,12 @@ export const BoardProjectResources = Schema.Struct({
   readinessChecks: Schema.Array(BoardReadinessCheck).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** T3o (T3O-127): the CPU a CI pass reserves, best effort; absent uses the card's own. */
+  ciCpuCores: Schema.optionalKey(PositiveNumber),
+  /** T3o (T3O-127): host CPU pressure, percent, at or above which a CI step runs under load. */
+  ciLoadThreshold: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
+  ),
   /** T3o (T3O-87): dimensions whose declared value ignores learning. Absent pins none. */
   pinDeclared: Schema.optionalKey(Schema.Array(BoardResourceDimension)),
   /** T3o (T3O-87): the learned baseline, the board's to write. Not in the config's version. */
@@ -213,8 +219,20 @@ export function isEmptyBoardProjectResources(
       resources.readinessTimeoutSeconds === null &&
       (resources.readinessChecks ?? []).length === 0 &&
       (resources.pinDeclared ?? []).length === 0 &&
+      resources.ciCpuCores === undefined &&
+      resources.ciLoadThreshold === undefined &&
       resources.learned === undefined)
   );
+}
+
+/** T3o (T3O-127): the pressure threshold when a project sets none. */
+export const DEFAULT_BOARD_CI_LOAD_THRESHOLD = 50;
+
+/** The project's under-load threshold, percent of host CPU pressure. */
+export function resolveBoardCiLoadThreshold(
+  resources: BoardProjectResources | null | undefined,
+): number {
+  return resources?.ciLoadThreshold ?? DEFAULT_BOARD_CI_LOAD_THRESHOLD;
 }
 
 /** The declared baseline, ignoring learning. */

@@ -31,6 +31,9 @@ export interface BoardCiPassRequest {
   /** T3o (T3O-126): `BoardCiRunRequest.knownFlaky` and `notFlakyTitle`. */
   readonly knownFlaky?: ReadonlyArray<string>;
   readonly notFlakyTitle?: string;
+  /** T3o (T3O-127): `BoardCiRunRequest.loadThreshold` and `inconclusiveTargetAllowed`. */
+  readonly loadThreshold?: number;
+  readonly inconclusiveTargetAllowed?: boolean;
   /** Where the steps run; this server's runner when absent. */
   readonly runner?: BoardCiRunnerShape;
 }
@@ -135,6 +138,10 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
             ? {}
             : { knownFlaky: request.knownFlaky }),
           ...(request.notFlakyTitle === undefined ? {} : { notFlakyTitle: request.notFlakyTitle }),
+          ...(request.loadThreshold === undefined ? {} : { loadThreshold: request.loadThreshold }),
+          ...(request.inconclusiveTargetAllowed === true
+            ? { inconclusiveTargetAllowed: true }
+            : {}),
         },
         (progress) => record(request, progress.index, progress.step),
       )
