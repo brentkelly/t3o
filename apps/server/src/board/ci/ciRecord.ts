@@ -241,9 +241,7 @@ export function decideBoardCiRecord(
       if (live.status !== "running" && live.status !== "pending") {
         return refuse(`CI step '${live.name}' has already finished, so it can't be skipped.`);
       }
-      const skippedSteps = marked
-        ? marks
-        : [...marks, action.stepId].slice(-BOARD_CI_MAX_STEPS);
+      const skippedSteps = marked ? marks : [...marks, action.stepId].slice(-BOARD_CI_MAX_STEPS);
       const running = live.status === "running";
       const steps = running
         ? current.steps.map((step, index) => {

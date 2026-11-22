@@ -2037,7 +2037,8 @@ export function isBoardCiStepSkipped(
   step: Pick<BoardCardCiStep, "id" | "status">,
 ): boolean {
   return (
-    step.status === "skipped" || (step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id))
+    step.status === "skipped" ||
+    (step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id))
   );
 }
 

@@ -70,7 +70,9 @@ export function boardCiSegments(ci: BoardCardCi): ReadonlyArray<BoardCiSegment> 
   return ci.steps.map((step) => {
     const state = boardCiStepBadgeState(step.status, fixing, step.flaky === true);
     const word =
-      state === "pending" && isBoardCiStepSkipped(ci, step) ? "will be skipped" : SEGMENT_WORD[state];
+      state === "pending" && isBoardCiStepSkipped(ci, step)
+        ? "will be skipped"
+        : SEGMENT_WORD[state];
     return { name: step.name, state, tooltip: `${step.name} · ${word}` };
   });
 }

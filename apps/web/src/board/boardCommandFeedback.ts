@@ -211,7 +211,11 @@ export function describeBoardCheckWorktreeOutcome(
 export function describeBoardCiSkipStepOutcome(
   result: BoardCiSkipStepResult,
   stepName: string,
-): { readonly title: string; readonly description?: string; readonly tone: "info" | "error" } | null {
+): {
+  readonly title: string;
+  readonly description?: string;
+  readonly tone: "info" | "error";
+} | null {
   switch (result.outcome) {
     case "skipped":
     case "marked":

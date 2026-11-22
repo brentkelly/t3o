@@ -571,7 +571,9 @@ function PassSteps({
         const marked =
           ci != null && step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id);
         const skipControl: StepSkipControl =
-          onSkipStep === undefined || ci == null || (ci.phase !== "queued" && ci.phase !== "running")
+          onSkipStep === undefined ||
+          ci == null ||
+          (ci.phase !== "queued" && ci.phase !== "running")
             ? null
             : step.status === "running"
               ? "skip"

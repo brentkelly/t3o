@@ -2403,8 +2403,9 @@ const gatedRunner = () => {
     run: (request, emit) =>
       Effect.gen(function* () {
         requests.push(request);
-        const groups: Array<Array<{ readonly def: BoardCiStepDefinition; readonly index: number }>> =
-          [];
+        const groups: Array<
+          Array<{ readonly def: BoardCiStepDefinition; readonly index: number }>
+        > = [];
         for (const [index, def] of request.steps.entries()) {
           const last = groups.at(-1);
           if (def.parallel === true && last !== undefined) last.push({ def, index });
@@ -2484,9 +2485,9 @@ const skipStep = (h: Harness, cardId: BoardCardId, stepIndex: number, skip = tru
   });
 
 const passStatuses = (h: Harness, cardId: BoardCardId) =>
-  h.ciPasses(cardId).pipe(
-    Effect.map((passes) => passes.at(-1)?.steps.map((step) => step.status) ?? []),
-  );
+  h
+    .ciPasses(cardId)
+    .pipe(Effect.map((passes) => passes.at(-1)?.steps.map((step) => step.status) ?? []));
 
 const ciAgentSelects = (commands: ReadonlyArray<HarnessCommand>, prefix: string) =>
   commands.filter(
@@ -2705,54 +2706,66 @@ const markOnFirstReport = (index: number) => {
   return { ref, onDispatch };
 };
 
-it.effect("T3O-130: a marked step that fails before its restart, even as a machine problem, fails nothing", () =>
-  Effect.gen(function* () {
-    const { runner } = yield* scriptedRunner([
-      { result: "failed", failedIndex: 2, exitCode: 127, headline: libraryHeadline },
-    ]);
-    const subject = card("skip-backstop", review);
-    const mark = markOnFirstReport(2);
-    const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
-    yield* withGovernor({ board, settings, onDispatch: mark.onDispatch }, (h) =>
-      Effect.gen(function* () {
-        mark.ref.h = h;
-        mark.ref.cardId = subject.id;
-        yield* enterCiAndRun(h, subject, 1);
-        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
-        assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "passed", "skipped"]);
-        const actions = ciRecords(yield* h.decided).map((record) => record.payload.action);
-        assert.isFalse(actions.some((action) => action.kind === "begin-fix"));
-        assert.isFalse(
-          actions.some((action) => action.kind === "finish-pass" && action.result !== "passed"),
-        );
-      }),
-    ).pipe(Effect.provideService(BoardCiRunner, runner));
-  }),
+it.effect(
+  "T3O-130: a marked step that fails before its restart, even as a machine problem, fails nothing",
+  () =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 2, exitCode: 127, headline: libraryHeadline },
+      ]);
+      const subject = card("skip-backstop", review);
+      const mark = markOnFirstReport(2);
+      const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
+      yield* withGovernor({ board, settings, onDispatch: mark.onDispatch }, (h) =>
+        Effect.gen(function* () {
+          mark.ref.h = h;
+          mark.ref.cardId = subject.id;
+          yield* enterCiAndRun(h, subject, 1);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "passed",
+            "skipped",
+          ]);
+          const actions = ciRecords(yield* h.decided).map((record) => record.payload.action);
+          assert.isFalse(actions.some((action) => action.kind === "begin-fix"));
+          assert.isFalse(
+            actions.some((action) => action.kind === "finish-pass" && action.result !== "passed"),
+          );
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
 );
 
-it.effect("T3O-130: with Stop on failure No, a skipped failure beside a real one points the fix at the real one", () =>
-  Effect.gen(function* () {
-    const { runner } = yield* scriptedRunner([
-      { result: "failed", failedIndex: 1, alsoFailed: [2], exitCode: 1 },
-    ]);
-    const subject = card("skip-swap", review);
-    const mark = markOnFirstReport(1);
-    const board = boardWith([subject], noStopConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
-    yield* withGovernor({ board, settings, onDispatch: mark.onDispatch }, (h) =>
-      Effect.gen(function* () {
-        mark.ref.h = h;
-        mark.ref.cardId = subject.id;
-        yield* enterCiAndRun(h, subject, 1);
-        const fixing = yield* live(h, subject.id);
-        assert.strictEqual(fixing.ci?.phase, "fixing");
-        assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "skipped", "failed"]);
-        const fixes = ciAgentSelects(yield* h.commands, "ci-fix@");
-        assert.lengthOf(fixes, 1);
-        assert.include(fixes[0]!.prompt, 'CI step "E2E" failed.');
-        assert.include(fixes[0]!.prompt, 'Skipped by a human this visit: "Test".');
-      }),
-    ).pipe(Effect.provideService(BoardCiRunner, runner));
-  }),
+it.effect(
+  "T3O-130: with Stop on failure No, a skipped failure beside a real one points the fix at the real one",
+  () =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 1, alsoFailed: [2], exitCode: 1 },
+      ]);
+      const subject = card("skip-swap", review);
+      const mark = markOnFirstReport(1);
+      const board = boardWith([subject], noStopConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
+      yield* withGovernor({ board, settings, onDispatch: mark.onDispatch }, (h) =>
+        Effect.gen(function* () {
+          mark.ref.h = h;
+          mark.ref.cardId = subject.id;
+          yield* enterCiAndRun(h, subject, 1);
+          const fixing = yield* live(h, subject.id);
+          assert.strictEqual(fixing.ci?.phase, "fixing");
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "skipped",
+            "failed",
+          ]);
+          const fixes = ciAgentSelects(yield* h.commands, "ci-fix@");
+          assert.lengthOf(fixes, 1);
+          assert.include(fixes[0]!.prompt, 'CI step "E2E" failed.');
+          assert.include(fixes[0]!.prompt, 'Skipped by a human this visit: "Test".');
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
 );
 
 it.effect.each(["held", "stopped"] as const)(
