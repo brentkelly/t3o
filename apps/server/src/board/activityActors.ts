@@ -66,7 +66,7 @@ export function stampBoardActivitySource(commandId: CommandId, source: BoardActi
 }
 
 /** The source stamped for an event's `commandId`, or null. */
-export function boardActivitySourceFor(
+function boardActivitySourceFor(
   commandId: CommandId | string | null | undefined,
 ): BoardActivitySource | null {
   if (commandId === null || commandId === undefined) return null;
