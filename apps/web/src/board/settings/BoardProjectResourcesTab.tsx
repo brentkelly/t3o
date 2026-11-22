@@ -301,9 +301,9 @@ export function BoardProjectResourcesTab(props: {
         </div>
         <p className="text-board-12 text-muted-foreground">
           A CI pass asks its worker for this many cores while it runs, and runs on the card's own
-          reservation when they aren't free. Each CI step is told the host's CPU pressure; at or
-          above the threshold it runs with T3O_UNDER_LOAD=1, so tests the project marked
-          load-sensitive can skip.
+          reservation when they aren't free. Each CI step is told the host's CPU pressure; above
+          the threshold the machine is busy, so the step runs with T3O_UNDER_LOAD=1 and may defer
+          the tests that flaked under load before (see the CI tab). 100 turns this off.
         </p>
       </section>
       {canWrite ? (

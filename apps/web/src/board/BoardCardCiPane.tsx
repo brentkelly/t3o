@@ -5,6 +5,7 @@
 import { Link } from "@tanstack/react-router";
 import {
   BOARD_CI_STOPPED_BY_YOU_REASON,
+  boardCiFlakeKey,
   isBoardCiStepFailure,
   type BoardCardId,
   type EnvironmentId,
@@ -31,6 +32,7 @@ import { useNowSecond } from "../hooks/useNowSecond";
 import { cn } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import {
+  boardCiDeferredLabel,
   boardCiPaneHeadline,
   boardCiPaneStatus,
   boardCiPassOutcomeChip,
@@ -300,10 +302,31 @@ function StepRow({
             >
               {step.underLoad === true ? "Ran under load · " : ""}CPU pressure{" "}
               {Math.round(step.cpuPressure)} %
-              {step.skippedUnderLoad === undefined || step.skippedUnderLoad === 0
+              {/* An old T3O-127 count, only where the step reported no deferred list. */}
+              {step.skippedUnderLoad === undefined ||
+              step.skippedUnderLoad === 0 ||
+              step.deferred !== undefined
                 ? ""
                 : ` · ${step.skippedUnderLoad} ${step.skippedUnderLoad === 1 ? "test" : "tests"} skipped under load`}
             </span>
+          )}
+          {/* T3o (T3O-129): neutral, never green, amber or violet: deferred is not a verdict. */}
+          {step.status === "skipped" || (step.deferred ?? []).length === 0 ? null : (
+            <details className="text-board-11 text-muted-foreground">
+              <summary className="cursor-pointer select-none">
+                {boardCiDeferredLabel((step.deferred ?? []).length)}
+              </summary>
+              <ul className="mt-0.5 flex flex-col gap-px pl-3">
+                {(step.deferred ?? []).map((test) => {
+                  const key = boardCiFlakeKey(test.file, test.title);
+                  return (
+                    <li key={key} className="break-all">
+                      {key}
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
           )}
           {flakes.length === 0 ? null : (
             <span className="text-board-11 text-warning-foreground">
@@ -311,7 +334,7 @@ function StepRow({
               {flakes
                 .map(
                   (flake) =>
-                    `${flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`}${flake.loadSensitive === true ? " (load-sensitive)" : ""}`,
+                    flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`,
                 )
                 .join(", ")}
             </span>

@@ -1,7 +1,8 @@
 /**
  * T3o: one project's config for its settings page — the shell delta
  * the board already holds, plus the full delta (prompts, step bodies,
- * "last changed by") fetched whenever the shell's version moves.
+ * "last changed by", the load-sensitive list) fetched whenever the shell's version or the
+ * list's revision moves.
  */
 import {
   EMPTY_BOARD_PROJECT_STAGE_CONFIG,
@@ -34,6 +35,8 @@ export function useBoardProjectConfig(
   const getConfig = useAtomCommand(boardEnvironment.getProjectConfig, { reportFailure: false });
   const [full, setFull] = useState<BoardProjectStageConfig | null>(null);
   const version = shell.version;
+  // T3o (T3O-129): the list never moves the version, so its own revision triggers a refetch.
+  const loadSensitiveRevision = shell.loadSensitiveRevision;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches the full config from the board server; the live stream carries only its shell.
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +53,8 @@ export function useBoardProjectConfig(
     projectId,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Each new shell version needs its full config.
     version,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- And each new load-sensitive list.
+    loadSensitiveRevision,
   ]);
   return { shell, full: full !== null && full.version === version ? full : null };
 }

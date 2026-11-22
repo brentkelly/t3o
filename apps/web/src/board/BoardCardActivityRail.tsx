@@ -218,6 +218,9 @@ function ActivityIcon({
     case "card-ci-flakes-filed":
     case "card-ci-flaked-again":
       return <TriangleAlertIcon className={cn(className, "text-warning-foreground")} />;
+    // T3o (T3O-129): deferred is no verdict: neutral.
+    case "card-ci-deferred":
+      return <ChevronsRightIcon className={className} />;
     case "card-ci-stopped":
       return <PauseIcon className={cn(className, "text-attention-foreground")} />;
     case "card-worktree-cleanup":
@@ -270,6 +273,7 @@ const CI_ACTIVITY_KINDS: ReadonlySet<BoardCardActivityEntry["kind"]> = new Set([
   "card-ci-stopped",
   "card-ci-flakes-filed",
   "card-ci-flaked-again",
+  "card-ci-deferred",
 ]);
 
 function roundsPhrase(rounds: number): string {
@@ -507,6 +511,12 @@ function activitySentence(
       return payload.detail === undefined ? <>CI passed over flaky tests</> : <>{payload.detail}</>;
     case "card-ci-flaked-again":
       return payload.detail === undefined ? <>the test flaked again</> : <>{payload.detail}</>;
+    case "card-ci-deferred":
+      return payload.detail === undefined ? (
+        <>CI deferred load-sensitive tests to the nightly</>
+      ) : (
+        <>{payload.detail}</>
+      );
     case "card-ci-stopped":
       return <>stopped CI for a human: the card has failed CI too many times</>;
     case "card-worktree-cleanup":

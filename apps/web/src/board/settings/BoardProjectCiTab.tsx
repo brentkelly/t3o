@@ -54,6 +54,7 @@ import {
   normalizeBoardCiParallel,
   removeBoardCiStep,
 } from "./boardProjectSettings.logic";
+import { BoardProjectLoadSensitive } from "./BoardProjectLoadSensitive";
 import { BoardProjectCiFixAgent } from "./BoardProjectPipelineTab";
 import { useBoardSettingsContext } from "./BoardSettingsLayout";
 import type { BoardProjectConfigState } from "./useBoardProjectConfig";
@@ -504,6 +505,16 @@ export function BoardProjectCiTab(props: {
           Fix agent
         </SectionHeading>
         <BoardProjectCiFixAgent config={props.config} projectId={props.projectId} />
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <SectionHeading note="Flaked on a busy machine; scripts may defer them to the nightly.">
+          Load-sensitive tests
+        </SectionHeading>
+        <BoardProjectLoadSensitive
+          entries={full === null ? null : (full.loadSensitive ?? [])}
+          projectId={props.projectId}
+        />
       </section>
 
       <ScriptContractHelp />
