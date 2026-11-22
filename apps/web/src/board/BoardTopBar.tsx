@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
+import { cn } from "../lib/utils";
 import { BoardModeTabs } from "./BoardModeTabs";
 import { BoardInput } from "./ui/BoardInput";
 
@@ -20,7 +21,7 @@ export function BoardTopBar({
   readonly mode?: "board" | "list";
 }) {
   return (
-    <WorkspacePageHeader className="gap-2" electron={isElectron}>
+    <WorkspacePageHeader className="relative gap-2" electron={isElectron}>
       <BoardBrand />
       <BoardModeTabs mode={mode} />
       <span className="flex-1" />
@@ -76,12 +77,33 @@ export function BoardCardFilterField({
   readonly onQueryChange: (query: string) => void;
   readonly query: string;
 }) {
+  const empty = query.length === 0;
   return (
-    <div className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-input bg-popover px-2 shadow-xs/5 focus-within:border-ring sm:h-6.5 dark:bg-input/32">
-      <SearchIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+    // T3o (T3O-134): a label, so on a phone the bare search icon an empty, unfocused field
+    // shrinks to still focuses the one input; focused, it widens across the header.
+    <label
+      aria-label="Search cards"
+      className={cn(
+        "group/filter flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-input bg-popover px-2 shadow-xs/5 focus-within:border-ring sm:h-6.5 dark:bg-input/32",
+        "max-sm:focus-within:absolute max-sm:focus-within:inset-x-3 max-sm:focus-within:z-20 max-sm:focus-within:h-10 max-sm:[&_input]:text-base",
+        empty &&
+          "max-sm:not-focus-within:size-11 max-sm:not-focus-within:justify-center max-sm:not-focus-within:border-transparent max-sm:not-focus-within:bg-transparent max-sm:not-focus-within:px-0 max-sm:not-focus-within:shadow-none",
+      )}
+    >
+      <SearchIcon
+        aria-hidden="true"
+        className={cn(
+          "size-3.5 shrink-0 text-muted-foreground",
+          empty && "max-sm:group-not-focus-within/filter:size-4.5",
+        )}
+      />
       <BoardInput
         aria-label="Filter cards"
-        className="inline-flex w-24 min-w-0 sm:w-28 [&_input]:h-6"
+        className={cn(
+          "inline-flex w-24 min-w-0 sm:w-28 [&_input]:h-6 max-sm:group-focus-within/filter:flex-1",
+          empty &&
+            "max-sm:group-not-focus-within/filter:w-0 max-sm:group-not-focus-within/filter:opacity-0",
+        )}
         look="filter"
         nativeInput
         onChange={(event) => onQueryChange(event.currentTarget.value)}
@@ -109,6 +131,6 @@ export function BoardCardFilterField({
           <XIcon className="size-3" />
         </button>
       ) : null}
-    </div>
+    </label>
   );
 }

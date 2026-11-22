@@ -124,6 +124,8 @@ function BoardGroupBlock({
               className={cn(
                 BOARD_CHIP_CLASS,
                 "cursor-pointer transition-colors hover:bg-accent hover:text-foreground",
+                // T3o (T3O-134): a touch-sized hit area, so a near miss does not open the card instead.
+                "relative pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5 pointer-coarse:after:content-['']",
               )}
               onClick={(event) => {
                 event.stopPropagation();

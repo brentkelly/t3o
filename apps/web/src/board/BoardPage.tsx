@@ -1588,7 +1588,10 @@ function EnvironmentBoard({
             onOpenCard={(cardId) => patchSearch((previous) => ({ ...previous, card: cardId }))}
             workers={cardWorkersState}
           />
-          <BoardUsageChip inView={usageInView} />
+          {/* T3o (T3O-134): spend stays off a phone's header; Usage is in the corner menu. */}
+          <span className="contents max-sm:hidden">
+            <BoardUsageChip inView={usageInView} />
+          </span>
           {/* T3o: hidden on a board with no remote workers (T3O-87). */}
           {cardWorkersState.workers.length === 0 ? null : (
             <BoardWorkerFilterButton
@@ -1615,7 +1618,12 @@ function EnvironmentBoard({
             total={workerUnfilteredCount}
           />
         )}
-        <div className="flex shrink-0 items-center gap-3 px-3 py-2 sm:px-5">
+        <div
+          className={cn(
+            "flex min-w-0 shrink-0 items-center gap-3 px-3 py-2 max-sm:gap-1.5 sm:px-5",
+            scope.kind === "sub-board" && "max-sm:flex-wrap",
+          )}
+        >
           {scope.kind === "sub-board" ? (
             <>
               {/* Back goes up one level: to the group above, or the
@@ -1708,13 +1716,15 @@ function EnvironmentBoard({
               title="Show only stalled cards: recovery gave up and a human is needed"
             >
               <TriangleAlertIcon />
-              {showStalledOnly ? "Stalled only" : `Stalled ${stalledCount}`}
+              {/* T3o (T3O-134): icon and count only on a phone. */}
+              <span className="max-sm:sr-only">{showStalledOnly ? "Stalled only" : "Stalled"}</span>
+              {showStalledOnly ? null : <span>{stalledCount}</span>}
             </Button>
           ) : null}
           {scope.kind === "root" ? (
             <Button onClick={() => setArchiveOpen(true)} size="xs" variant="ghost">
               <ArchiveIcon />
-              Archived
+              <span className="max-sm:sr-only">Archived</span>
             </Button>
           ) : null}
         </div>

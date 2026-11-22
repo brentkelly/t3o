@@ -79,7 +79,7 @@ export function BoardSubBoardHeader({
   const target = boardGroupTargetLabel(shells, parentShell);
   const autoBuild = group === null ? "" : boardGroupAutoBuildLabel(group);
   return (
-    <div className="flex min-w-0 items-center gap-2.5">
+    <div className="flex min-w-0 items-center gap-2.5 max-sm:flex-wrap max-sm:gap-y-1.5">
       <span
         className={cn(
           "inline-flex h-4 shrink-0 items-center rounded px-1.5 text-board-10 font-semibold tracking-wide",
