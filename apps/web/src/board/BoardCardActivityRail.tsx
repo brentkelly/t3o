@@ -93,6 +93,26 @@ function ActorName({
   return <span className="font-medium text-muted-foreground">{actor.name ?? "System"}</span>;
 }
 
+/** Where an agent's write to this card came from: its own card, and the worker it ran on
+    when that differs from this card's. A schedule run has no card. */
+function ActorSource({
+  actor,
+  workerName,
+}: {
+  readonly actor: BoardCardActivityEntry["actor"];
+  readonly workerName: (workerId: BoardWorkerId) => string;
+}) {
+  const { sourceCardKey, sourceWorkerId } = actor;
+  if (sourceCardKey === undefined && sourceWorkerId === undefined) return null;
+  return (
+    <span>
+      {" via "}
+      {sourceCardKey ?? "schedule"}
+      {sourceWorkerId === undefined ? null : ` on ${workerName(sourceWorkerId)}`}
+    </span>
+  );
+}
+
 function ActivityIcon({
   kind,
   payload,
@@ -295,7 +315,17 @@ function describeCardEdit(payload: BoardCardActivityEntry["payload"]): string {
       ? null
       : dependencies("removed", payload.dependenciesRemoved),
   ].filter((part) => part !== null);
-  return parts.length === 0 ? "edited the card" : parts.join(" and ");
+  if (parts.length > 0) return parts.join(" and ");
+  switch (payload.editKind) {
+    case "regrouped":
+      return "regrouped the card";
+    case "moved":
+      return "moved the card";
+    case "automation":
+      return "changed its automation";
+    default:
+      return "edited the card";
+  }
 }
 
 /** The sentence for one row, built from its typed payload. A payload field that
@@ -685,7 +715,8 @@ function ActivityRow({
         <ActivityIcon kind={entry.kind} payload={entry.payload} />
       </span>
       <span className="min-w-0 flex-1 text-pretty">
-        <ActorName agents={agents} entry={entry} />{" "}
+        <ActorName agents={agents} entry={entry} />
+        <ActorSource actor={entry.actor} workerName={workerName} />{" "}
         {activitySentence(entry, stages, projectNames, workerName)}
         {onOpenCi !== undefined && CI_ACTIVITY_KINDS.has(entry.kind) ? (
           <>

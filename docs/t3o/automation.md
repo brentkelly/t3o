@@ -58,6 +58,9 @@ included.
   It's bounded: at most 3 new cards per pass, none once 10 are open in the project, a flake card
   files no cards of its own, and a flake card's own test is never flaky on it. Flakes over a limit
   are only listed on the tested card (`ciFlakeCards.ts`).
+- **A group's toggles are the authorisation for the cards in it.** A card moved into a group
+  inherits the group's toggles, and an agent may regroup without asking; only turning a toggle on,
+  on a card or in a group's settings, needs a human (`T3O-114`).
 - **Only a person turns a toggle off.** Dragging a card backwards turns off the toggle for the stage
   it left (see `board-auto-plan.md`), and so does an agent moving it back with `board_move_card`,
   which acts for a person. Nothing else turns a toggle off, and a failure never does.

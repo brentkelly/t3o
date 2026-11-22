@@ -124,8 +124,11 @@ server placed and forwards the call over the connection the **central server** h
 relay stream plus a respond RPC, carried over the worker's own outbound tunnel since `T3O-84`, so
 agents never learn the board's address). The central server authorizes twice:
 the calling thread must be linked to a card **or** be a t3o.json schedule run the board recorded
-(`T3O-118`), **and** that card or run must be on the worker the call arrived from, so one worker
-cannot touch another worker's cards. Relayed calls must be safe to
+(`T3O-118`), **and** that card or run must be on the worker the call arrived from. A relayed write
+may then name a card on any worker (`T3O-114`): only delete, cancel-work and whole-group archive
+are refused for another worker's card, since they throw that machine's work away for good. Group
+cards belong to no worker, so the check applies to leaf cards only. Every agent write to another
+card records the source card and worker in that card's activity. Relayed calls must be safe to
 repeat, because a dropped connection can deliver one twice. When the central server is not
 connected the tool returns a retryable "board unreachable" error, never a silent success.
 
@@ -356,7 +359,9 @@ Backlog. A group whose last live child leaves reverts to an ordinary card at its
 capped at Sprint, unless it is a heading. A started leaf cannot become a group. Dependencies may
 cross groups, are cycle-checked across the whole tree (a group waits for its children), and are
 refused along a card's own ancestry; a dependency on a group is met when the group reaches Done.
-Regrouping is one `move-cards` primitive; agents may regroup only with a human's explicit approval.
+Regrouping is one `move-cards` primitive; agents regroup freely, and a group's Automation toggles
+authorise whatever cards sit in it (`T3O-114`). Turning the Auto-plan, Auto sign-off, Auto-build or
+Auto-merge toggle on, on a card or in a group's settings, still needs a human.
 
 On a distributed board the integration branch is **cut on the group's worker and pushed**, and
 children cut their branches **from the remote**, so a child placed on another worker never needs
@@ -477,7 +482,9 @@ a human act unless listed below.
 - Done → archived after the configured window, when auto-archive is enabled (D15).
 - **Automation toggles** (T3O-38): each card has Auto-plan, Auto-build and Auto-merge, each on,
   off or inherited from its parent group. Turning one on is the human act that authorises the
-  transition it names, for that card — set ahead of time rather than clicked at the moment.
+  transition it names, for that card — set ahead of time rather than clicked at the moment. An
+  agent may turn one on, on a card or a group, only with a human's explicit approval; a card
+  moved into a group inherits the group's toggles with no further approval (`T3O-114`).
   - Auto-plan: the planning run is unattended; the agent decides what is left and logs each
     decision. Alone, its plan still waits at the approval gate (Planning → Ready stays human).
   - Auto-plan + Auto-build: the plan is approved when it arrives, unclear decisions included, and
