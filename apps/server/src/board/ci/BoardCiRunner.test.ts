@@ -911,7 +911,7 @@ it.live("tells each step the host's CPU pressure, and whether that is under load
       });
     const loaded = yield* runAt(72.44);
     assert.include(loaded.tail, "P=72 U=1");
-    assert.strictEqual(loaded.cpuPressure, 72.4);
+    assert.strictEqual(loaded.cpuPressure, 72);
     assert.strictEqual(loaded.underLoad, true);
     const calm = yield* runAt(30);
     assert.include(calm.tail, "P=30 U=none");
@@ -920,6 +920,10 @@ it.live("tells each step the host's CPU pressure, and whether that is under load
     // The project's own threshold decides; at it is under load.
     const atThreshold = yield* runAt(30, 30);
     assert.include(atThreshold.tail, "P=30 U=1");
+    // What the step is told is what decides: a reading shown as 50 is under a 50 threshold.
+    const roundsUp = yield* runAt(49.6, 50);
+    assert.include(roundsUp.tail, "P=50 U=1");
+    assert.strictEqual(roundsUp.underLoad, true);
     const unknown = yield* runAt(null);
     assert.include(unknown.tail, "P=none U=none");
     assert.isUndefined(unknown.cpuPressure);

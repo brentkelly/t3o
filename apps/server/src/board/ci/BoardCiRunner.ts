@@ -635,14 +635,16 @@ interface BoardCiLoad {
 
 function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad | null {
   if (pressure === null) return null;
-  return { cpuPressure: Math.round(pressure * 10) / 10, underLoad: pressure >= threshold };
+  // Whole percent, as the step and the CI pane see it, so all three agree on "under load".
+  const cpuPressure = Math.round(pressure);
+  return { cpuPressure, underLoad: cpuPressure >= threshold };
 }
 
 /** The environment a step is told the load through. Unknown pressure sets neither. */
 function boardCiLoadEnv(load: BoardCiLoad | null): Readonly<Record<string, string>> {
   if (load === null) return {};
   return {
-    T3O_CPU_PRESSURE: String(Math.round(load.cpuPressure)),
+    T3O_CPU_PRESSURE: String(load.cpuPressure),
     ...(load.underLoad ? { T3O_UNDER_LOAD: "1" } : {}),
   };
 }
