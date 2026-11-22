@@ -1,3 +1,4 @@
+import { T } from "gt-react";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset } from "./ui/sidebar";
 import { isElectron } from "../env";
@@ -13,11 +14,13 @@ export function NoActiveThreadState() {
           {/* T3o: Threads/Board mode tabs — the Board entry must survive the no-thread state. */}
           <BoardModeTabs className="mr-2" mode="threads" />
           {isElectron ? (
-            <span className="text-xs text-muted-foreground/50">No active thread</span>
+            <span className="text-xs text-muted-foreground/50">
+              <T>No active thread</T>
+            </span>
           ) : (
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
-                No active thread
+                <T>No active thread</T>
               </span>
             </div>
           )}
@@ -26,9 +29,11 @@ export function NoActiveThreadState() {
         <Empty className="flex-1">
           <div className="w-full max-w-lg px-8 py-12">
             <EmptyHeader className="max-w-none">
-              <EmptyTitle>Pick a thread to continue</EmptyTitle>
+              <EmptyTitle>
+                <T>Pick a thread to continue</T>
+              </EmptyTitle>
               <EmptyDescription>
-                Select an existing thread or create a new one to get started.
+                <T>Select an existing thread or create a new one to get started.</T>
               </EmptyDescription>
             </EmptyHeader>
           </div>

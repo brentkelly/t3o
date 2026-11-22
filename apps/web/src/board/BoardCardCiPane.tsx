@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowSecond } from "../hooks/useNowSecond";
 import { cn } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -174,7 +174,9 @@ function StepProgress({
 
 /** The pass's log folder, copyable for a terminal. */
 function LogDirRow({ logDir }: { readonly logDir: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "log folder" });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("log folder"),
+  });
   return (
     <div className="flex min-w-0 items-center gap-2 border-t border-border px-3 py-2 text-board-11 text-muted-foreground">
       <span className="shrink-0">Logs</span>

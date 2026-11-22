@@ -20,8 +20,9 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   ThreadId,
+  type EnvironmentAuthorizationError,
 } from "@t3tools/contracts";
-import { subagentAwaitsApproval } from "@t3tools/shared/agentAwareness";
+import { subagentAwaitsUser } from "@t3tools/shared/agentAwareness";
 import { boardThreadSessionStatus, boardThreadStateSource } from "@t3tools/shared/boardThreadState";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -75,7 +76,8 @@ type ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
 type DispatchError =
   | Orchestrator.OrchestratorV2Error
   | ThreadManagement.ThreadManagementProviderInstanceDisabledError
-  | AttachmentClaims.AttachmentClaimError;
+  | AttachmentClaims.AttachmentClaimError
+  | EnvironmentAuthorizationError;
 
 /** The message the board's own turns carry as their author. The board stands
     in for the human who set the card up, exactly as v2's own usage-limit
@@ -818,18 +820,22 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
       attachments: ReadonlyArray<ChatAttachment>,
     ) =>
       Effect.flatMap(freshMessageId, (messageId) =>
-        ThreadMessageIntake.dispatchCommand({
-          type: "message.dispatch",
-          commandId,
-          threadId: input.threadId,
-          messageId,
-          text: input.text,
-          attachments,
-          dispatchMode: { type: "start_immediately" },
-          // Only where the provider steers in place; `auto` may resolve to an interrupt-restart.
-          ...(steer ? { deliveryIntent: "steer" as const } : {}),
-          ...BOARD_AUTHOR,
-        }),
+        ThreadMessageIntake.dispatchCommand(
+          {
+            type: "message.dispatch",
+            commandId,
+            threadId: input.threadId,
+            messageId,
+            text: input.text,
+            attachments,
+            dispatchMode: { type: "start_immediately" },
+            // Only where the provider steers in place; `auto` may resolve to an interrupt-restart.
+            ...(steer ? { deliveryIntent: "steer" as const } : {}),
+            ...BOARD_AUTHOR,
+          },
+          // The board acts for the server itself, which holds every scope.
+          { managesProviders: true },
+        ),
       ).pipe(Effect.provideContext(intakeServices));
     // The claim is all-or-nothing and runs before the dispatch, so nothing
     // was committed: the turn goes again without its attachments, which
@@ -1247,7 +1253,7 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
           }
           for (const childId of children) {
             const child = yield* projections.getThreadShell(childId);
-            if (child !== null && child.deletedAt === null && subagentAwaitsApproval(child)) {
+            if (child !== null && child.deletedAt === null && subagentAwaitsUser(child)) {
               return true;
             }
           }

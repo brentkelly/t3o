@@ -296,3 +296,47 @@ export const runBoardMigrations = Effect.fn("runBoardMigrations")(function* () {
     : Effect.log("Board migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
   return executedMigrations;
 });
+
+const LATEST_BOARD_MIGRATION_ID = Math.max(...BOARD_MIGRATIONS.map(([id]) => id));
+
+/**
+ * Whether `withBoardDatabase` would write board schema: a legacy layout to heal or
+ * a board migration to run. Attaches `boards` first, which writes nothing.
+ */
+export const hasPendingBoardMigrations = Effect.fn("hasPendingBoardMigrations")(function* () {
+  yield* attachBoardDatabase();
+  const sql = yield* SqlClient.SqlClient;
+  const legacy = yield* sql<{ readonly name: string }>`
+    SELECT name FROM main.sqlite_master
+    WHERE type = 'table' AND (substr(name, 1, 6) = 'board_' OR name = ${BOARD_MIGRATION_TABLE})
+  `;
+  if (legacy.length > 0) return true;
+  const upstreamLedger = yield* sql<{ readonly name: string }>`
+    SELECT name FROM main.sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (upstreamLedger.length > 0) {
+    const legacyRows = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM main.effect_sql_migrations
+      WHERE migration_id >= ${LEGACY_BOARD_ID_FLOOR}
+    `;
+    if ((legacyRows[0]?.count ?? 0) > 0) return true;
+  }
+  const ledger = yield* sql<{ readonly name: string }>`
+    SELECT name FROM boards.sqlite_master WHERE type = 'table' AND name = ${BOARD_MIGRATION_TABLE}
+  `;
+  if (ledger.length === 0) return true;
+  const [latest] = yield* sql<{ readonly id: number | null }>`
+    SELECT MAX(migration_id) AS id FROM ${sql(BOARD_MIGRATION_TABLE_QUALIFIED)}
+  `;
+  return (latest?.id ?? 0) < LATEST_BOARD_MIGRATION_ID;
+});
+
+/** Wraps upstream's migrate step in the board lineage, so one ownership check covers both. */
+export const withBoardDatabase = Effect.fn("withBoardDatabase")(function* <A, E, R>(
+  migrate: Effect.Effect<A, E, R>,
+) {
+  yield* initialiseBoardDatabase().pipe(Effect.orDie);
+  const result = yield* migrate;
+  yield* runBoardMigrations().pipe(Effect.orDie);
+  return result;
+});

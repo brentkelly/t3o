@@ -23,7 +23,7 @@ import { memo, useContext, useEffect, useRef, useState } from "react";
 
 import { Dialog, DialogPopup } from "../components/ui/dialog";
 import { toastManager } from "../components/ui/toast";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { observeResize } from "../lib/observeResize";
 import { cn } from "../lib/utils";
 import { boardEnvironment } from "../state/board";
@@ -280,7 +280,9 @@ export function BoardCiLogDialogView({
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
   const [content, setContent] = useState<HTMLDivElement | null>(null);
   const targetedRef = useRef(false);
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "CI log" });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("CI log"),
+  });
 
   const progress = view === null ? null : latestProgress(view);
   const highlight =

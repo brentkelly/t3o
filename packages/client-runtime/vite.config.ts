@@ -7,6 +7,10 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     // T3o: one temp folder per test run, removed at the end.
     globalSetup: ["../shared/src/testing/runTempDir.ts"],
-    setupFiles: ["../shared/src/testing/longTempDir.ts", "../shared/src/testing/providerEnv.ts"],
+    setupFiles: [
+      "../shared/src/testing/longTempDir.ts",
+      "../shared/src/testing/providerEnv.ts",
+      "../shared/src/testing/gitEnv.ts",
+    ],
   },
 });

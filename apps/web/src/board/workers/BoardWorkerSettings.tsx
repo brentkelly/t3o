@@ -5,7 +5,7 @@
  */
 import type { EnvironmentId } from "@t3tools/contracts";
 
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { boardSearchableSetting } from "../boardSettingsSearch";
 import { SettingsSection } from "../../components/settings/settingsLayout";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
@@ -29,7 +29,7 @@ export function BoardWorkersSettingsPage() {
   usePruneWorkerThreadEnvironments(environmentId);
   const addWorker = useAddWorker({ environmentId, workers });
   const boardAddress = useBoardSettings((settings) => settings.board.workers.boardAddress);
-  const workersAnchor = searchableSetting("board-workers");
+  const workersAnchor = boardSearchableSetting("board-workers");
 
   return (
     <SettingsSection

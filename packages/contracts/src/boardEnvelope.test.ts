@@ -25,6 +25,7 @@ import {
   boardAutoPlanInstruction,
   BOARD_ENVELOPE_DECISION_LOG,
   BOARD_ENVELOPE_BUILD_DELIVERABLE,
+  BOARD_ENVELOPE_MERGE_GUARD,
   BOARD_ENVELOPE_MOVE_GUARD,
   BOARD_ENVELOPE_PLAN_DELIVERABLE,
   BOARD_ENVELOPE_QUESTION_MECHANISM,
@@ -97,6 +98,11 @@ describe("boardStepPostamble (envelope split)", () => {
         const prompt = promptFor({ role, humanInLoop, prompt: "Rewritten from scratch." });
         expect(prompt).toContain("board_complete_step");
         expect(prompt).toContain(BOARD_ENVELOPE_MOVE_GUARD);
+        // The board owns the merge, on every stage (T3O-133).
+        expect(prompt.indexOf(BOARD_ENVELOPE_MERGE_GUARD)).toBeGreaterThan(-1);
+        expect(prompt.indexOf(BOARD_ENVELOPE_MERGE_GUARD)).toBeLessThan(
+          prompt.indexOf(BOARD_ENVELOPE_MOVE_GUARD),
+        );
       }
     }
   });

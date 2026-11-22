@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { showAnchoredCopySuccessToast } from "../ui/anchoredCopyToast";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { InlineButton } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -22,10 +21,9 @@ const CACHE_KEY = "t3o:latest-release";
 /** T3o's stand-in for upstream's AboutVersionTitle: the T3o and T3 Code versions, copyable. */
 export function T3oReleaseInfo() {
   const line = versionLine(stamp);
-  const copyButtonRef = useRef<HTMLButtonElement>(null);
+  // Like upstream's version copy, a success shows no toast.
   const { copyToClipboard } = useCopyToClipboard<void>({
-    target: "version",
-    onCopy: () => showAnchoredCopySuccessToast(copyButtonRef),
+    target: namedClipboardTarget("version"),
     onError: (error) => {
       toastManager.add(
         stackedThreadToast({
@@ -45,7 +43,6 @@ export function T3oReleaseInfo() {
           <TooltipTrigger
             render={
               <InlineButton
-                ref={copyButtonRef}
                 tone="muted"
                 aria-label={`Copy version ${line}`}
                 onClick={() => copyToClipboard(line, undefined)}

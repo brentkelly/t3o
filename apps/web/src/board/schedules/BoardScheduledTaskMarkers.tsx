@@ -17,6 +17,7 @@ import { FileJsonIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import type { ReactNode } from "react";
 
+import { Badge } from "../../components/ui/badge";
 import { cn } from "../../lib/utils";
 import { boardEnvironment } from "../../state/board";
 import { useEnvironmentQuery } from "../../state/query";
@@ -218,4 +219,10 @@ export function BoardScheduledTasksIntro() {
       puts back what the file says.
     </p>
   );
+}
+
+/** A board rule (a webhook that runs the board instead of a prompt) is labelled (T3O-78). */
+export function BoardRuleBadge(props: { readonly task: ScheduledTask }) {
+  if (props.task.boardAction === undefined) return null;
+  return <Badge variant="outline">Board rule</Badge>;
 }

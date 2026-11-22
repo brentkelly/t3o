@@ -18,7 +18,7 @@ import {
 } from "../components/ui/select";
 import { SettingsSection } from "../components/settings/settingsLayout";
 import { BoardSettingsCard, BoardSettingsCardRow } from "./settings/boardSettingsCards";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { boardSearchableSetting } from "./boardSettingsSearch";
 import { updateClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useBoardEnvironment } from "./useBoardEnvironmentId";
@@ -68,7 +68,7 @@ const selectBoardEnvironmentId = (settings: {
 
 /** Settings → Board: which server's board this device shows. */
 export function BoardServerSection() {
-  const anchor = searchableSetting("board-server");
+  const anchor = boardSearchableSetting("board-server");
   const nominated = useClientSettings(selectBoardEnvironmentId);
   const primary = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();

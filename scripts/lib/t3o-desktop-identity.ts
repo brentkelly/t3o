@@ -6,14 +6,15 @@
  */
 export const T3O_DESKTOP_IDENTITY = {
   productName: "T3o",
-  /** Debian package, executable and the .deb entry's StartupWMClass. */
+  /** Debian package and executable. */
   packageName: "t3o",
   description: "T3o — T3 Code with a supervised engineering board.",
   homepage: "https://github.com/brentkelly/t3code-orchestrator",
   maintainer: "brentkelly <brentkelly@users.noreply.github.com>",
   appId: "com.brentkelly.t3o",
   devAppId: "com.brentkelly.t3o.dev",
-  linuxWmClass: "t3o",
+  /** The .deb entry's StartupWMClass: Electron's WM_CLASS follows `linuxDesktopEntryName`. */
+  linuxWmClass: "com.brentkelly.t3o",
   /**
    * The runtime-written portal identity entry. Deliberately not `t3o.desktop`: the .deb installs
    * that one, and a hidden per-user entry of the same id would shadow it out of the app menu.
