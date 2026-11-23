@@ -85,7 +85,9 @@ export function BoardCardFilterField({
       aria-label="Search cards"
       className={cn(
         "group/filter flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-input bg-popover px-2 shadow-xs/5 focus-within:border-ring sm:h-6.5 dark:bg-input/32",
-        "max-sm:focus-within:absolute max-sm:focus-within:inset-x-3 max-sm:focus-within:z-20 max-sm:focus-within:h-10 max-sm:[&_input]:text-base",
+        "max-sm:focus-within:absolute max-sm:focus-within:z-20 max-sm:focus-within:h-10 max-sm:[&_input]:text-base",
+        // Widened over the header, it keeps to the header's own insets (see WorkspacePageHeader).
+        "max-sm:focus-within:left-(--workspace-gutter-start) max-sm:focus-within:right-(--workspace-gutter-end) max-sm:focus-within:[[data-sidebar-state]_&]:left-(--workspace-titlebar-content-left) wco:max-sm:focus-within:right-(--workspace-native-controls-inset)",
         empty &&
           "max-sm:not-focus-within:size-11 max-sm:not-focus-within:justify-center max-sm:not-focus-within:border-transparent max-sm:not-focus-within:bg-transparent max-sm:not-focus-within:px-0 max-sm:not-focus-within:shadow-none",
       )}

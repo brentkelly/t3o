@@ -20,6 +20,9 @@ export const boardCardDetailsSheetClass = (open: boolean) =>
     !open && "max-sm:hidden",
   );
 
+/** Tailwind's `max-sm`, the width at which the rail is the sheet. */
+const PHONE_QUERY = "(width < 40rem)";
+
 export interface BoardCardDetailsSheet {
   readonly open: boolean;
   readonly setOpen: (open: boolean) => void;
@@ -35,6 +38,8 @@ export function useBoardCardDetailsSheet(): BoardCardDetailsSheet {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.isComposing) return;
+      // Widened past a phone, the rail is inline again and the open state is moot.
+      if (!window.matchMedia(PHONE_QUERY).matches) return;
       const target = event.target;
       const ours =
         target === document.body ||

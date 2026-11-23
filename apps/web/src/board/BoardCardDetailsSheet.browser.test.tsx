@@ -57,6 +57,41 @@ describe("the phone Details sheet (T3O-134)", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("stops guarding Escape once a sheet opened on a phone is inline again", async () => {
+    await page.viewport(390, 844);
+    const onClose = vi.fn();
+    await using _screen = await render(
+      <BoardCardDetailView
+        {...baseProps}
+        detail={detail({ stage: BOARD_SEED_STAGE_IDS.building })}
+        detailsStatus="attention"
+        onClose={onClose}
+        projectName="P"
+      />,
+    );
+    const button = page.getByRole("button", { name: "Details: Needs you" });
+    await userEvent.click(button);
+    await expect.element(button).toHaveAttribute("aria-expanded", "true");
+
+    await page.viewport(1280, 800);
+    await expect.element(sheet()).toBeVisible();
+    // Focus in the now-inline rail, where the guard used to claim Escape for a hidden sheet.
+    const inRail = [...sheet().element().querySelectorAll<HTMLElement>("button")].find((b) =>
+      b.checkVisibility(),
+    );
+    inRail?.focus();
+    expect(document.activeElement).toBe(inRail);
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // The card closes and the sheet's own state is left for when the window narrows.
+    expect(
+      page
+        .getByRole("button", { name: "Details: Needs you", includeHidden: true })
+        .element()
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
   it("leaves the rail inline at desktop width, with no panel button", async () => {
     await page.viewport(1280, 800);
     await using _screen = await render(

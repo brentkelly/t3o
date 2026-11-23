@@ -822,7 +822,8 @@ export function BoardListView(props: BoardListViewProps) {
           {usageTotal === null ? null : (
             <div
               className={cn(
-                "grid h-9 items-center gap-x-3 px-2.5 text-board-11-5 font-semibold text-foreground",
+                // T3o (T3O-134): a phone hides the figure cells, which would leave a bare label.
+                "grid h-9 items-center gap-x-3 px-2.5 text-board-11-5 font-semibold text-foreground max-sm:hidden",
                 GRID_COLUMNS,
               )}
               data-board-list-usage-total
