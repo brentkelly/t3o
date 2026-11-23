@@ -229,6 +229,8 @@ export default defineConfig({
       "apps/mobile/modules/t3-highlights/cpp/generated/**",
       "apps/mobile/modules/t3-highlights/nitrogen/generated/**",
       "*.icon/**",
+      // T3o: the .plans/ prototype is pulled verbatim from a claude.ai artifact; formatting it breaks the sync.
+      ".plans/prototype/**",
     ],
     sortPackageJson: {},
     overrides: [
