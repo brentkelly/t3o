@@ -26,7 +26,14 @@ import { validateBoardSearch, type BoardSearch } from "../routes/board";
 import { useBoardAttentionSettle } from "./boardAttentionSettle";
 import { BoardCardDetail } from "./BoardCardDetail";
 import { BoardListView } from "./BoardListView";
-import { BoardProjectScopeSelect } from "./BoardProjectScopeSelect";
+import { BoardProjectFilter } from "./BoardProjectFilter";
+import {
+  boardCardInProjectScope,
+  boardEffectiveProjectScope,
+  boardProjectScopePipelineProjects,
+  parseBoardProjectScope,
+  serializeBoardProjectScope,
+} from "./boardProjectScope";
 import { BoardServerUnavailableNotice } from "./BoardServerSettings";
 import { BoardCardFilterField, BoardTopBar } from "./BoardTopBar";
 import { useBoardUiStore } from "./boardUiStore";
@@ -86,13 +93,11 @@ function EnvironmentList({ environmentId }: { readonly environmentId: Environmen
   const projects = allProjects.filter(
     (project) => !isBoardProjectHidden(boardSettings, project.id),
   );
-  const scopeProjectId = (search.project ?? null) as ProjectId | null;
-  const scopeIsStale =
-    scopeProjectId !== null &&
-    allProjects.length > 0 &&
-    !projects.some((project) => project.id === scopeProjectId);
-  const scopeIsHidden =
-    scopeProjectId !== null && isBoardProjectHidden(boardSettings, scopeProjectId);
+  const projectSelection = parseBoardProjectScope(search.project);
+  const effectiveProjectSelection = boardEffectiveProjectScope(
+    projectSelection,
+    projects.map((project) => project.id),
+  );
 
   // Every live card of every visible project: a group's rules read across
   // projects, and a child in another project still shows under its group.
@@ -100,8 +105,7 @@ function EnvironmentList({ environmentId }: { readonly environmentId: Environmen
     Object.values(columns).flat(),
   );
   const shells = allShells.filter((card) => !isBoardProjectHidden(boardSettings, card.projectId));
-  const inScope = (card: BoardCardShell) =>
-    scopeProjectId === null || card.projectId === scopeProjectId;
+  const inScope = (card: BoardCardShell) => boardCardInProjectScope(card, projectSelection);
 
   // "Needs you" agrees with the board's card faces: same settle grace.
   const threadShellOf = (threadId: ThreadId) => threadShellsById.get(threadId);
@@ -129,8 +133,15 @@ function EnvironmentList({ environmentId }: { readonly environmentId: Environmen
   const setBoardQuery = useBoardUiStore((state) => state.setBoardQuery);
   const setQuery = (next: string) => setBoardQuery(LIST_QUERY_KEY, next);
 
-  const patchSearch = (updater: (previous: BoardSearch) => BoardSearch) => {
-    void navigate({ to: ".", search: (previous) => updater(validateBoardSearch(previous)) });
+  const patchSearch = (
+    updater: (previous: BoardSearch) => BoardSearch,
+    options?: { readonly replace?: boolean },
+  ) => {
+    void navigate({
+      to: ".",
+      search: (previous) => updater(validateBoardSearch(previous)),
+      replace: options?.replace === true,
+    });
   };
   const openCard = (cardId: string) => patchSearch((previous) => ({ ...previous, card: cardId }));
   const closeCard = () =>
@@ -139,10 +150,11 @@ function EnvironmentList({ environmentId }: { readonly environmentId: Environmen
       return rest;
     });
   const openBoard = (parentCardId: string) => {
+    const project = serializeBoardProjectScope(projectSelection);
     void navigate({
       to: "/board/$parentCardId",
       params: { parentCardId },
-      search: scopeProjectId === null ? {} : { project: scopeProjectId },
+      search: project === undefined ? {} : { project },
     });
   };
   return (
@@ -160,25 +172,25 @@ function EnvironmentList({ environmentId }: { readonly environmentId: Environmen
         keyPrefixFor={keyPrefixFor}
         onOpenBoard={openBoard}
         onOpenCard={openCard}
-        projects={
-          scopeProjectId === null
-            ? projects
-            : projects.filter((project) => project.id === scopeProjectId)
-        }
+        projects={boardProjectScopePipelineProjects(projects, effectiveProjectSelection)}
         query={query}
         scopeControl={
-          <BoardProjectScopeSelect
+          <BoardProjectFilter
             accentNameFor={accentNameFor}
-            onChange={(projectId) =>
-              patchSearch((previous) => {
-                const { project: _project, ...rest } = previous;
-                return projectId === null ? rest : { ...rest, project: projectId };
-              })
+            isHidden={(projectId) => isBoardProjectHidden(boardSettings, projectId)}
+            onChange={(selection) =>
+              patchSearch(
+                (previous) => {
+                  const { project: _project, ...rest } = previous;
+                  const project = serializeBoardProjectScope(selection);
+                  return project === undefined ? rest : { ...rest, project };
+                },
+                { replace: true },
+              )
             }
             projects={projects}
-            scopeIsHidden={scopeIsHidden}
-            scopeIsStale={scopeIsStale}
-            scopeProjectId={scopeProjectId}
+            projectsLoaded={allProjects.length > 0}
+            selection={projectSelection}
           />
         }
         shells={shells}

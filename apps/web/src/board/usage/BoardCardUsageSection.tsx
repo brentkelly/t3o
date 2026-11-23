@@ -263,7 +263,8 @@ export function BoardCardUsageSection({
           </div>
         </div>
       ) : null}
-      <div className="flex flex-col overflow-hidden rounded-board-10 border border-border bg-card">
+      {/* T3o (T3O-134): its fixed columns scroll inside the box on a phone, not the page. */}
+      <div className="flex flex-col overflow-hidden rounded-board-10 border border-border bg-card max-sm:overflow-x-auto max-sm:*:min-w-120">
         <div
           className={cn(
             GRID,

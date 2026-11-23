@@ -4,6 +4,7 @@
  * (`SidebarProvider` is still mounted) so parity needs no upstream edits.
  */
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { useState } from "react";
 
 import { SidebarUtilityMenu } from "../components/sidebar/SidebarChrome";
 import { cn } from "../lib/utils";
@@ -11,12 +12,14 @@ import { useBoardUiStore } from "./boardUiStore";
 
 /**
  * Space the column scroller reserves so no card rests under the pill: 14px inset
- * + 40px pill + 6px. Unchanged when the menu collapses, so columns never reflow
- * under the cursor.
+ * + 40px pill + 6px, plus a phone's home-indicator inset. Unchanged when the menu
+ * collapses, so columns never reflow under the cursor.
  */
-export const BOARD_UTILITY_MENU_RESERVED_SPACE = "pb-15";
+export const BOARD_UTILITY_MENU_RESERVED_SPACE =
+  "pb-[calc(--spacing(15)+env(safe-area-inset-bottom))]";
 
-const CORNER = "fixed bottom-3.5 left-3.5 z-40 flex items-center rounded-xl border p-0.75";
+const CORNER =
+  "fixed bottom-[calc(--spacing(3.5)+env(safe-area-inset-bottom))] left-3.5 z-40 flex items-center rounded-xl border p-0.75";
 const GLASS = cn(
   "border-border/70 bg-popover/62 backdrop-blur-(--glass-blur) backdrop-saturate-(--glass-saturation)",
   "shadow-board-menu dark:shadow-board-menu-dark",
@@ -28,25 +31,42 @@ const TOGGLE =
 export function BoardUtilityMenu() {
   const collapsed = useBoardUiStore((state) => state.utilityMenuCollapsed);
   const setCollapsed = useBoardUiStore((state) => state.setUtilityMenuCollapsed);
+  // T3o (T3O-134): a phone starts collapsed whatever the store says; Show opens it for this mount.
+  const [phoneExpanded, setPhoneExpanded] = useState(false);
 
-  if (collapsed) {
-    return (
-      <div className={cn(CORNER, GLASS)}>
-        <button
-          aria-expanded={false}
-          aria-label="Show menu"
-          className={cn(TOGGLE, "w-[30px]")}
-          onClick={() => setCollapsed(false)}
-          type="button"
-        >
-          <ChevronRightIcon />
-        </button>
-      </div>
-    );
-  }
+  const collapsedToggle = (className?: string) => (
+    <div className={cn(CORNER, GLASS, className)}>
+      <button
+        aria-expanded={false}
+        aria-label="Show menu"
+        className={cn(TOGGLE, "w-[30px] max-sm:size-11")}
+        onClick={() => {
+          setPhoneExpanded(true);
+          setCollapsed(false);
+        }}
+        type="button"
+      >
+        <ChevronRightIcon />
+      </button>
+    </div>
+  );
+
+  if (collapsed) return collapsedToggle();
 
   return (
-    <div className={cn(CORNER, GLASS, "gap-0.5")}>
+    <>
+      {phoneExpanded ? null : collapsedToggle("sm:hidden")}
+      {expandedMenu(phoneExpanded ? undefined : "max-sm:hidden", () => {
+        setPhoneExpanded(false);
+        setCollapsed(true);
+      })}
+    </>
+  );
+}
+
+function expandedMenu(className: string | undefined, onHide: () => void) {
+  return (
+    <div className={cn(CORNER, GLASS, "gap-0.5", className)}>
       {/* `SidebarMenu` is `w-full`; inside a shrink-to-fit corner pill it has
           to size to its items instead. A wrapper class, not an upstream edit. */}
       <div className="flex items-center [&_[data-sidebar=menu]]:w-auto [&_[data-sidebar=menu]]:gap-0.5">
@@ -56,8 +76,8 @@ export function BoardUtilityMenu() {
       <button
         aria-expanded
         aria-label="Hide menu"
-        className={cn(TOGGLE, "w-[22px]")}
-        onClick={() => setCollapsed(true)}
+        className={cn(TOGGLE, "w-[22px] max-sm:h-11 max-sm:w-8")}
+        onClick={onHide}
         type="button"
       >
         <ChevronLeftIcon />

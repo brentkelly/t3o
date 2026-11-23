@@ -75,8 +75,8 @@ confirm first.
 ## Regrouping in the List view
 
 The **List** tab, between Board and Threads (also **Go to List** in the command palette), shows
-every card in the project scope as an outline, with each group's children indented under it. It
-uses the same project picker as the board and keeps its own filter text. Filtering by text or by
+every card in the selected projects as an outline, with each group's children indented under it.
+It uses the same project filter as the board and keeps its own filter text. Filtering by text or by
 stage keeps the matching cards and the groups above them; those groups are dimmed and open
 automatically.
 

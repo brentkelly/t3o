@@ -9,7 +9,7 @@ import { Suspense, lazy } from "react";
 const BoardPage = lazy(() => import("../board/BoardPage"));
 
 export interface BoardSearch {
-  /** Project scope; absent means "All projects" (a view, not an entity). */
+  /** T3o: the project filter, comma-separated sorted ids (`boardProjectScope.ts`); absent means every project. */
   readonly project?: string;
   /** Deep-linked card: selected and scrolled into view on open. */
   readonly card?: string;

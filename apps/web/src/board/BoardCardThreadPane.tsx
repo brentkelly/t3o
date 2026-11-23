@@ -49,6 +49,7 @@ import { BoardHint } from "./BoardHint";
 import { type BoardQueueInfo, forceStartHint, forceStartLabel } from "./boardQueueInfo";
 import { BoardThreadWorkerGate } from "./workers/BoardThreadWorkerGate";
 import { threadWorkerChip, threadWorkerOpensOn } from "./workers/threadWorker";
+import { splitBoardThreadTabTitle } from "./boardThreadTabTitle";
 
 const NO_THREAD_IDS: ReadonlyArray<ThreadId> = [];
 
@@ -153,6 +154,23 @@ function BoardCardMissingChat({
 }
 
 /** Where the open thread runs (prototype 6.4): "Running on B01", or amber while its worker is offline. */
+/** The card-key prefix stays for desktop and screen readers; a phone shows the rest. */
+function BoardThreadTabTitle({
+  cardKey,
+  title,
+}: {
+  readonly cardKey: string;
+  readonly title: string;
+}) {
+  const { prefix, rest } = splitBoardThreadTabTitle(cardKey, title);
+  return (
+    <>
+      {prefix === "" ? null : <span className="max-sm:sr-only">{prefix}</span>}
+      {rest}
+    </>
+  );
+}
+
 function ThreadWorkerChip({ link }: { readonly link: BoardDetailThreadLink }) {
   const chip = threadWorkerChip({
     worker: link.worker,
@@ -171,7 +189,11 @@ function ThreadWorkerChip({ link }: { readonly link: BoardDetailThreadLink }) {
             : "border-border text-muted-foreground",
         )}
       >
-        <span className="truncate">{chip.text}</span>
+        <span className="truncate">
+          {/* T3o (T3O-134): "Ran on SRV" is "SRV" on a phone. */}
+          {chip.prefix === "" ? null : <span className="max-sm:sr-only">{chip.prefix}</span>}
+          {chip.name}
+        </span>
       </span>
     </BoardHint>
   );
@@ -361,7 +383,11 @@ export function BoardCardThreadPane({
                       <MessageSquareIcon className="size-3 shrink-0 opacity-70" />
                     )}
                     <span className="max-w-40 truncate whitespace-nowrap">
-                      {link.title ?? "Deleted thread"}
+                      {link.title === null ? (
+                        "Deleted thread"
+                      ) : (
+                        <BoardThreadTabTitle cardKey={cardKey} title={link.title} />
+                      )}
                     </span>
                     {(() => {
                       // Per-tab todo counts: the point of tabs is choosing
@@ -411,7 +437,8 @@ export function BoardCardThreadPane({
         {selected === null || selected.tombstoned ? null : <ThreadWorkerChip link={selected} />}
         <BoardHint label={maximised ? "Exit fullscreen" : "Fullscreen"}>
           <button
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded-board-7 border border-input bg-popover text-muted-foreground shadow-xs hover:bg-accent hover:text-foreground"
+            // T3o (T3O-134): the phone card is already full-screen.
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-board-7 border border-input bg-popover text-muted-foreground shadow-xs hover:bg-accent hover:text-foreground max-sm:hidden"
             onClick={onToggleMaximised}
             type="button"
           >
@@ -420,7 +447,7 @@ export function BoardCardThreadPane({
         </BoardHint>
         {selected !== null && !selected.tombstoned ? (
           <Link
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded-board-7 border border-input bg-popover text-muted-foreground shadow-xs hover:bg-accent hover:text-foreground"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-board-7 border border-input bg-popover text-muted-foreground shadow-xs hover:bg-accent hover:text-foreground max-sm:hidden"
             params={{ environmentId: selected.worker.environmentId, threadId: selected.threadId }}
             title={
               selected.worker.workerId === BOARD_LOCAL_WORKER_ID

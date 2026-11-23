@@ -143,6 +143,8 @@ export interface BoardColumnProps extends BoardColumnDragProps {
   readonly hint?: string | undefined;
   /** A control beside the hint, e.g. Deferred's New phase. */
   readonly headerAction?: ReactNode;
+  /** What an empty column says; the project filter's "No cards from the selected projects". */
+  readonly emptyLabel?: string | undefined;
 }
 
 /** The column's drag-over and drop handlers, which route a refused column to
@@ -187,7 +189,7 @@ function CollapsedColumn(props: BoardColumnProps) {
         className={cn(
           // `self-stretch` against the row's `items-start`: a collapsed rail is a
           // full-height target, while expanded columns size to their cards.
-          "flex w-11 shrink-0 cursor-pointer flex-col items-center gap-2.5 self-stretch rounded-xl border border-transparent bg-foreground/5 py-2.5 transition-colors hover:bg-foreground/10",
+          "flex w-11 shrink-0 cursor-pointer flex-col items-center gap-2.5 self-stretch rounded-xl max-sm:snap-start border border-transparent bg-foreground/5 py-2.5 transition-colors hover:bg-foreground/10",
           BOARD_COLUMN_DARK_SURFACE,
           isOver && "border-ring bg-foreground/10 dark:bg-board-column-drop-dark",
           refused && "border-dashed border-foreground/30",
@@ -253,6 +255,7 @@ function ExpandedColumn(props: BoardColumnProps) {
     dropRefusal,
     hint,
     headerAction,
+    emptyLabel,
   } = props;
   // Cards may be created only into Backlog, Sprint or Planning; the
   // add affordance is absent from the other five columns entirely.
@@ -285,7 +288,8 @@ function ExpandedColumn(props: BoardColumnProps) {
       // A foreground tint, not `--muted` (invisible over a near-white page). Height
       // follows the cards with a floor; the board row scrolls when a column outgrows it.
       className={cn(
-        "flex min-h-[104px] w-[268px] shrink-0 flex-col rounded-xl border border-transparent bg-foreground/5 p-2.5 transition-colors",
+        // Phones: the scroller's width less a peek of the next column (the scroller is the `@container`).
+        "flex min-h-[104px] w-[268px] shrink-0 flex-col rounded-xl max-sm:w-[calc(100cqw-3.5rem)] max-sm:snap-start border border-transparent bg-foreground/5 p-2.5 transition-colors",
         BOARD_COLUMN_DARK_SURFACE,
         isOver && "border-ring/60 bg-foreground/10 dark:bg-board-column-drop-dark",
         removed === true && !isOver && "border-dashed border-foreground/20 bg-transparent",
@@ -300,7 +304,7 @@ function ExpandedColumn(props: BoardColumnProps) {
             Taking it out of flow lets the title sit flush and indent only
             while the header is hovered. */}
         <Button
-          className="-ml-1 hidden group-hover/column-header:inline-flex"
+          className="-ml-1 hidden group-hover/column-header:inline-flex [@media(hover:none)]:inline-flex"
           onClick={() => onSetCollapsed(stage, true)}
           size="icon-xs"
           title="Collapse column"
@@ -372,7 +376,7 @@ function ExpandedColumn(props: BoardColumnProps) {
       >
         {cards.length === 0 && !showPlaceholder ? (
           <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-border/60 text-xs text-muted-foreground">
-            No cards
+            {emptyLabel ?? "No cards"}
           </div>
         ) : (
           <>

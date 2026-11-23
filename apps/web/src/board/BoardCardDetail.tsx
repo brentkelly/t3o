@@ -115,6 +115,8 @@ import {
 } from "./boardCardThreadMenu";
 import type { BoardActivityAgentLookup } from "./BoardCardActivityRail";
 import { boardStageLabel } from "./boardStages";
+import { useBoardAttentionSettle } from "./boardAttentionSettle";
+import { boardCardDetailsStatus } from "./boardCardDetailsStatus";
 import { boardToast } from "./boardToast";
 import { indexBoardLabels } from "./labelColour";
 import {
@@ -396,6 +398,22 @@ export function BoardCardDetail({
       disagree. No `now` is passed: the chip's settle grace must not delay this. */
   const stepHeld =
     cardShell !== undefined && boardCardAttention({ card: cardShell, stages })?.reason === "held";
+  // T3o (T3O-134): the phone Details button's status, through the card face's settle grace.
+  const cardThreadShells = useAtomValue(boardEnvironment.cardThreadShellsAtom(environmentId));
+  const { threadIdleSinceByCard, now: attentionNow } = useBoardAttentionSettle({
+    cards: cardShell === undefined ? [] : [cardShell],
+    threadOf: (threadId) => cardThreadShells.get(threadId),
+  });
+  const detailsStatus = (() => {
+    if (cardShell === undefined) return null;
+    const threadIdleSince = threadIdleSinceByCard.get(String(cardShell.cardId));
+    const attention = boardCardAttention({
+      card: threadIdleSince === undefined ? cardShell : { ...cardShell, threadIdleSince },
+      stages,
+      now: attentionNow,
+    });
+    return boardCardDetailsStatus(attention, cardShell.blocked);
+  })();
   /** Whether the card's live step has given up — the failure
       banner's gate and the reason a non-auto-executing stage still offers a
       restart. */
@@ -1250,6 +1268,7 @@ export function BoardCardDetail({
 
   const view = (
     <BoardCardDetailView
+      detailsStatus={detailsStatus}
       group={groupView}
       stageLadderDeferred={parentIsGroup && groupView === null}
       stalledReason={cardShell?.stalledReason}

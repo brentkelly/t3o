@@ -37,8 +37,9 @@ removed while any card, archived included, sits in it.
 
 ## On the board
 
-The board shows a column for every stage a project in view uses. In the All projects view, a stage
-only some projects use carries a half-filled circle: hover it for who uses it, or click it for the
+The board shows a column for every stage a project in view uses. When the project filter shows more
+than one project (none selected, or several), a stage only some of them use carries a half-filled
+circle: hover it for who uses it, or click it for the
 list, each project linking to its pipeline settings.
 
 A stage switched off for a project while its cards sit in it stays, as a dashed **Off** column, until

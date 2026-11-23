@@ -214,7 +214,7 @@ export function BoardLabelField(props: BoardLabelFieldProps) {
                   <BoardHint label="Change colour">
                     <button
                       aria-label={`Change the colour of ${label.name}`}
-                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-board-5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-board-5 text-muted-foreground hover:bg-accent hover:text-foreground max-sm:size-11"
                       onClick={() => {
                         setEditingColourFor((current) =>
                           current === label.labelId ? null : label.labelId,
@@ -229,7 +229,8 @@ export function BoardLabelField(props: BoardLabelFieldProps) {
                   <BoardHint label="Delete label">
                     <button
                       aria-label={`Delete the label ${label.name}`}
-                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-board-5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground"
+                      // T3o (T3O-134): on touch there is no hover, so an invisible but tappable delete would be a trap.
+                      className="inline-flex size-5 shrink-0 items-center justify-center rounded-board-5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground max-sm:size-11 [@media(hover:none)]:opacity-100"
                       onClick={() => {
                         props.onDelete(label.labelId);
                       }}

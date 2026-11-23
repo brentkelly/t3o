@@ -45,7 +45,7 @@ vi.mock(import("../state/use-atom-command"), () => ({
   }) as never,
 }));
 
-import { BoardProjectScopeSelect } from "./BoardProjectScopeSelect";
+import { BoardProjectFilter } from "./BoardProjectFilter";
 import { BoardListView } from "./BoardListView";
 
 const STAGES = { cards: [], stages: BOARD_SEED_STAGES, nextCardNumberByProject: {} };
@@ -118,13 +118,13 @@ async function renderList(
         projects={[{ id: ProjectId.make("p1"), title: "Project one" }]}
         query={query}
         scopeControl={
-          <BoardProjectScopeSelect
+          <BoardProjectFilter
             accentNameFor={() => null}
+            isHidden={() => false}
             onChange={() => undefined}
             projects={[{ id: ProjectId.make("p1"), title: "Project one" }]}
-            scopeIsHidden={false}
-            scopeIsStale={false}
-            scopeProjectId={null}
+            projectsLoaded
+            selection={[]}
           />
         }
         shells={shells}

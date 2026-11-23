@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>T3 board on desktop, multi-select project filter</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#18181b}a:hover{color:#000}
+</style>
+</helmet>
+<div style="height: 100vh; min-height: 640px; display: flex; flex-direction: column; background: #fafafa; font-family: Inter, system-ui, sans-serif; color: #18181b; overflow: hidden">
+
+  <header style="display: flex; align-items: center; gap: 18px; padding: 14px 24px 6px; flex-wrap: wrap">
+    <div style="font-size: 18px; font-weight: 700; letter-spacing: -0.02em">T3 <span style="font-weight: 500; color: #52525b">Code</span></div>
+    <div role="group" aria-label="View" style="display: flex; gap: 2px; padding: 3px; background: #efefee; border-radius: 12px">
+      <button aria-pressed="true" style="height: 36px; padding: 0 14px; border: none; border-radius: 9px; background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 7px; font: inherit; font-size: 15px; font-weight: 500; color: #18181b; cursor: pointer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M9 4v16M15 4v16"></path></svg>Board</button>
+      <button aria-pressed="false" style="height: 36px; padding: 0 14px; border: none; border-radius: 9px; background: transparent; display: flex; align-items: center; gap: 7px; font: inherit; font-size: 15px; color: #52525b; cursor: pointer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 5h6M8 12h12M8 19h12M6 5v14"></path></svg>List</button>
+      <button aria-pressed="false" style="height: 36px; padding: 0 14px; border: none; border-radius: 9px; background: transparent; display: flex; align-items: center; gap: 7px; font: inherit; font-size: 15px; color: #52525b; cursor: pointer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"></path></svg>Threads</button>
+    </div>
+    <div style="flex-grow: 1"></div>
+    <button style="height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid #d4d4d8; background: #ffffff; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #18181b; cursor: pointer">≈$7652.97+</button>
+    <button style="height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid #d4d4d8; background: #ffffff; display: flex; align-items: center; gap: 7px; font: inherit; font-size: 14px; color: #27272a; cursor: pointer">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"></rect><rect x="3" y="13" width="18" height="7" rx="2"></rect><path d="M7 7.5h.01M7 16.5h.01"></path></svg>Workers</button>
+  </header>
+
+  <div style="display: flex; align-items: center; gap: 8px; padding: 10px 24px 14px; flex-wrap: wrap">
+    <div role="group" aria-label="Filter by project" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
+      <sc-for list="{{projects}}" as="p" hint-placeholder-count="5">
+        <button onClick="{{p.pick}}" aria-pressed="{{p.active}}" style="height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid {{p.border}}; background: {{p.bg}}; color: {{p.fg}}; display: flex; align-items: center; gap: 8px; font: inherit; font-size: 14.5px; font-weight: {{p.weight}}; cursor: pointer">
+          <span style="width: 12px; height: 3px; border-radius: 2px; background: {{p.dot}}"></span>{{p.label}}
+        </button>
+      </sc-for>
+    </div>
+    <sc-if value="{{anySelected}}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{clearFilter}}" style="height: 34px; padding: 0 10px; border: none; border-radius: 17px; background: transparent; display: flex; align-items: center; gap: 5px; font: inherit; font-size: 14px; color: #3f3f46; cursor: pointer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>Clear</button>
+    </sc-if>
+    <div style="flex-grow: 1"></div>
+    <button style="height: 34px; padding: 0 10px; border: none; border-radius: 10px; background: transparent; display: flex; align-items: center; gap: 7px; font: inherit; font-size: 14.5px; color: #27272a; cursor: pointer">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"></rect><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"></path></svg>Archived</button>
+  </div>
+
+  <main aria-label="Board columns" style="flex-grow: 1; min-height: 0; display: flex; gap: 12px; padding: 0 24px 20px; overflow-x: auto">
+    <sc-for list="{{columns}}" as="col" hint-placeholder-count="5">
+      <sc-if value="{{col.open}}" hint-placeholder-val="{{ true }}">
+        <section style="flex: 0 0 300px; display: flex; flex-direction: column; min-height: 0; background: #efefee; border-radius: 18px">
+          <div style="display: flex; align-items: center; gap: 8px; padding: 12px 8px 8px 18px">
+            <h2 style="margin: 0; font-size: 17px; font-weight: 600; color: #3f3f46; flex-grow: 1">{{col.name}}</h2>
+            <span style="font-size: 14px; color: #52525b">{{col.count}}</span>
+            <button aria-label="Add card to {{col.name}}" style="width: 36px; height: 36px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #3f3f46; cursor: pointer"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+          </div>
+          <div style="flex-grow: 1; min-height: 0; overflow-y: auto; padding: 0 10px 14px; display: flex; flex-direction: column; gap: 10px">
+            <sc-for list="{{col.cards}}" as="c" hint-placeholder-count="3">
+              <a href="#" style="display: flex; flex-direction: column; gap: 9px; text-decoration: none; color: {{c.titleFg}}; background: #ffffff; border: {{c.frame}}; border-radius: 14px; padding: 13px 14px; opacity: {{c.fade}}">
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                  <span style="font-size: 12.5px; font-weight: 600; color: #ffffff; background: {{c.chip}}; border-radius: 6px; padding: 3px 8px">{{c.id}}</span>
+                  <sc-if value="{{c.high}}" hint-placeholder-val="{{ false }}">
+                    <svg width="17" height="14" viewBox="0 0 18 14" role="img" aria-label="High priority"><rect x="1" y="8" width="3.5" height="6" rx="1" fill="#18181b"></rect><rect x="7" y="4" width="3.5" height="10" rx="1" fill="#18181b"></rect><rect x="13" y="0" width="3.5" height="14" rx="1" fill="#18181b"></rect></svg>
+                  </sc-if>
+                  <sc-if value="{{c.input}}" hint-placeholder-val="{{ false }}">
+                    <span style="display: flex; align-items: center; gap: 5px; font-size: 13.5px; font-weight: 600; color: #6d28d9"><span style="width: 9px; height: 9px; border-radius: 5px; background: #8b5cf6"></span>Input needed</span>
+                  </sc-if>
+                </div>
+                <sc-if value="{{c.hasLabel}}" hint-placeholder-val="{{ true }}">
+                  <span style="align-self: flex-start; font-size: 11.5px; font-weight: 600; letter-spacing: 0.05em; color: {{c.labelFg}}; background: {{c.labelBg}}; border-radius: 6px; padding: 3px 8px">{{c.label}}</span>
+                </sc-if>
+                <div style="font-size: 15.5px; line-height: 1.38; font-weight: 500; overflow-wrap: anywhere">{{c.title}}</div>
+                <sc-if value="{{c.hasMeta}}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size: 13px; color: #52525b">{{c.meta}}</div>
+                </sc-if>
+              </a>
+            </sc-for>
+            <sc-if value="{{col.empty}}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 24px 8px; text-align: center; font-size: 13.5px; color: #52525b">No cards from the selected projects</div>
+            </sc-if>
+          </div>
+        </section>
+      </sc-if>
+      <sc-if value="{{col.collapsed}}" hint-placeholder-val="{{ false }}">
+        <button aria-label="Expand {{col.name}}" style="flex: 0 0 56px; border: none; background: #efefee; border-radius: 18px; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 0; font: inherit; color: #3f3f46; cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
+          <span style="font-size: 14px; color: #52525b">{{col.count}}</span>
+          <span style="writing-mode: vertical-rl; font-size: 16px; font-weight: 600">{{col.name}}</span>
+        </button>
+      </sc-if>
+    </sc-for>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var P = {
+      t3o: { label: 't3o', dot: '#c0904f', chip: '#85601f' },
+      walls: { label: 'walls', dot: '#5bb5c9', chip: '#23687f' },
+      z5: { label: 'z5', dot: '#7aa63a', chip: '#4a751c' },
+      platinumhire: { label: 'platinumhire', dot: '#4aa58a', chip: '#24735c' },
+      macjimray: { label: 'macjimray', dot: '#9b7fd6', chip: '#6a4fb0' }
+    };
+    var L = { BUG: ['#fde7e7', '#b42318'], EPIC: ['#e2f1ee', '#1d6a60'], FEATURE: ['#e6eefc', '#2850a8'], 'NIGHTLY-RED': ['#fdeedd', '#a14a04'] };
+    var cols = [
+      { name: 'Backlog', count: '34', cards: [
+        { id: 'Z5-333', proj: 'z5', label: 'BUG', high: true, title: "check forgets its saved passes whenever xtask's tests run" },
+        { id: 'Z5-334', proj: 'z5', label: 'BUG', high: true, title: 'A Cargo.lock change runs every check step' },
+        { id: 'Z5-22', proj: 'z5', label: 'EPIC', title: '1.1 CMS core and admin' },
+        { id: 'Z5-23', proj: 'z5', label: 'EPIC', title: '1.2 Hosting and deploy' }
+      ] },
+      { name: 'Sprint', count: '9', cards: [
+        { id: 'Z5-27', proj: 'z5', label: 'EPIC', title: '2.1 Client AI editing and support assistant level 2', meta: '1 linked' },
+        { id: 'Z5-50', proj: 'z5', label: 'EPIC', title: '1.0: Launch checklist and "how we built site 1" write-up', meta: '4 linked · 1 comment' },
+        { id: 'PLA-9', proj: 'platinumhire', label: 'EPIC', title: 'Stage 5: analytics client app', meta: '5 linked' }
+      ] },
+      { name: 'Planning', count: '1', cards: [
+        { id: 'T3O-134', proj: 't3o', input: true, title: 'Mobile UI review', meta: '1 comment' }
+      ] },
+      { name: 'Ready', count: '0', collapsed: true, cards: [] },
+      { name: 'Building', count: '0', collapsed: true, cards: [] },
+      { name: 'Code review', count: '0', collapsed: true, cards: [] },
+      { name: 'Continuous integration', count: '0', collapsed: true, cards: [] },
+      { name: 'Ready for merge', count: '0', collapsed: true, cards: [] },
+      { name: 'Done', count: '96', done: true, cards: [
+        { id: 'T3O-131', proj: 't3o', label: 'NIGHTLY-RED', title: 'Flaky tests on t3o', meta: '6 comments · 1 task · PR #305 · ≈$7.02+' },
+        { id: 'WAL-111', proj: 'walls', label: 'BUG', title: 'Flaky test: tests/e2e/commentRoles.spec.ts › [e2e]' },
+        { id: 'WAL-84', proj: 'walls', label: 'FEATURE', title: 'Additional site features: wind direction', meta: 'PR #135' }
+      ] }
+    ];
+    var self = this;
+    var sel = this.state.sel || [];
+    var none = sel.length === 0;
+    function tint(hex) { var n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',0.16)'; }
+    var columns = cols.map(function (col) {
+      var shown = col.cards.filter(function (c) { return none || sel.indexOf(c.proj) >= 0; });
+      return { name: col.name, open: !col.collapsed, collapsed: !!col.collapsed,
+        count: none || col.collapsed ? col.count : String(shown.length),
+        empty: !col.collapsed && shown.length === 0,
+        cards: shown.map(function (c) {
+          return Object.assign({}, c, { chip: P[c.proj].chip, high: !!c.high, input: !!c.input,
+            hasLabel: !!c.label, labelBg: c.label ? L[c.label][0] : '', labelFg: c.label ? L[c.label][1] : '',
+            hasMeta: !!c.meta, fade: col.done ? '0.72' : '1', titleFg: '#18181b',
+            frame: c.input ? '2px solid #c4b0f5' : '1px solid #e4e4e7' });
+        }) };
+    });
+    var projects = Object.keys(P).map(function (k) {
+      var on = sel.indexOf(k) >= 0;
+      return { label: P[k].label, dot: P[k].dot, active: on ? 'true' : 'false',
+        bg: on ? tint(P[k].dot) : (none ? '#ffffff' : 'transparent'),
+        border: on ? P[k].dot : '#e4e4e7',
+        fg: on ? '#18181b' : (none ? '#27272a' : '#71717a'),
+        weight: on ? '600' : '500',
+        pick: function () { self.setState({ sel: on ? sel.filter(function (x) { return x !== k; }) : sel.concat([k]) }); } };
+    });
+    return { columns: columns, projects: projects, anySelected: !none,
+      clearFilter: function () { self.setState({ sel: [] }); } };
+  }
+}
+</script>
+</body>
+</html>

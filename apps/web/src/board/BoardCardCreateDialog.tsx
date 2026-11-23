@@ -554,7 +554,8 @@ export function BoardCardCreateDialog({
       {/* Nested popups (stage, project, schedule) portal out of this subtree, so
           their own Enter handling is untouched by Mod+Enter here. */}
       <DialogPopup
-        className="max-h-[86vh] w-[min(600px,100%)] max-w-[600px] overflow-hidden"
+        // T3o (T3O-134): a phone gets the whole sheet below the viewport's top gap.
+        className="max-h-[86vh] w-[min(600px,100%)] max-w-[600px] overflow-hidden max-sm:h-full max-sm:max-h-full"
         onKeyDown={(event) => {
           const pickedPriority = boardCardPriorityFromShortcut({
             altKey: event.altKey,
@@ -639,7 +640,8 @@ export function BoardCardCreateDialog({
           </p>
         ) : null}
 
-        <div className="mt-3 flex min-h-0 flex-[0_1_auto] flex-col gap-4.5 overflow-y-auto border-t border-border px-5 pt-4 pb-5">
+        {/* T3o (T3O-134): 16px fields on a phone, so iOS does not zoom on focus. */}
+        <div className="mt-3 flex min-h-0 flex-[0_1_auto] flex-col gap-4.5 overflow-y-auto border-t border-border px-5 pt-4 pb-5 max-sm:flex-1 max-sm:[&_input]:text-base max-sm:[&_textarea]:text-base">
           {/* Restored-draft banner. Neutral, never blue: the status
               vocabulary reserves `--info` for "running"
               (docs/t3o/status-colours.md), and a draft is not work in
@@ -863,7 +865,7 @@ export function BoardCardCreateDialog({
           </div>
         </div>
 
-        <BoardDialogFooter className="shrink-0">
+        <BoardDialogFooter className="shrink-0 max-sm:pb-board-footer-safe">
           {/* Left of Cancel, and a bare clock until a time is set: the brief
               asks for this to be largely hidden, and it is one of the few
               things on a new card that almost nobody sets. */}
