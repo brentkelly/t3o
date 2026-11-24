@@ -32,6 +32,7 @@ function row(key: string, n: number, dependsOn: ReadonlyArray<string> = []): Boa
     dependsOnNumbers: [],
     outsideDependsOn: [],
     dependencyNote: "no dependencies",
+    waitsOnOutside: [],
     blockers: [],
   };
 }

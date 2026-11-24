@@ -737,7 +737,7 @@ describe("BoardCardDetailPanel", () => {
     const afterApproval = renderToStaticMarkup(
       <BoardCardDetailPanel
         {...baseProps}
-        childShells={splitShells(3)}
+        allShells={splitShells(3)}
         detail={splitDetail({ childCount: 3 })}
         projectName="P"
       />,
@@ -752,7 +752,7 @@ describe("BoardCardDetailPanel", () => {
         {...baseProps}
         // Three plans, three children, one of them archived — the panel still
         // shows three rows, so the pill still says three.
-        childShells={splitShells(2)}
+        allShells={splitShells(2)}
         detail={splitDetail({ childCount: 3, archivedFrom: 2 })}
         projectName="P"
       />,
@@ -764,7 +764,7 @@ describe("BoardCardDetailPanel", () => {
     const html = renderToStaticMarkup(
       <BoardCardDetailPanel
         {...baseProps}
-        childShells={splitShells(3)}
+        allShells={splitShells(3)}
         detail={splitDetail({ childCount: 3, stage: BOARD_SEED_STAGE_IDS.building })}
         projectName="P"
       />,
@@ -783,7 +783,7 @@ describe("BoardCardDetailPanel", () => {
       const threadPane = renderToStaticMarkup(
         <BoardCardDetailPanel
           {...baseProps}
-          childShells={splitShells(3)}
+          allShells={splitShells(3)}
           detail={splitDetail({ childCount: 3, stage })}
           paneChoice="thread"
           projectName="P"
@@ -797,7 +797,7 @@ describe("BoardCardDetailPanel", () => {
     const html = renderToStaticMarkup(
       <BoardCardDetailPanel
         {...baseProps}
-        childShells={splitShells(1)}
+        allShells={splitShells(1)}
         detail={splitDetail({ childCount: 1 })}
         projectName="P"
       />,
@@ -958,7 +958,7 @@ describe("BoardCardDetailPanel", () => {
       return renderToStaticMarkup(
         <BoardCardDetailPanel
           {...baseProps}
-          childShells={splitShells(3)}
+          allShells={splitShells(3)}
           detail={{
             ...detail({
               stage: BOARD_SEED_STAGE_IDS.building,

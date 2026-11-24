@@ -21,13 +21,13 @@ const TONE_DOT: Record<BoardPlanRowTone, string> = {
   gone: "bg-muted-foreground/20",
 };
 
-/** The header's stage slot: a 54px node has no room for a third line, so an
-    outside wait rides beside the stage and the hint carries the full list. */
+/** The header's stage slot: a 54px node has no room for a third line or for
+    stage and wait together, so an outside wait takes the slot and the hint
+    carries the stage and the full list. */
 function planGraphNodeStageSlot(node: BoardPlanGraphNode): string {
-  const stage = node.stageLabel ?? "No card";
   const [first, ...more] = node.waitsOnOutside;
-  if (first === undefined) return stage;
-  return `${stage} · waits on ${first}${more.length > 0 ? ` +${more.length}` : ""}`;
+  if (first === undefined) return node.stageLabel ?? "No card";
+  return `waits on ${first}${more.length > 0 ? ` +${more.length}` : ""}`;
 }
 
 function planGraphNodeHint(node: BoardPlanGraphNode): string {

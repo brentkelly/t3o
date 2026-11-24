@@ -420,6 +420,7 @@ describe("deriveBoardPlanRows", () => {
       { key: "T3-x1", stageLabel: "Backlog", waiting: true },
     ]);
     expect(waiting.dependencyNote).toBe(`after #${byKey("T3-c1").n}, T3-x1`);
+    expect(waiting.waitsOnOutside).toEqual(["T3-x1"]);
     // Siblings first, then outside cards.
     expect(waiting.blockers).toEqual([
       { label: `#${byKey("T3-c1").n}`, stageLabel: "backlog" },
@@ -436,6 +437,7 @@ describe("deriveBoardPlanRows", () => {
     for (const key of ["T3-c4", "T3-c5"]) {
       expect(byKey(key).blockers).toEqual([]);
       expect(byKey(key).dependencyNote).toBe("no dependencies");
+      expect(byKey(key).waitsOnOutside).toEqual([]);
     }
   });
 

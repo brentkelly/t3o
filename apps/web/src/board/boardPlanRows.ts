@@ -96,6 +96,8 @@ export interface BoardPlanRow {
   readonly dependsOnNumbers: ReadonlyArray<number>;
   /** Dependencies on cards outside the group the client holds a shell for. */
   readonly outsideDependsOn: ReadonlyArray<BoardPlanRowOutsideDependency>;
+  /** Keys of the outside cards this live, unfinished row still waits on. */
+  readonly waitsOnOutside: ReadonlyArray<string>;
   /** The row's "after #1, WAL-123" line, or "no dependencies". */
   readonly dependencyNote: string;
   /** The subset still unfinished, which is what actually holds this one up.
@@ -271,6 +273,7 @@ export function deriveBoardPlanRows(input: {
       tone: "idle",
       blockers: [],
       dependencyNote: "",
+      waitsOnOutside: [],
       live:
         state !== "live" || shell === undefined
           ? null
@@ -324,7 +327,13 @@ export function deriveBoardPlanRows(input: {
     const dependencyNote = after.length === 0 ? "no dependencies" : `after ${after.join(", ")}`;
     const tone = toneOf({ ...row, blocked: row.live?.blocked === true });
     const { started: _started, ...rest } = row;
-    return { ...rest, blockers, dependencyNote, tone };
+    return {
+      ...rest,
+      blockers,
+      dependencyNote,
+      waitsOnOutside: outsideWaits.map((dep) => dep.key),
+      tone,
+    };
   });
 
   const live = settled.filter((row) => row.state === "live");
@@ -506,10 +515,7 @@ export function boardPlanGraphLayout(
         tone: row.tone,
         cardId: row.live?.cardId ?? null,
         needsHuman: row.live?.awaitingInput === true || row.live?.awaitingPermission === true,
-        waitsOnOutside:
-          row.state === "live" && !row.done
-            ? row.outsideDependsOn.filter((dep) => dep.waiting).map((dep) => dep.key)
-            : [],
+        waitsOnOutside: row.waitsOnOutside,
         x: at.x,
         y: at.y,
         width: NODE_WIDTH,
