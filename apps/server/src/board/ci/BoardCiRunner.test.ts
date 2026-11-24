@@ -27,6 +27,15 @@ import {
 } from "./BoardCiRunner.ts";
 import { BoardDiskSpace } from "./diskSpace.ts";
 
+// The runner's disk preflight reads the host's real free space; only the disk
+// tests below should see anything but plenty, so a near-full tmpfs can't fail the rest.
+const live = <A, E>(name: string, test: () => Effect.Effect<A, E>) =>
+  it.live(name, () =>
+    test().pipe(
+      Effect.provideService(BoardDiskSpace, { freeBytes: () => Effect.succeed(1024 ** 4) }),
+    ),
+  );
+
 const workdir = () => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o-ci-"));
 
 const request = (cwd: string, steps: BoardCiRunRequest["steps"]): BoardCiRunRequest => ({
@@ -44,7 +53,7 @@ const collect = () => {
   };
 };
 
-it.live("runs every step in the worktree and passes", () =>
+live("runs every step in the worktree and passes", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -74,7 +83,7 @@ it.live("runs every step in the worktree and passes", () =>
   }),
 );
 
-it.live("stops at the first failing step", () =>
+live("stops at the first failing step", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -108,7 +117,7 @@ it.live("stops at the first failing step", () =>
   }),
 );
 
-it.live("times a step out and kills it", () =>
+live("times a step out and kills it", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -128,7 +137,7 @@ it.live("times a step out and kills it", () =>
   }),
 );
 
-it.live("a step settles when its shell exits, even if an escaped child holds the pipes", () =>
+live("a step settles when its shell exits, even if an escaped child holds the pipes", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     // setsid puts the sleeper outside the step's process group, so the group
@@ -143,7 +152,7 @@ it.live("a step settles when its shell exits, even if an escaped child holds the
   }),
 );
 
-it.live("a step's log is complete by the time the step settles", () =>
+live("a step's log is complete by the time the step settles", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const result = yield* runBoardCiPass(
@@ -168,7 +177,7 @@ const awaitExit = (pid: number) =>
     return Effect.sync(() => watcher.kill());
   });
 
-it.live("a group member that ignores TERM is killed after the step exits", () =>
+live("a group member that ignores TERM is killed after the step exits", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const pidFile = NodePath.join(cwd, "pid");
@@ -184,7 +193,7 @@ it.live("a group member that ignores TERM is killed after the step exits", () =>
   }),
 );
 
-it.live("a step that leaves nothing running arms no SIGKILL fallback", () =>
+live("a step that leaves nothing running arms no SIGKILL fallback", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     using timers = vi.spyOn(globalThis, "setTimeout");
@@ -217,7 +226,7 @@ const awaitFile = (path: string) =>
     return Effect.sync(() => watcher.close());
   });
 
-it.live("an interrupted pass kills the step's whole process group", () =>
+live("an interrupted pass kills the step's whole process group", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const started = NodePath.join(cwd, "started");
@@ -236,7 +245,7 @@ it.live("an interrupted pass kills the step's whole process group", () =>
   }),
 );
 
-it.live("decodes a multi-byte character split across output chunks", () =>
+live("decodes a multi-byte character split across output chunks", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -298,7 +307,7 @@ it("caps the whole tail in size on a line boundary", () => {
   assert.isTrue(text.split("\n").every((line) => line.length === 99));
 });
 
-it.live("keeps its logs out of git status in a repo that does not ignore .t3/", () =>
+live("keeps its logs out of git status in a repo that does not ignore .t3/", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     NodeChildProcess.execFileSync("git", ["init", "-q"], { cwd });
@@ -320,7 +329,7 @@ it.live("keeps its logs out of git status in a repo that does not ignore .t3/", 
   }),
 );
 
-it.live("a log directory it cannot create makes the pass unavailable, not a crash", () =>
+live("a log directory it cannot create makes the pass unavailable, not a crash", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     NodeFS.writeFileSync(NodePath.join(cwd, ".t3"), "a file, not a directory");
@@ -334,7 +343,7 @@ it.live("a log directory it cannot create makes the pass unavailable, not a cras
   }),
 );
 
-it.live("runs a parallel group together and stops later groups once it finishes", () =>
+live("runs a parallel group together and stops later groups once it finishes", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -374,7 +383,7 @@ it.live("runs a parallel group together and stops later groups once it finishes"
   }),
 );
 
-it.live("reads the step's result file, which adds detail and never overrides the exit code", () =>
+live("reads the step's result file, which adds detail and never overrides the exit code", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -393,7 +402,7 @@ it.live("reads the step's result file, which adds detail and never overrides the
   }),
 );
 
-it.live("fails a group that leaves tracked changes in the worktree", () =>
+live("fails a group that leaves tracked changes in the worktree", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const git = (args: ReadonlyArray<string>) =>
@@ -451,7 +460,7 @@ it.live("fails a group that leaves tracked changes in the worktree", () =>
   }),
 );
 
-it.live("without stop on failure, runs every step after a failure or a timeout", () =>
+live("without stop on failure, runs every step after a failure or a timeout", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -509,7 +518,7 @@ it("the line reader numbers lines from 1 with each line's byte offset in the log
   assert.deepStrictEqual(reader.flush(), []);
 });
 
-it.live("delivers every output line to onLine, by pass index, before the step settles", () =>
+live("delivers every output line to onLine, by pass index, before the step settles", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const seen: Array<[number, BoardCiLine]> = [];
@@ -535,7 +544,7 @@ it.live("delivers every output line to onLine, by pass index, before the step se
   }),
 );
 
-it.live("a step past its limit settles timed-out even when its kill never lands", () =>
+live("a step past its limit settles timed-out even when its kill never lands", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const tail = new BoardCiTail();
@@ -555,7 +564,7 @@ it.live("a step past its limit settles timed-out even when its kill never lands"
   }),
 );
 
-it.live("a script that isn't a CI step runs without CI's environment", () =>
+live("a script that isn't a CI step runs without CI's environment", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const tail = new BoardCiTail();
@@ -572,7 +581,7 @@ it.live("a script that isn't a CI step runs without CI's environment", () =>
   }),
 );
 
-it.live("a full disk makes the pass unavailable as a machine problem before any step runs", () =>
+live("a full disk makes the pass unavailable as a machine problem before any step runs", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -593,7 +602,7 @@ it.live("a full disk makes the pass unavailable as a machine problem before any 
   }),
 );
 
-it.live("a disk that can't be read never blocks the pass", () =>
+live("a disk that can't be read never blocks the pass", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const result = yield* runBoardCiPass(
@@ -604,7 +613,7 @@ it.live("a disk that can't be read never blocks the pass", () =>
   }),
 );
 
-it.live("reports a script's progress while it runs, and its settled row keeps the last", () =>
+live("reports a script's progress while it runs, and its settled row keeps the last", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -637,7 +646,7 @@ it.live("reports a script's progress while it runs, and its settled row keeps th
   }),
 );
 
-it.live("a failed step's headline points at its line and byte offset in <n>.log", () =>
+live("a failed step's headline points at its line and byte offset in <n>.log", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -671,7 +680,7 @@ it.live("a failed step's headline points at its line and byte offset in <n>.log"
   }),
 );
 
-it.live("a missing tool is a machine problem, and an empty result file is said", () =>
+live("a missing tool is a machine problem, and an empty result file is said", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { emit } = collect();
@@ -696,7 +705,7 @@ it.live("a missing tool is a machine problem, and an empty result file is said",
   }),
 );
 
-it.live("a machine problem in a parallel group outranks an earlier code failure", () =>
+live("a machine problem in a parallel group outranks an earlier code failure", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { emit } = collect();
@@ -730,7 +739,7 @@ it.live("a machine problem in a parallel group outranks an earlier code failure"
   }),
 );
 
-it.live("a passing step carries no headline", () =>
+live("a passing step carries no headline", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
