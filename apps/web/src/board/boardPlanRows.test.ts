@@ -393,7 +393,7 @@ describe("deriveBoardPlanRows", () => {
         // An archived card leaves the snapshot: no shell, so it is met.
         handChild("c1", BOARD_SEED_STAGE_IDS.backlog, ["gone"]),
         handChild("c2", BOARD_SEED_STAGE_IDS.backlog, ["x1", "c1", "x1"]),
-        handChild("c3", BOARD_SEED_STAGE_IDS.backlog, ["x2"]),
+        handChild("c3", BOARD_SEED_STAGE_IDS.backlog, ["x2", "x3"]),
         handChild("c4", BOARD_SEED_STAGE_IDS.done, ["x1"]),
         { ...handChild("c5", BOARD_SEED_STAGE_IDS.backlog, ["x1"]), archivedAt: NOW },
       ],
@@ -404,6 +404,8 @@ describe("deriveBoardPlanRows", () => {
         shell("c4", BOARD_SEED_STAGE_IDS.done),
         outsideShell("x1", BOARD_SEED_STAGE_IDS.backlog),
         outsideShell("x2", BOARD_SEED_STAGE_IDS.done),
+        // An archived shell still in the list is met, as the server counts it.
+        { ...outsideShell("x3", BOARD_SEED_STAGE_IDS.backlog), archivedAt: NOW },
       ],
       stages: BOARD_SEED_STAGES,
     });
@@ -412,13 +414,9 @@ describe("deriveBoardPlanRows", () => {
     expect(liveTotal).toBe(4);
 
     expect(byKey("T3-c1").dependsOn).toEqual([]);
-    expect(byKey("T3-c1").outsideDependsOn).toEqual([]);
     expect(byKey("T3-c1").dependencyNote).toBe("no dependencies");
 
     const waiting = byKey("T3-c2");
-    expect(waiting.outsideDependsOn).toEqual([
-      { key: "T3-x1", stageLabel: "Backlog", waiting: true },
-    ]);
     expect(waiting.dependencyNote).toBe(`after #${byKey("T3-c1").n}, T3-x1`);
     expect(waiting.waitsOnOutside).toEqual(["T3-x1"]);
     // Siblings first, then outside cards.
@@ -429,8 +427,9 @@ describe("deriveBoardPlanRows", () => {
     // Waiting before build is not blocked: the server's flag is false.
     expect(waiting.tone).toBe("idle");
 
-    // A done outside card is nothing to act on.
+    // A done or archived outside card is nothing to act on.
     expect(byKey("T3-c3").blockers).toEqual([]);
+    expect(byKey("T3-c3").waitsOnOutside).toEqual([]);
     expect(byKey("T3-c3").dependencyNote).toBe("no dependencies");
 
     // Neither a finished nor an archived row claims to wait.

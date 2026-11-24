@@ -63,7 +63,7 @@ export interface BoardPlanRowBlocker {
 
 /** A dependency on a card outside the group. It is never a row: it gets no
     `#N` and no node, only a mention in the row's note and the node's header. */
-export interface BoardPlanRowOutsideDependency {
+interface OutsideDependency {
   readonly key: string;
   readonly stageLabel: string;
   /** Live and short of done in a stage this board knows. A stage from another
@@ -94,8 +94,6 @@ export interface BoardPlanRow {
   /** `#N`s of everything this row comes after, whatever their state — the
       row's "after #1, #2" line. */
   readonly dependsOnNumbers: ReadonlyArray<number>;
-  /** Dependencies on cards outside the group the client holds a shell for. */
-  readonly outsideDependsOn: ReadonlyArray<BoardPlanRowOutsideDependency>;
   /** Keys of the outside cards this live, unfinished row still waits on. */
   readonly waitsOnOutside: ReadonlyArray<string>;
   /** The row's "after #1, WAL-123" line, or "no dependencies". */
@@ -125,9 +123,12 @@ export interface BoardPlanRows {
 const EMPTY_ROWS: BoardPlanRows = { rows: [], liveTotal: 0, liveDone: 0 };
 
 /** A row mid-derivation: `blockers` and `tone` need every OTHER row's `done`
-    to be known, so the first pass carries `started` forward and the second
-    settles both. `started` never leaves this module. */
-type DraftPlanRow = BoardPlanRow & { readonly started: boolean };
+    to be known, so the first pass carries `started` and the outside
+    dependencies forward and the second settles both. Neither leaves this module. */
+type DraftPlanRow = BoardPlanRow & {
+  readonly started: boolean;
+  readonly outsideDependsOn: ReadonlyArray<OutsideDependency>;
+};
 
 /**
  * The rows in dependency order: a topological sort, ties broken by input order
@@ -180,16 +181,16 @@ export function deriveBoardPlanRows(input: {
     readonly title: string;
     readonly child: BoardCardChildRef | null;
     readonly dependsOn: ReadonlyArray<string>;
-    readonly outsideDependsOn: ReadonlyArray<BoardPlanRowOutsideDependency>;
+    readonly outsideDependsOn: ReadonlyArray<OutsideDependency>;
   }
   // No shell means archived (deleting a card strips its edges), and an
-  // archived dependency counts as met, so it is dropped.
-  const outsideOf = (child: BoardCardChildRef): ReadonlyArray<BoardPlanRowOutsideDependency> =>
+  // archived dependency counts as met, so it is dropped either way.
+  const outsideOf = (child: BoardCardChildRef): ReadonlyArray<OutsideDependency> =>
     [...new Set(child.dependsOn as ReadonlyArray<string>)]
       .filter((id) => id !== child.cardId && !siblingIds.has(id))
       .flatMap((id) => {
         const shell = shellByCard.get(id);
-        if (shell === undefined) return [];
+        if (shell === undefined || shell.archivedAt !== null) return [];
         return [
           {
             key: shell.key,
@@ -326,7 +327,7 @@ export function deriveBoardPlanRows(input: {
     ];
     const dependencyNote = after.length === 0 ? "no dependencies" : `after ${after.join(", ")}`;
     const tone = toneOf({ ...row, blocked: row.live?.blocked === true });
-    const { started: _started, ...rest } = row;
+    const { started: _started, outsideDependsOn: _outside, ...rest } = row;
     return {
       ...rest,
       blockers,
