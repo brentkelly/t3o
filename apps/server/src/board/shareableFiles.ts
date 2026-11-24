@@ -496,8 +496,12 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
         return;
       }
       const bytes = yield* fs.readFile(target).pipe(Effect.option);
-      if (Option.isSome(bytes)) members.push({ path: `${base}/${rel}`, bytes: bytes.value });
-      else skip("it could not be read");
+      if (Option.isSome(bytes)) {
+        members.push({ path: `${base}/${rel}`, bytes: bytes.value });
+      } else {
+        total -= Number(stat.size);
+        skip("it could not be read");
+      }
     }
   });
   yield* walk(real.value, "");
