@@ -204,9 +204,13 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
         const memberCount = item.kind === "directory" ? item.memberCount : undefined;
         const card = yield* input.readCard;
         if (card === null) return;
-        const existing = card.attachments.find(
+        // More than one copy is left only by a detach that failed: prefer the one that is
+        // current, else the newest, and a replace clears them all.
+        const copies = card.attachments.filter(
           (attachment) => attachment.sourcePath === item.sourcePath,
         );
+        const existing =
+          copies.find((attachment) => attachment.contentHash === item.contentHash) ?? copies.at(-1);
         const done = (name: string) =>
           attached.push({
             name,
@@ -299,13 +303,13 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
           if (existing !== undefined) done(existing.name);
           continue;
         }
-        if (existing !== undefined) {
+        for (const stale of copies) {
           const detached = yield* input
             .dispatch({
               type: "board.card.detach",
               commandId: CommandId.make(yield* mintId("mcp:board-detach:")),
               cardId: card.id,
-              attachmentId: existing.id,
+              attachmentId: stale.id,
               createdAt: addedAt,
             })
             .pipe(Effect.result);
@@ -313,7 +317,7 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
             yield* deleteBoardCardAttachmentFile({
               stateDir: input.stateDir,
               cardId: card.id,
-              name: existing.name,
+              name: stale.name,
             });
           }
         }
@@ -340,10 +344,17 @@ export interface PlanFilesScan {
   readonly fileWarnings: ReadonlyArray<string>;
 }
 
+/** A home directory as another machine may have it: `~/` there resolved to one of these. */
+const HOME_DIR = /^(?:\/root|\/(?:home|Users)\/[^/]+)$/;
+
 /** A cited path names an attachment's recorded source: the same path once normalised, or for a
-    `~/` path, the same path under some home directory (resolved where the file was). */
+    `~/` path, the same path under a home directory (resolved where the file was). */
 const citesSource = (path: Path.Path, cited: string, sourcePath: string): boolean => {
-  if (cited.startsWith("~/")) return sourcePath.endsWith(path.normalize(cited.slice(1)));
+  if (cited.startsWith("~/")) {
+    const rest = path.normalize(cited.slice(1));
+    if (!sourcePath.endsWith(rest)) return false;
+    return HOME_DIR.test(sourcePath.slice(0, -rest.length));
+  }
   const trim = (value: string) => value.replace(/(.)[\\/]+$/, "$1");
   return trim(sourcePath) === trim(path.normalize(cited));
 };

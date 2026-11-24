@@ -76,6 +76,10 @@ const harness = (source: BoardFileSource, start: BoardCard = makeCard()) => {
             if (command.type === "board.card.attach") {
               card = { ...card, attachments: [...card.attachments, command.attachment] };
             }
+            if (command.type === "board.card.detach") {
+              const id = command.attachmentId;
+              card = { ...card, attachments: card.attachments.filter((a) => a.id !== id) };
+            }
           }),
       }),
     readCard: Effect.sync(() => card),
@@ -137,6 +141,52 @@ describe("attachSharedFiles", () => {
       // The body is stored as written, with no footer.
       assert.deepStrictEqual(scan.bodies, ["See `/tmp/s/mock.html`."]);
       assert.deepStrictEqual(h.dispatched, []);
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("a copy a failed detach left behind is matched, then cleared by the next replace", () =>
+    Effect.gen(function* () {
+      const copy = (id: string, contentHash: string): BoardCardAttachment => ({
+        id: BoardCardAttachmentId.make(id),
+        name: `${id}.txt`,
+        type: "file",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        addedAt: "2026-01-01T00:00:00.000Z",
+        sourcePath: "/tmp/s/a",
+        contentHash,
+      });
+      let hash = "hash-/tmp/s/a";
+      const source: BoardFileSource = {
+        inspect: (paths) =>
+          Effect.succeed(paths.map((path) => ({ ...fileItem(path, 1), contentHash: hash }))),
+        read: () =>
+          Effect.succeed({
+            name: "a",
+            mimeType: "text/plain",
+            bytes: new TextEncoder().encode(hash),
+            contentHash: hash,
+          }),
+      };
+      using h = harness(source, {
+        ...makeCard(),
+        attachments: [copy("older", "stale"), copy("newer", "hash-/tmp/s/a")],
+      } as BoardCard);
+      const unchanged = yield* h.attach(["/tmp/s/a"]);
+      assert.deepStrictEqual(h.reads, []);
+      assert.deepStrictEqual(h.dispatched, []);
+      assert.deepStrictEqual(
+        unchanged.attached.map((file) => file.name),
+        ["newer.txt"],
+      );
+
+      hash = "hash-changed";
+      yield* h.attach(["/tmp/s/a"]);
+      const card = yield* h.readCard;
+      assert.deepStrictEqual(
+        card.attachments.map((attachment) => attachment.contentHash),
+        ["hash-changed"],
+      );
     }).pipe(Effect.provide(services)),
   );
 
@@ -218,6 +268,17 @@ describe("scanPlanFiles", () => {
       });
       assert.deepStrictEqual(scan.fileWarnings, []);
       assert.include(scan.bodies[0], "- `mock.html` (on T3-0) (from `/tmp/s/./mock.html`)");
+
+      // A `~/` path is matched under a home directory only, not any path that ends the same.
+      const homed = (sourcePath: string) =>
+        scanPlanFiles({
+          bodies: ["See `~/s/mock.html`."],
+          attach: h.attach,
+          readCard: h.readCard,
+          ancestors: [{ key: "T3-0", attachments: [attachment("mock.html", sourcePath)] }],
+        }).pipe(Effect.map((result) => result.bodies[0]?.includes("(on T3-0)") ?? false));
+      assert.isTrue(yield* homed("/home/dev/s/mock.html"));
+      assert.isFalse(yield* homed("/tmp/s/mock.html"));
     }).pipe(Effect.provide(services)),
   );
 
