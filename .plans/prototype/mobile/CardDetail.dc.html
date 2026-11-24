@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Card detail at phone width</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; display: flex; flex-direction: column; background: #fafafa; font-family: Inter, system-ui, sans-serif; color: #18181b; overflow: hidden; position: relative">
+
+  <header style="display: flex; flex-direction: column; background: #fafafa; border-bottom: 1px solid #e4e4e7; flex-shrink: 0">
+    <div style="display: flex; align-items: center; gap: 6px; padding: 4px 2px 0 14px; height: 48px">
+      <span style="font-size: 13px; color: #52525b">{{card.id}}</span>
+      <sc-if value="{{card.hasParent}}" hint-placeholder-val="{{ true }}">
+      <a href="Main.dc.html" style="display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 7px; background: #ececeb; color: #27272a; text-decoration: none; font-size: 12.5px; font-weight: 500; white-space: nowrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"></path><path d="m3 13 9 5 9-5"></path></svg>{{card.parent}}</a>
+      </sc-if>
+      <div style="flex-grow: 1"></div>
+      <span style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; color: {{card.labelFg}}; background: {{card.labelBg}}; border-radius: 5px; padding: 3px 6px">{{card.label}}</span>
+      <span style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; color: #116a43; background: #dcf3e7; border-radius: 5px; padding: 3px 6px">{{card.status}}</span>
+      <button aria-label="More actions" style="width: 40px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #3f3f46; cursor: pointer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg></button>
+      <a href="Main.dc.html" aria-label="Close card" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #3f3f46">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></a>
+    </div>
+    <h1 title="{{card.title}}" style="margin: 0 16px 10px; font-size: 20px; line-height: 1.28; font-weight: 700; letter-spacing: -0.01em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden">{{card.title}} <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#18181b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Done" style="vertical-align: -2px"><path d="m5 12 5 5 9-10"></path></svg></h1>
+    <div style="display: flex; align-items: center; padding: 0 6px 8px 12px; gap: 4px">
+      <nav aria-label="Card sections" style="flex-grow: 1; min-width: 0; display: flex; gap: 2px; padding: 3px; background: #efefee; border-radius: 12px; overflow-x: auto; scrollbar-width: none">
+        <sc-for list="{{tabs}}" as="t" hint-placeholder-count="6">
+          <button onClick="{{t.pick}}" aria-current="{{t.current}}" style="flex-shrink: 0; height: 36px; padding: 0 12px; border: none; border-radius: 9px; background: {{t.bg}}; box-shadow: {{t.shadow}}; color: {{t.fg}}; font: inherit; font-size: 14px; font-weight: {{t.weight}}; cursor: pointer">{{t.label}}</button>
+        </sc-for>
+      </nav>
+      <button onClick="{{openSheet}}" aria-label="Card details" aria-expanded="{{sheetExpanded}}" style="flex-shrink: 0; width: 44px; height: 44px; border: 1px solid #d4d4d8; background: #ffffff; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: #27272a; cursor: pointer">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M3 14h18"></path></svg></button>
+    </div>
+  </header>
+
+  <main style="flex-grow: 1; min-height: 0; overflow-y: auto">
+
+    <sc-if value="{{isSummary}}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 6px 16px; border-bottom: 1px solid #e4e4e7">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">BUILD SUMMARY</h2>
+        <button onClick="{{toThread}}" style="height: 44px; padding: 0 10px; border: none; background: transparent; display: flex; align-items: center; gap: 4px; font: inherit; font-size: 14px; color: #3f3f46; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>Thread</button>
+      </div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 14px">
+        <p style="margin: 0; font-size: 15px; line-height: 1.55; color: #27272a">Site notes now mark wind as a wind corridor: an entry edge on the lot boundary, a From direction or clockwise range up to 180°, reach, strength, when and season. One wind is shown at a time and switched from a wind rose. Tree, building and the new Windbreak kind carry Shelters from. All of it runs through the kernel, the upgrade of old arrows, MCP, the agent docs, the canvas, the inspector and list, SVG export and render_option.</p>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px">
+          <span style="font-weight: 600; color: #116a43; background: #dcf3e7; border-radius: 6px; padding: 3px 8px">Merged</span>
+          <a href="#" style="color: #1d4ed8; font-weight: 600; text-decoration: none">#135</a>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #52525b">main ← board/wal-84</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+          <div style="background: #ffffff; border: 1px solid #f4c98f; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">CHECKS<span style="width: 7px; height: 7px; border-radius: 4px; background: #f08c00"></span></div>
+            <div style="font-size: 19px; font-weight: 700">7 / 8 passed</div>
+            <div style="display: flex; gap: 3px; height: 4px"><div style="flex: 7; background: #12a26b; border-radius: 2px"></div><div style="flex: 1; background: #f08c00; border-radius: 2px"></div></div>
+            <div style="font-size: 12px; line-height: 1.35; color: #52525b">1 flagged, not from this card</div>
+          </div>
+          <div style="background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">REVIEW<span style="width: 7px; height: 7px; border-radius: 4px; background: #12a26b"></span></div>
+            <div style="font-size: 19px; font-weight: 700">Round 4 of 10</div>
+            <div style="display: flex; height: 4px"><div style="flex: 1; background: #12a26b; border-radius: 2px"></div></div>
+            <div style="font-size: 12px; line-height: 1.35; color: #52525b">35 raised · 35 fixed · 0 rejected</div>
+          </div>
+          <div style="background: #ffffff; border: 1px solid #f4c98f; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">HEADS-UP<span style="width: 7px; height: 7px; border-radius: 4px; background: #f08c00"></span></div>
+            <div style="font-size: 19px; font-weight: 700">10 notes</div>
+            <div style="display: flex; gap: 3px; height: 4px"><div style="flex: 1; background: #f08c00; border-radius: 2px"></div><div style="flex: 4; background: #7c4ddb; border-radius: 2px"></div><div style="flex: 5; background: #dcdcdc; border-radius: 2px"></div></div>
+            <div style="font-size: 12px; line-height: 1.35; color: #52525b">1 not done · 4 plan changes · 5 shortcuts</div>
+          </div>
+          <div style="background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+            <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">COST</div>
+            <div style="font-size: 19px; font-weight: 700">≈$97.38</div>
+            <div style="display: flex; gap: 3px; height: 4px"><div style="flex: 1.2; background: #52525b; border-radius: 2px"></div><div style="flex: 3; background: #8a8a8f; border-radius: 2px"></div><div style="flex: 3.8; background: #b4b4b8; border-radius: 2px"></div><div style="flex: 0.2; background: #d4d4d8; border-radius: 2px"></div></div>
+            <div style="font-size: 12px; line-height: 1.35; color: #52525b">212.17M tokens</div>
+          </div>
+        </div>
+
+        <div style="background: #fff7ea; border: 1px solid #f4c98f; border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px">
+          <div style="display: flex; align-items: center; justify-content: space-between">
+            <span style="font-size: 15px; font-weight: 600; color: #a14a04">1 thing wasn't done</span>
+            <a href="#" style="font-size: 14px; font-weight: 600; color: #a14a04; text-decoration: none; min-height: 32px; display: flex; align-items: center">Details ›</a>
+          </div>
+          <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #27272a">The MCP too-many-points error for facingEdge is written but no test reaches it. A single lot is capped at 256 points, so the error only fires when adjacent titles merge into a larger outline. The kernel refusal itself is tested with a 512-vertex lot.</p>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 16px; border-top: 1px solid #e4e4e7; border-bottom: 1px solid #e4e4e7">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">DETAILS</h2>
+        <button style="height: 44px; padding: 0 8px; border: none; background: transparent; font: inherit; font-size: 14px; color: #3f3f46; cursor: pointer">Expand all</button>
+      </div>
+      <sc-for list="{{details}}" as="d" hint-placeholder-count="5">
+        <button style="width: 100%; border: none; border-bottom: 1px solid #e4e4e7; background: transparent; padding: 12px 16px 12px 10px; display: flex; gap: 6px; text-align: left; font: inherit; color: #18181b; cursor: pointer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 2px"><path d="m9 6 6 6-6 6"></path></svg>
+          <span style="display: flex; flex-direction: column; gap: 7px; min-width: 0">
+            <span style="font-size: 15px"><strong style="font-weight: 600">{{d.title}}</strong> <span style="color: #52525b">{{d.count}}</span></span>
+            <span style="display: flex; flex-wrap: wrap; gap: 5px">
+              <sc-for list="{{d.chips}}" as="ch" hint-placeholder-count="2">
+                <span style="font-size: 12px; font-weight: 500; color: {{ch.fg}}; background: {{ch.bg}}; border-radius: 6px; padding: 3px 7px">{{ch.text}}</span>
+              </sc-for>
+            </span>
+          </span>
+        </button>
+      </sc-for>
+      <div style="height: 32px"></div>
+    </sc-if>
+
+    <sc-if value="{{isReview}}" hint-placeholder-val="{{ false }}">
+      <div style="padding: 6px 8px 8px 16px; border-bottom: 1px solid #e4e4e7; display: flex; flex-direction: column; gap: 4px">
+        <div style="display: flex; align-items: center; justify-content: space-between">
+          <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">ADVERSARIAL REVIEW <span style="font-weight: 500; letter-spacing: 0; font-size: 13px; color: #52525b">· Round 4 of 10</span></h2>
+          <button onClick="{{toThread}}" style="height: 44px; padding: 0 10px; border: none; background: transparent; display: flex; align-items: center; gap: 4px; font: inherit; font-size: 14px; color: #3f3f46; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>Thread</button>
+        </div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; color: #116a43; background: #dcf3e7; border-radius: 7px; padding: 4px 9px">Loop settled: nothing blocking</span>
+      </div>
+      <div style="padding: 14px 12px 28px; display: flex; flex-direction: column; gap: 10px">
+        <div style="background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+          <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px">
+            <sc-for list="{{rounds}}" as="r" hint-placeholder-count="10">
+              <button aria-current="{{r.current}}" style="height: 36px; border-radius: 8px; border: 1px solid {{r.border}}; background: {{r.bg}}; color: {{r.fg}}; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer">{{r.label}}</button>
+            </sc-for>
+          </div>
+          <div style="display: flex; align-items: center; gap: 4px">
+            <span style="flex-grow: 1; font-size: 13px; color: #3f3f46">35 raised · 35 fixed · 0 rejected</span>
+            <button aria-label="Fewer rounds" style="width: 40px; height: 40px; border: none; background: transparent; border-radius: 10px; font: inherit; font-size: 20px; color: #18181b; cursor: pointer">−</button>
+            <button aria-label="More rounds" style="width: 40px; height: 40px; border: none; background: transparent; border-radius: 10px; font: inherit; font-size: 20px; color: #18181b; cursor: pointer">+</button>
+          </div>
+        </div>
+
+        <div style="background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px; overflow: hidden">
+          <button aria-expanded="true" style="width: 100%; border: none; background: transparent; padding: 12px 10px 10px 14px; display: flex; align-items: flex-start; gap: 8px; text-align: left; font: inherit; color: #18181b; cursor: pointer">
+            <span style="flex-grow: 1; display: flex; flex-direction: column; gap: 6px">
+              <span style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap"><strong style="font-size: 15px; font-weight: 600">Round 4</strong>
+                <span style="font-size: 12px; font-weight: 500; color: #116a43; border: 1px solid #8fd6b4; border-radius: 6px; padding: 2px 7px">Clean</span>
+                <span style="font-size: 12px; font-weight: 500; color: #3f3f46; border: 1px solid #d4d4d8; border-radius: 6px; padding: 2px 7px">Settling</span></span>
+              <span style="font-size: 13px; color: #52525b">no findings · 2d ago</span>
+            </span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="margin-top: 2px"><path d="m6 15 6-6 6 6"></path></svg>
+          </button>
+          <div style="padding: 8px 14px; border-top: 1px solid #f0f0ef; border-bottom: 1px solid #f0f0ef; font-size: 13px; color: #52525b; background: #fafafa">Settling · only critical blocks · changes since <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px">28202b7</span></div>
+          <sc-for list="{{steps}}" as="s" hint-placeholder-count="3">
+            <div style="display: flex; gap: 10px; padding: 12px 10px 12px 14px; border-bottom: 1px solid #f0f0ef">
+              <span style="flex-shrink: 0; width: 22px; height: 22px; border-radius: 11px; background: {{s.badgeBg}}; color: #ffffff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center">{{s.n}}</span>
+              <span style="flex-grow: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0">
+                <span style="font-size: 15px; font-weight: 500">{{s.title}}</span>
+                <span style="font-size: 13.5px; line-height: 1.4; color: #52525b">{{s.body}}</span>
+              </span>
+              <sc-if value="{{s.hasThread}}" hint-placeholder-val="{{ false }}">
+                <button aria-label="Open review thread" style="flex-shrink: 0; width: 44px; height: 44px; border: 1px solid #d4d4d8; background: #ffffff; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #27272a; cursor: pointer"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"></path></svg></button>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+
+        <sc-for list="{{pastRounds}}" as="pr" hint-placeholder-count="3">
+          <button aria-expanded="false" style="width: 100%; background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px; padding: 12px 10px 12px 14px; display: flex; align-items: flex-start; gap: 8px; text-align: left; font: inherit; color: #18181b; cursor: pointer">
+            <span style="flex-grow: 1; display: flex; flex-direction: column; gap: 6px">
+              <span style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap"><strong style="font-size: 15px; font-weight: 600">{{pr.name}}</strong>
+                <span style="font-size: 12px; font-weight: 500; color: #b42318; border: 1px solid #f3a9a3; background: #fff5f4; border-radius: 6px; padding: 2px 7px">Changes requested</span></span>
+              <span style="font-size: 13px; color: #52525b"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px">{{pr.ratio}}</span> · {{pr.fixed}} · 2d ago</span>
+            </span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="margin-top: 2px"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+        </sc-for>
+        <div style="border: 1px dashed #d4d4d8; border-radius: 14px; padding: 14px; font-size: 13.5px; line-height: 1.45; color: #52525b; background: #f6f6f5">A round closed with nothing blocking, so the loop is settled.</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{isCards}}" hint-placeholder-val="{{ false }}">
+      <div style="padding: 10px 12px 10px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+        <h2 style="margin: 0; flex-grow: 1; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">CARDS <span style="font-weight: 500; letter-spacing: 0; font-size: 13px">in dependency order</span></h2>
+        <button style="height: 40px; padding: 0 10px; border: 1px solid #d4d4d8; background: #ffffff; border-radius: 10px; display: flex; align-items: center; gap: 6px; font: inherit; font-size: 13.5px; color: #27272a; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>Chart</button>
+        <a href="Main.dc.html" style="height: 40px; padding: 0 10px; box-sizing: border-box; border: 1px solid #d4d4d8; background: #ffffff; border-radius: 10px; display: flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; color: #18181b; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M9 4v16M15 4v16"></path></svg>Board</a>
+      </div>
+      <div style="padding: 10px 12px 28px; display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{children}}" as="k" hint-placeholder-count="8">
+          <a href="CardDetail.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 11px 6px 11px 12px; background: {{k.bg}}; border: 1px solid #e4e4e7; border-radius: 14px; text-decoration: none; color: #18181b">
+            <sc-if value="{{k.done}}" hint-placeholder-val="{{ true }}">
+              <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" style="flex-shrink: 0"><circle cx="12" cy="12" r="11" fill="#18181b"></circle><path d="m7 12.5 3.2 3.2L17 9" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            </sc-if>
+            <sc-if value="{{k.archived}}" hint-placeholder-val="{{ false }}">
+              <span style="flex-shrink: 0; width: 22px; display: flex; justify-content: center"><span style="width: 8px; height: 8px; border-radius: 4px; background: #d4d4d8"></span></span>
+            </sc-if>
+            <span style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+              <span style="font-size: 15px; line-height: 1.35; font-weight: 500; color: {{k.titleFg}}; text-decoration: {{k.strike}}"><span style="color: #52525b; font-weight: 500">#{{k.n}}</span> {{k.title}}</span>
+              <span style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: #52525b">
+                <span style="font-size: 11.5px; font-weight: 500; color: #3f3f46; border: 1px solid #e4e4e7; background: #ffffff; border-radius: 6px; padding: 1px 6px">{{k.state}}</span>{{k.meta}}</span>
+            </span>
+            <sc-if value="{{k.done}}" hint-placeholder-val="{{ true }}">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#71717a" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="flex-shrink: 0"><path d="m9 6 6 6-6 6"></path></svg>
+            </sc-if>
+          </a>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{isThread}}" hint-placeholder-val="{{ false }}">
+      <div style="position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 4px; padding: 6px 8px 6px 4px; background: #fafafa; border-bottom: 1px solid #e4e4e7">
+        <button aria-label="New thread" style="flex-shrink: 0; width: 44px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #3f3f46; cursor: pointer"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+        <div role="tablist" aria-label="Threads on this card" style="flex-grow: 1; min-width: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none">
+          <sc-for list="{{sessions}}" as="se" hint-placeholder-count="3">
+            <button role="tab" onClick="{{se.pick}}" aria-selected="{{se.selected}}" style="flex-shrink: 0; height: 36px; padding: 0 10px; border-radius: 9px; border: 1px solid {{se.border}}; background: {{se.bg}}; color: {{se.fg}}; font: inherit; font-size: 13.5px; font-weight: {{se.weight}}; display: flex; align-items: center; gap: 6px; cursor: pointer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"></path></svg>{{se.label}}</button>
+          </sc-for>
+        </div>
+        <span style="flex-shrink: 0; font-size: 12px; color: #3f3f46; border: 1px solid #e4e4e7; border-radius: 7px; padding: 4px 7px" title="Ran on SRV">SRV</span>
+      </div>
+
+      <div style="padding: 16px 16px 20px; display: flex; flex-direction: column; gap: 14px; font-size: 15px; line-height: 1.55; color: #18181b">
+        <div style="margin-left: 24px; background: #ececeb; border-radius: 18px; padding: 12px 14px 6px; font-size: 14.5px; line-height: 1.5; color: #27272a; display: flex; flex-direction: column">
+          <p style="margin: 0 0 8px">You are working card T3O-129, titled "CI: load-sensitive tests are skipped on a busy machine and left to the nightly; a flake under load files no card". Stage: Code review. Step: Triage · round 2.</p>
+          <p style="margin: 0; color: #71717a">This card's base branch is <code style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; background: #dededc; border-radius: 5px; padding: 1px 5px">t3o</code>. Its work branches off and merges back into that…</p>
+          <button style="align-self: flex-end; height: 40px; border: none; background: transparent; font: inherit; font-size: 14px; color: #3f3f46; cursor: pointer">Show full message</button>
+        </div>
+
+        <button style="align-self: flex-start; height: 40px; padding: 0; border: none; background: transparent; display: flex; align-items: center; gap: 4px; font: inherit; font-size: 14.5px; color: #52525b; cursor: pointer">Worked for 1m 25s<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg></button>
+        <div style="height: 1px; background: #e4e4e7; margin-top: -10px"></div>
+
+        <p style="margin: 0">I fixed round 2's one finding, a nitpick, and recorded the triage step as succeeded. The fix is pushed at <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; background: #ececeb; border-radius: 5px; padding: 1px 5px">d0bb580a8b</code>.</p>
+        <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere">
+          <li><strong>The fix:</strong> when a flake is folded into the agent's list in <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; background: #ececeb; border-radius: 5px; padding: 1px 5px">resumeCiAfterFlakes</code>, it no longer copies in <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; background: #ececeb; border-radius: 5px; padding: 1px 5px">cpuPressure</code>. This PR had already removed that field from the flake type, and nothing read it. The change is one deleted line in <a href="#" style="color: #0e6f7a; text-decoration: none">supervisorReactor.ts</a>.</li>
+          <li><strong>The line I kept:</strong> a similar line around line 5407 builds a CI step failure rather than a flake. That type still has <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px; background: #ececeb; border-radius: 5px; padding: 1px 5px">cpuPressure</code>, so it stays.</li>
+          <li><strong>Checks:</strong> the server typecheck, lint and knip pass. I didn't add a test because behaviour is unchanged, and I didn't run the test suite for this one-line removal.</li>
+        </ul>
+        <p style="margin: 0">I've replied on the review thread in PR #304 saying the same.</p>
+
+        <div style="background: #f3f3f2; border-radius: 12px; overflow: hidden">
+          <div style="display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 12px">
+            <span style="flex-grow: 1; font-size: 14px; font-weight: 500">1 changed file <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #127a4a">+0</span> <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #b42318">-1</span></span>
+            <button style="height: 44px; padding: 0 10px; border: none; background: transparent; display: flex; align-items: center; gap: 5px; font: inherit; font-size: 14px; color: #27272a; cursor: pointer"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8l-5-5Z"></path><path d="M9 13h6M12 10v6"></path></svg>Open diff</button>
+          </div>
+          <button style="width: 100%; min-height: 44px; border: none; background: transparent; display: flex; align-items: center; gap: 8px; padding: 0 12px; font: inherit; text-align: left; cursor: pointer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
+            <span style="flex-grow: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #52525b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">apps/server/src/board</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #127a4a">+0</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #b42318">-1</span>
+          </button>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 6px; font-size: 14px; color: #52525b">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m8.5 12 2.5 2.5 4.5-5"></path></svg>Settled 14h ago ·
+          <button style="height: 40px; padding: 0 2px; border: none; background: transparent; font: inherit; font-size: 14px; font-weight: 500; color: #18181b; cursor: pointer">Un-settle</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{isOther}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 16px; border: 1px dashed #d4d4d8; border-radius: 14px; padding: 18px; font-size: 14px; line-height: 1.5; color: #52525b">{{otherNote}}</div>
+    </sc-if>
+  </main>
+
+  <sc-if value="{{isThread}}" hint-placeholder-val="{{ false }}">
+    <form style="flex-shrink: 0; margin: 0; padding: 6px 10px 18px; background: #fafafa">
+      <div style="border: 1px solid #d4d4d8; border-radius: 18px; background: #ffffff; box-shadow: 0 2px 10px rgba(0,0,0,0.05); display: flex; flex-direction: column">
+        <label style="display: flex">
+          <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Message the agent</span>
+          <textarea rows="2" placeholder="Ask anything. @ files, $ skills, / commands" style="width: 100%; box-sizing: border-box; border: none; resize: none; background: transparent; padding: 12px 14px 4px; font: inherit; font-size: 16px; line-height: 1.4; color: #18181b; outline: none"></textarea>
+        </label>
+        <div style="display: flex; align-items: center; gap: 2px; padding: 0 6px 6px">
+          <button type="button" aria-label="Attach file" style="width: 44px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #52525b; cursor: pointer"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"></path></svg></button>
+          <div style="flex-grow: 1"></div>
+          <button type="button" style="height: 40px; padding: 0 8px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; gap: 6px; font: inherit; font-size: 14.5px; color: #18181b; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"></path></svg>Opus 5.5 <span style="color: #52525b">Medium</span></button>
+          <button type="button" aria-label="Dictate" style="width: 44px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #52525b; cursor: pointer"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg></button>
+          <button type="submit" aria-label="Send" style="width: 44px; height: 44px; border: none; background: #e4e4e7; border-radius: 22px; display: flex; align-items: center; justify-content: center; color: #3f3f46; cursor: pointer"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+        </div>
+      </div>
+    </form>
+  </sc-if>
+
+  <sc-if value="{{sheetOpen}}" hint-placeholder-val="{{ false }}">
+    <div style="position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; justify-content: flex-end">
+      <button onClick="{{closeSheet}}" aria-label="Close details" style="position: absolute; inset: 0; border: none; background: rgba(24,24,27,0.38); cursor: pointer"></button>
+      <section role="dialog" aria-label="Card details" style="position: relative; max-height: 80%; overflow-y: auto; background: #ffffff; border-radius: 22px 22px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,0.15); padding-bottom: 26px">
+        <div style="display: flex; justify-content: center; padding-top: 8px"><span style="width: 40px; height: 5px; border-radius: 3px; background: #d4d4d8"></span></div>
+        <div style="display: flex; align-items: center; padding: 2px 6px 4px 18px">
+          <h2 style="margin: 0; flex-grow: 1; font-size: 16px; font-weight: 600">Details</h2>
+          <button onClick="{{closeSheet}}" aria-label="Close details" style="width: 44px; height: 44px; border: none; background: transparent; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #3f3f46; cursor: pointer"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+        </div>
+        <div style="padding: 4px 16px 14px; border-bottom: 1px solid #f0f0ef; display: flex; flex-direction: column; gap: 8px">
+          <sc-if value="{{card.isEpic}}" hint-placeholder-val="{{ false }}">
+            <a href="Main.dc.html" style="height: 48px; border-radius: 12px; background: #1d4ed8; color: #ffffff; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"></path><path d="m3 13 9 5 9-5"></path></svg>Open board</a>
+            <span style="font-size: 13.5px; color: #52525b">Done: every active child is done.</span>
+          </sc-if>
+          <sc-if value="{{card.hasPr}}" hint-placeholder-val="{{ true }}">
+            <a href="#" style="height: 48px; border-radius: 12px; border: 1px solid #d4d4d8; color: #18181b; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="18" r="2.5"></circle><path d="M6 8.5v7M18 15.5V10a3 3 0 0 0-3-3h-4"></path></svg>View PR <span style="color: #52525b; font-weight: 500">{{card.pr}}</span></a>
+          </sc-if>
+        </div>
+        <label style="display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid #f0f0ef; min-height: 44px">
+          <span style="width: 108px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">LABEL</span>
+          <span style="flex-grow: 1; height: 40px; border: 1px solid #d4d4d8; border-radius: 10px; display: flex; align-items: center; padding: 0 10px; gap: 8px">
+            <span style="font-size: 11.5px; font-weight: 600; letter-spacing: 0.05em; color: {{card.labelFg}}; background: {{card.labelBg}}; border-radius: 5px; padding: 3px 7px">{{card.label}}</span>
+            <span style="flex-grow: 1"></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span>
+        </label>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 0 6px 0 16px; border-bottom: 1px solid #f0f0ef; min-height: 52px">
+          <span style="width: 108px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">DEPENDENCIES</span>
+          <button style="height: 44px; padding: 0 6px; border: none; background: transparent; font: inherit; font-size: 14px; font-weight: 600; color: #18181b; cursor: pointer">+ Add</button>
+          <span style="flex-grow: 1; text-align: right; font-size: 14px; color: #3f3f46; padding-right: 10px">None</span>
+        </div>
+        <sc-for list="{{sheetRows}}" as="row" hint-placeholder-count="3">
+          <button style="width: 100%; min-height: 52px; border: none; border-bottom: 1px solid #f0f0ef; background: transparent; display: flex; align-items: center; gap: 10px; padding: 0 14px 0 16px; text-align: left; font: inherit; color: #18181b; cursor: pointer">
+            <span style="width: 108px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #52525b">{{row.k}}</span>
+            <span style="flex-grow: 1; text-align: right; font-size: 14px">{{row.v}}</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+        </sc-for>
+        <div style="padding: 14px 16px 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: #52525b">
+          <span>Project · <span style="display: inline-block; width: 8px; height: 8px; border-radius: 4px; background: {{card.projectDot}}"></span> <span style="color: #18181b; font-weight: 500">{{card.project}}</span></span>
+          <sc-if value="{{card.hasBranch}}" hint-placeholder-val="{{ false }}"><span>Branch · <span style="color: #18181b; font-weight: 500; font-family: 'JetBrains Mono', monospace; font-size: 13px">{{card.branch}}</span></span></sc-if>
+          <span>Base · <span style="color: #18181b; font-weight: 500">{{card.base}}</span>{{card.baseFrom}}</span>
+          <label style="display: flex; align-items: center; gap: 8px">Worker ·
+            <span style="flex-grow: 1; height: 40px; border: 1px solid #d4d4d8; border-radius: 10px; display: flex; align-items: center; padding: 0 10px; color: #18181b">Any ready worker<span style="flex-grow: 1"></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span></label>
+          <span style="font-size: 13px">Not placed yet: chosen when the build starts</span>
+          <span>Created · {{card.created}}</span>
+        </div>
+      </section>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"card":{"editor":"enum","options":["WAL-84","WAL-55","T3O-129"],"default":"WAL-84"},"tab":{"editor":"enum","options":["summary","review","cards","thread"],"default":"summary"},"sheet":{"editor":"enum","options":["closed","open"],"default":"closed"},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var self = this;
+    var cards = {
+      'WAL-84': { id: 'WAL-84', parent: 'WAL-55', label: 'FEATURE', labelBg: '#e6eefc', labelFg: '#2850a8', status: 'DONE',
+        hasParent: true, project: 'walls', projectDot: '#5bb5c9', base: 'main', hasBranch: false, branch: '', hasThread: false,
+        title: 'Additional site features: wind direction', isEpic: false, hasPr: true, pr: '#135', baseFrom: ' · from WAL-55', created: '2d ago',
+        tabs: ['Thread', 'Review', 'CI', 'Summary', 'Plan', 'Brief'],
+        rows: [{ k: 'ACTIVITY', v: '38' }, { k: 'RESOURCES', v: 'L · M · M' }, { k: 'STAGE', v: 'Done' }] },
+      'WAL-55': { id: 'WAL-55', parent: '15 cards', label: 'EPIC', labelBg: '#e2f1ee', labelFg: '#1d6a60', status: 'DONE',
+        hasParent: true, project: 'walls', projectDot: '#5bb5c9', base: 'main', hasBranch: false, branch: '', hasThread: false,
+        title: 'Agentic spaces design & layout', isEpic: true, hasPr: false, pr: '', baseFrom: '', created: '4d ago',
+        tabs: ['Thread', 'Planning', 'Summary', 'Cards', 'Brief'],
+        rows: [{ k: 'ACTIVITY', v: '44' }] },
+      'T3O-129': { id: 'T3O-129', parent: '', hasParent: false, label: 'BUG', labelBg: '#fde7e7', labelFg: '#b42318', status: 'DONE',
+        project: 't3o', projectDot: '#c0904f', base: 't3o', hasBranch: true, branch: 'board/t3o-129', hasThread: true,
+        title: 'CI: load-sensitive tests are skipped on a busy machine and left to the nightly; a flake under load files no card',
+        isEpic: false, hasPr: true, pr: '#304', baseFrom: '', created: '18h ago',
+        tabs: ['Thread', 'Review', 'CI', 'Summary', 'Plan', 'Brief'],
+        rows: [{ k: 'ACTIVITY', v: '30' }, { k: 'RESOURCES', v: 'M · M · M' }, { k: 'STAGE', v: 'Done' }] }
+    };
+    var card = cards[this.props.card] || cards['WAL-84'];
+    var tab = this.state.tab || this.props.tab || (card.isEpic ? 'cards' : 'summary');
+    var sheetOpen = this.state.sheet !== undefined ? this.state.sheet : this.props.sheet === 'open';
+    var tabs = card.tabs.map(function (name) {
+      var key = name.toLowerCase();
+      var on = key === tab;
+      return { label: name, current: on ? 'page' : 'false', bg: on ? '#ffffff' : 'transparent',
+        shadow: on ? '0 1px 2px rgba(0,0,0,0.1)' : 'none', fg: on ? '#18181b' : '#3f3f46', weight: on ? '600' : '500',
+        pick: function () { self.setState({ tab: key }); } };
+    });
+    var C = { orange: ['#fdeedd', '#a14a04'], purple: ['#efe7fd', '#6326c9'], grey: ['#f0f0ef', '#3f3f46'], green: ['#dcf3e7', '#116a43'] };
+    function chip(t, c) { return { text: t, bg: C[c][0], fg: C[c][1] }; }
+    var details = [
+      { title: 'Heads-up', count: '10 notes', chips: [chip('1 not done', 'orange'), chip('4 plan changes', 'purple'), chip('5 shortcuts', 'grey')] },
+      { title: 'Checks & review', count: '8 checks · round 4', chips: [chip('7 passed', 'green'), chip('1 flagged', 'orange')] },
+      { title: 'What was built', count: '23 changes · 7 areas', chips: [chip('Data', 'grey'), chip('Kernel', 'grey'), chip('MCP and agents', 'grey'), chip('Canvas and drawing', 'grey'), chip('+3', 'grey')] },
+      { title: 'Decision log', count: '45 decisions', chips: [chip('13 important', 'grey'), chip('2 unclear', 'purple')] },
+      { title: 'Usage', count: '4 stages', chips: [chip('≈$97.38', 'grey')] }
+    ];
+    var rounds = [];
+    for (var i = 1; i <= 10; i++) {
+      var past = i < 4, cur = i === 4;
+      rounds.push({ label: 'R' + i, current: cur ? 'true' : 'false',
+        bg: cur ? '#18181b' : (past ? '#ececeb' : '#ffffff'), fg: cur ? '#ffffff' : (past ? '#3f3f46' : '#71717a'),
+        border: cur ? '#18181b' : (past ? '#ececeb' : '#e4e4e7') });
+    }
+    var steps = [
+      { n: '1', title: 'Fresh-eyes review', body: 'No findings. Nothing blocks.', badgeBg: '#12a26b', hasThread: true },
+      { n: '2', title: 'Triage & respond', body: 'Nothing to triage: the review came back clean.', badgeBg: '#71717a', hasThread: false },
+      { n: '3', title: 'Adjudication', body: 'Only runs when a finding blocks the round.', badgeBg: '#71717a', hasThread: false }
+    ];
+    var pastRounds = [
+      { name: 'Round 3', ratio: '0 / 1 / 0', fixed: '1 fixed · 0 rejected' },
+      { name: 'Round 2', ratio: '0 / 15 / 7', fixed: '22 fixed · 0 rejected' },
+      { name: 'Round 1', ratio: '0 / 7 / 5', fixed: '12 fixed · 0 rejected' }
+    ];
+    var kids = [
+      ['Users and auth: core', 'no dependencies · PR #113'],
+      ['Users and auth: multi-user hardening', 'after #1 · PR #115'],
+      ['Sharing, view-only mode and public links', 'after #2 · PR #124'],
+      ['Agent API core: MCP, option-safe writes and reads', 'after #1 · PR #114'],
+      ['Placement language and plan render', 'after #4 · PR #120'],
+      ['MCP OAuth for claude.ai', 'after #2, #4 · PR #118'],
+      ['Version history: safety net', 'after #4 · PR #121'],
+      ['Version timeline panel and scoped restore', 'after #7 · archived', true],
+      ['Quick-sketch skill and the first trial', 'after #4, #5, #7 · PR #127'],
+      ['Site features: marking up the site (access, views, boundaries, existing features, constraints)', 'after #4, #5'],
+      ['Site reading for agents: annotated aerial and terrain summary', 'after #5, #10 · PR #131'],
+      ['Design brief and the architect-interview skill', 'after #4 · PR #136'],
+      ['Advisory design checks', 'after #10, #12 · PR #138'],
+      ['Option presentation', 'after #4, #12, #13'],
+      ['Additional site features: wind direction', 'no dependencies · PR #135']
+    ];
+    var children = kids.map(function (k, idx) {
+      var arch = !!k[2];
+      return { n: idx + 1, title: k[0], meta: k[1], done: !arch, archived: arch, state: arch ? 'Backlog' : 'Done',
+        bg: arch ? '#f6f6f5' : '#ffffff', titleFg: arch ? '#71717a' : '#18181b', strike: arch ? 'line-through' : 'none' };
+    });
+    var isThread = tab === 'thread';
+    var showThread = isThread && card.hasThread;
+    var sess = this.state.session || 0;
+    var sessions = ['Triage · round 2', 'Review · round 2', 'Adjudicate · round 2'].map(function (label, i) {
+      var on = i === sess;
+      return { label: label, selected: on ? 'true' : 'false', bg: on ? '#ffffff' : 'transparent', border: on ? '#d4d4d8' : 'transparent',
+        fg: on ? '#18181b' : '#52525b', weight: on ? '600' : '500', pick: function () { self.setState({ session: i }); } };
+    });
+    return {
+      isThread: showThread, sessions: sessions,
+      card: card, tabs: tabs, details: details, rounds: rounds, steps: steps, pastRounds: pastRounds, children: children,
+      sheetRows: card.rows,
+      isSummary: tab === 'summary' && !card.isEpic,
+      isReview: tab === 'review',
+      isCards: tab === 'cards',
+      isOther: !(tab === 'summary' && !card.isEpic) && tab !== 'review' && tab !== 'cards' && !showThread,
+      otherNote: isThread ? 'Thread: same layout as the T3O-129 Thread board, with this card\'s messages.' : '[This tab keeps its current content, in the same compact frame.]',
+      sheetOpen: sheetOpen, sheetExpanded: sheetOpen ? 'true' : 'false',
+      openSheet: function () { self.setState({ sheet: true }); },
+      closeSheet: function () { self.setState({ sheet: false }); },
+      toThread: function () { self.setState({ tab: 'thread' }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

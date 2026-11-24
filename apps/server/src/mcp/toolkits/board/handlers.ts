@@ -66,6 +66,7 @@ import {
   type BoardState,
   unmetBoardCardDependencies,
   boardCardGroupOf,
+  boardGroupFlagsTurnedOn,
   boardCardAncestors,
   sortBoardCardDecisions,
   type BoardCardRecordDecisionsCommand,
@@ -110,7 +111,12 @@ import type { BoardQueriesShape } from "../../../board/projection.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ServerConfig from "../../../config.ts";
 import { boardCardAttachmentManifest } from "../../../board/attachments.ts";
-import { boardAgentActor, stampBoardActivityActor } from "../../../board/activityActors.ts";
+import {
+  boardAgentActor,
+  stampBoardActivityActor,
+  stampBoardActivitySource,
+  type BoardActivitySource,
+} from "../../../board/activityActors.ts";
 import { boardBriefVersion } from "../../../board/briefEdits.ts";
 import { createBoardCard, resolveBoardCardKeyPrefix } from "../../../board/createCard.ts";
 import { isKeptStepThread, keptPlanningStepId } from "../../../board/planningThreadKeep.ts";
@@ -132,6 +138,13 @@ import {
 } from "../../../board/groupOperations.ts";
 import { BoardRelayInvocation, relayable } from "./relay.ts";
 import { BoardToolError, BoardToolkit } from "./tools.ts";
+// T3o: a schedule run's board tools are limited to its own cards (T3O-117).
+import { BoardScheduleStore } from "../../../board/schedules/BoardScheduleStore.ts";
+import {
+  createdCardRefusal,
+  findBoardCardRef,
+  scheduleThreadPolicy,
+} from "../../../board/schedules/scheduleThreadPolicy.ts";
 
 /** How much of an ancestor's brief the context carries: enough to
     plan against, while a deep tree of long briefs stays bounded. */
@@ -179,6 +192,8 @@ interface BoardToolDeps {
   /** For the brief-attachment manifest's absolute paths. */
   readonly stateDir: string;
   readonly path: Path.Path;
+  /** The worker the calling thread runs on: the relay's, else this server. */
+  readonly workerId: BoardWorkerId;
 }
 
 /** T3o: a card's size, reservation, worker and queue reason, for an agent (T3O-86). */
@@ -346,6 +361,7 @@ const boardToolDeps = Effect.gen(function* () {
     board,
     stateDir: Option.isSome(relayed) ? relayed.value.stateDir : config.stateDir,
     path,
+    workerId: Option.isSome(relayed) ? relayed.value.workerId : BOARD_LOCAL_WORKER_ID,
   } satisfies BoardToolDeps;
 });
 
@@ -424,14 +440,18 @@ const resolveLinkablePullRequest = Effect.fn("BoardToolkit.resolveLinkablePullRe
 
 /** Link `resolved` to the card, or clear its explicit link when null. */
 const linkCardPullRequest = Effect.fn("BoardToolkit.linkCardPullRequest")(function* (
+  deps: BoardToolDeps,
   card: Pick<BoardCard, "id" | "key">,
   resolved: BoardCardPullRequest | null,
 ) {
   const supervisor = yield* SupervisorReactor;
+  const commandId = yield* mintCommandId;
+  stampBoardActivityActor(commandId, agentActor(deps));
+  yield* stampActivitySource(deps, { commandId }, [card.id], "details");
   const result = yield* supervisor.linkPullRequest(
     card.id,
     resolved === null ? null : { number: resolved.number },
-    resolved === null ? undefined : { resolved },
+    resolved === null ? { commandId } : { resolved, commandId },
   );
   if (result.outcome === "refused") {
     return yield* new BoardToolError({ code: "rejected", message: result.detail });
@@ -519,27 +539,30 @@ const refuseOwnCard = (
 };
 
 /**
- * Refuse a relayed write for a card that runs on another worker: an agent on one worker may
- * change its own card and the cards that run there, never another worker's. Calls from this
- * server's own threads are not relayed and pass.
+ * Refuse a relayed DESTRUCTIVE act on a card that runs on another worker: delete, cancel-work and
+ * whole-group archive throw that machine's work away for good. Every other write may name a card
+ * on any worker (T3O-114). Calls from this server's own threads are not relayed and pass.
  */
-const refuseOtherWorkersCard = Effect.fn("BoardToolkit.refuseOtherWorkersCard")(function* (
-  board: BoardState,
-  scope: McpThreadInvocationScope,
-  card: BoardCard,
-): Effect.fn.Return<void, BoardToolError> {
-  const relayed = yield* Effect.serviceOption(BoardRelayInvocation);
-  if (Option.isNone(relayed)) return;
-  if (resolveBoardCardForThread(board, scope.thread.threadId)?.id === card.id) return;
-  // T3o: only a card placed on another worker is refused; an unplaced card and every group
-  // card belong to no worker, so a build agent keeps write access to them (T3O-87).
-  const target = card.group !== null ? null : boardCardPlacementTarget(card);
-  if (target === null || target === relayed.value.workerId) return;
-  return yield* new BoardToolError({
-    code: "rejected",
-    message: `'${card.key}' runs on another worker, so it cannot be changed from this one: ask a human to do it from the app.`,
-  });
-});
+const refuseOtherWorkersDestructive = Effect.fn("BoardToolkit.refuseOtherWorkersDestructive")(
+  function* (
+    board: BoardState,
+    scope: McpThreadInvocationScope,
+    card: BoardCard,
+    act: string,
+  ): Effect.fn.Return<void, BoardToolError> {
+    const relayed = yield* Effect.serviceOption(BoardRelayInvocation);
+    if (Option.isNone(relayed)) return;
+    if (resolveBoardCardForThread(board, scope.thread.threadId)?.id === card.id) return;
+    // T3o: only a card placed on another worker is refused; an unplaced card and every group
+    // card belong to no worker (T3O-87).
+    const target = card.group !== null ? null : boardCardPlacementTarget(card);
+    if (target === null || target === relayed.value.workerId) return;
+    return yield* new BoardToolError({
+      code: "rejected",
+      message: `'${card.key}' runs on another worker, and ${act} there can't be done from this one: ask a human to do it from the app.`,
+    });
+  },
+);
 
 /**
  * Refuse a delete aimed at a card another agent is still working on: it force-reclaims the
@@ -851,31 +874,96 @@ const describeDependencies = (board: BoardState, card: BoardCard) => {
   });
 };
 
+/** The actor an MCP tool call is recorded as. */
+const agentActor = (deps: BoardToolDeps) =>
+  boardAgentActor({
+    providerInstanceId: deps.scope.thread.providerInstanceId,
+    threadId: deps.scope.thread.threadId,
+  });
+
+/** The cards a command names, the ones it adopts included; cascades are not named. */
+const commandTargetCardIds = (command: BoardCommand): ReadonlyArray<BoardCardId> => {
+  const ids = new Set<BoardCardId>();
+  if ("cardId" in command && typeof command.cardId === "string") ids.add(command.cardId);
+  if ("cardIds" in command) for (const id of command.cardIds) ids.add(id);
+  if ("adoptCardIds" in command) for (const id of command.adoptCardIds ?? []) ids.add(id);
+  return [...ids];
+};
+
+/** The parent a command lands cards under, when that parent is a leaf it turns into a group. */
+const convertedParentOf = (
+  board: BoardState,
+  command: { readonly parentCardId?: BoardCardId | null | undefined },
+): BoardCardId | null => {
+  if (command.parentCardId === undefined || command.parentCardId === null) return null;
+  const parent = board.cards.find((card) => card.id === command.parentCardId);
+  return parent !== undefined && boardCardGroupOf(board, parent) === null ? parent.id : null;
+};
+
+/**
+ * Stamp where a write comes from, so each target card's activity names the source card and,
+ * across workers, the source worker (T3O-114). Only a caller with a card, or a schedule run,
+ * has a source; a plain chat thread is just the agent.
+ */
+const stampActivitySource = Effect.fn("BoardToolkit.stampActivitySource")(function* (
+  deps: BoardToolDeps,
+  command: Pick<BoardCommand, "commandId"> & {
+    readonly parentCardId?: BoardCardId | null | undefined;
+  },
+  named: ReadonlyArray<BoardCardId>,
+  editKind: BoardActivitySource["editKind"],
+) {
+  const board = yield* readBoardState(deps);
+  const own = resolveBoardCardForThread(board, deps.scope.thread.threadId);
+  if (own === null && !(yield* isScheduleRun(deps.scope.thread.threadId))) return;
+  // A leaf that takes its first child is changed too: it becomes a group.
+  const converted = convertedParentOf(board, command);
+  const targetCardIds =
+    converted === null || named.includes(converted) ? named : [...named, converted];
+  // An unplaced card, a group and a card not yet created belong to no worker: the board server.
+  const workerOf = (id: BoardCardId): BoardWorkerId => {
+    const card = board.cards.find((candidate) => candidate.id === id);
+    if (card === undefined || card.group !== null) return BOARD_LOCAL_WORKER_ID;
+    return boardCardPlacementTarget(card) ?? BOARD_LOCAL_WORKER_ID;
+  };
+  stampBoardActivitySource(command.commandId, {
+    sourceCardId: own?.id ?? null,
+    sourceCardKey: own?.key ?? null,
+    sourceWorkerId: deps.workerId,
+    targetCardIds,
+    crossWorkerCardIds: targetCardIds.filter((id) => workerOf(id) !== deps.workerId),
+    ...(editKind === undefined ? {} : { editKind }),
+  });
+});
+
 /**
  * Dispatch a board command stamped with the AGENT actor, which the projector reads back for
  * Activity. The provider instance and thread come from the invocation scope, never tool input,
- * so an agent cannot misreport itself.
+ * so an agent cannot misreport itself. `editKind` is how a cross-worker write that records no
+ * row of its own shows on the target's rail.
  */
-const dispatch = (
+const dispatch = Effect.fn("BoardToolkit.dispatch")(function* (
   deps: BoardToolDeps,
   command: BoardCommand,
-): Effect.Effect<{ readonly sequence: number }, BoardToolError> => {
-  stampBoardActivityActor(
-    command.commandId,
-    boardAgentActor({
-      providerInstanceId: deps.scope.thread.providerInstanceId,
-      threadId: deps.scope.thread.threadId,
-    }),
-  );
-  return deps.boardEngine.dispatch(command).pipe(Effect.mapError(dispatchError));
-};
+  editKind?: BoardActivitySource["editKind"],
+): Effect.fn.Return<{ readonly sequence: number }, BoardToolError> {
+  stampBoardActivityActor(command.commandId, agentActor(deps));
+  yield* stampActivitySource(deps, command, commandTargetCardIds(command), editKind);
+  return yield* deps.boardEngine.dispatch(command).pipe(Effect.mapError(dispatchError));
+});
 
 /** `approved` is the agent's own word; a run with no human in the loop has
     nobody who could have given it, and a delegated child never spoke to one. */
 const refuseUnattendedApproval = Effect.fn("BoardToolkit.refuseUnattendedApproval")(function* (
   deps: BoardToolDeps,
   message: string,
+  /** The card the approval is for; a schedule run may approve only on its own cards. */
+  card?: BoardCard,
 ) {
+  const schedule = yield* scheduleCaller(deps.scope.thread.threadId);
+  if (schedule !== null && (card === undefined || !schedule.cards.has(card.id))) {
+    return yield* new BoardToolError({ code: "invalid-input", message });
+  }
   if (deps.scope.thread.subagent === true) {
     return yield* new BoardToolError({
       code: "invalid-input",
@@ -896,26 +984,12 @@ const refuseUnattendedApproval = Effect.fn("BoardToolkit.refuseUnattendedApprova
   }
 });
 
-/**
- * Regrouping is direct but needs a human's say-so: the agent must
- * describe the change, get explicit confirmation, and pass `approved: true`.
- */
-const requireRegroupApproval = Effect.fn("BoardToolkit.requireRegroupApproval")(function* (
-  deps: BoardToolDeps,
-  approved: boolean | undefined,
-): Effect.fn.Return<void, BoardToolError> {
-  if (approved !== true) {
-    return yield* new BoardToolError({
-      code: "invalid-input",
-      message:
-        "Regrouping changes how cards build and where they merge, so it needs a human. Describe the regrouping to the user, ask them to confirm it, and once they have, call again with approved: true.",
-    });
-  }
-  yield* refuseUnattendedApproval(
-    deps,
-    "This run is unattended, so nobody can confirm a regrouping. Leave the board's grouping as it is and mention the suggestion in your summary for a human to apply.",
-  );
-});
+const GROUP_FLAG_LABELS = {
+  autoPlan: "Auto-plan",
+  autoSignOff: "Auto sign-off",
+  autoBuild: "Auto-build",
+  autoMerge: "Auto-merge",
+} as const;
 
 /** A destructive group flow needs a human's explicit say-so. */
 const requireDestructiveApproval = (
@@ -961,7 +1035,13 @@ const dispatchMoveCards = Effect.fn("BoardToolkit.dispatchMoveCards")(function* 
     ...(input.beforeCardId === undefined ? {} : { beforeCardId: input.beforeCardId }),
     createdAt: yield* nowIso,
   };
-  yield* dispatch(deps, command);
+  // A move that keeps every card in its group is a reorder, not a regroup.
+  const before = yield* readBoardState(deps);
+  const reorder = input.cardIds.every(
+    (id) =>
+      (before.cards.find((card) => card.id === id)?.parentCardId ?? null) === input.parentCardId,
+  );
+  yield* dispatch(deps, command, reorder ? "moved" : "regrouped");
   const after = yield* readBoardState(deps);
   const parentKey =
     input.parentCardId === null
@@ -1004,7 +1084,7 @@ const describeSourcePlan = Effect.fn("BoardToolkit.describeSourcePlan")(function
   return { plan, body: body === null || body.trim() === brief?.trim() ? null : body };
 });
 
-export const boardHandlers = {
+const rawBoardHandlers = {
   board_get_card_context: Effect.fn("BoardToolkit.board_get_card_context")(function* () {
     const deps = yield* boardToolDeps;
     const board = yield* readBoardState(deps);
@@ -1407,25 +1487,24 @@ export const boardHandlers = {
       input.parentCardId === undefined
         ? undefined
         : yield* findCardByKeyOrId(board, input.parentCardId);
-    // Creating under a leaf converts it to a group: the same regrouping
-    // board_indent_cards gates behind a human.
-    if (parent !== undefined && boardCardGroupOf(board, parent) === null) {
-      yield* requireRegroupApproval(deps, input.approved);
-    }
     const cardId = BoardCardId.make(yield* mintUuid);
     // ONE atomic command: the create command carries `brief` and `dependsOn`
     // natively, so the card lands whole — no follow-up update whose
     // rejection or a mid-write crash could strand a half-built card while
     // the tool reports an error (inviting a retry that mints a duplicate).
+    const commandId = yield* mintCommandId;
+    yield* stampActivitySource(
+      deps,
+      { commandId, parentCardId: parent?.id },
+      [cardId],
+      parent === undefined ? undefined : "regrouped",
+    );
     yield* createBoardCard({
       engine: deps.boardEngine,
-      actor: boardAgentActor({
-        providerInstanceId: deps.scope.thread.providerInstanceId,
-        threadId: deps.scope.thread.threadId,
-      }),
+      actor: agentActor(deps),
       projectTitle,
       create: {
-        commandId: yield* mintCommandId,
+        commandId,
         cardId,
         projectId,
         title: input.title,
@@ -1455,7 +1534,7 @@ export const boardHandlers = {
     if (pullRequest !== null) {
       // The card exists now, so a failure here must say so: a retried
       // create would make a second card.
-      yield* linkCardPullRequest({ id: cardId, key }, pullRequest).pipe(
+      yield* linkCardPullRequest(deps, { id: cardId, key }, pullRequest).pipe(
         Effect.mapError(
           (error) =>
             new BoardToolError({
@@ -1472,7 +1551,6 @@ export const boardHandlers = {
     const deps = yield* boardToolDeps;
     let board = yield* readBoardState(deps);
     let card = board.cards.find((candidate) => candidate.id === input.cardId);
-    if (card !== undefined) yield* refuseOtherWorkersCard(board, deps.scope, card);
     if (input.toStage === undefined && input.parentCardId === undefined) {
       return yield* new BoardToolError({
         code: "invalid-input",
@@ -1481,7 +1559,6 @@ export const boardHandlers = {
     }
     // Regrouping first, so a stage move lands in the new group.
     if (input.parentCardId !== undefined) {
-      yield* requireRegroupApproval(deps, input.approved);
       const target = yield* requireTargetCard(board, input.cardId);
       const parent =
         input.parentCardId === null ? null : yield* findCardByKeyOrId(board, input.parentCardId);
@@ -1530,6 +1607,9 @@ export const boardHandlers = {
       toStage: toStage,
       orderKey,
       override: input.override,
+      // T3o: an agent's backward move disarms the toggle it undoes, so the gate sweep cannot
+      // relaunch the card behind it (T3O-113).
+      cause: "agent",
       createdAt: yield* nowIso,
     };
     yield* dispatch(deps, command);
@@ -1541,7 +1621,6 @@ export const boardHandlers = {
     const board = yield* readBoardState(deps);
     // The target takes a key as readily as its dependency fields do.
     const target = yield* findCardByKeyOrId(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, target);
     const cardId = target.id;
     const labels =
       input.labels === undefined ? undefined : yield* resolveLabelIds(board, input.labels);
@@ -1639,12 +1718,12 @@ export const boardHandlers = {
         ...(input.size === undefined ? {} : { size: input.size, sizeEditor: "agent" as const }),
         createdAt: yield* nowIso,
       };
-      yield* dispatch(deps, command);
+      yield* dispatch(deps, command, "details");
     }
     if (pullRequest !== undefined) {
       // When the field changes have already landed, a failure here must say
       // so: a retried whole call would apply them twice (briefAppend).
-      yield* linkCardPullRequest(target, pullRequest).pipe(
+      yield* linkCardPullRequest(deps, target, pullRequest).pipe(
         Effect.mapError((error) =>
           updatesFields
             ? new BoardToolError({
@@ -1664,10 +1743,8 @@ export const boardHandlers = {
 
   board_indent_cards: Effect.fn("BoardToolkit.board_indent_cards")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of cards) yield* refuseOtherWorkersCard(board, deps.scope, card);
     const plan = boardIndentPlan(
       board,
       cards.map((card) => card.id),
@@ -1678,10 +1755,8 @@ export const boardHandlers = {
 
   board_outdent_cards: Effect.fn("BoardToolkit.board_outdent_cards")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of cards) yield* refuseOtherWorkersCard(board, deps.scope, card);
     const plan = boardOutdentPlan(
       board,
       cards.map((card) => card.id),
@@ -1692,10 +1767,8 @@ export const boardHandlers = {
 
   board_group_cards: Effect.fn("BoardToolkit.board_group_cards")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of cards) yield* refuseOtherWorkersCard(board, deps.scope, card);
     const plan = boardGroupIntoNewPlan(
       board,
       cards.map((card) => card.id),
@@ -1718,7 +1791,7 @@ export const boardHandlers = {
       keyPrefix: yield* resolveCardKeyPrefix(first.projectId, projectTitle),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, create);
+    yield* dispatch(deps, create, "regrouped");
     const after = yield* readBoardState(deps);
     const groupKey = after.cards.find((card) => card.id === groupCardId)?.key ?? groupCardId;
     return { groupCardId, groupKey, cardIds: create.adoptCardIds ?? [] };
@@ -1726,13 +1799,9 @@ export const boardHandlers = {
 
   board_share_parent: Effect.fn("BoardToolkit.board_share_parent")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const started = yield* findCardByKeyOrId(board, input.cardId);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of [started, ...cards]) {
-      yield* refuseOtherWorkersCard(board, deps.scope, card);
-    }
     const plan = boardSharedParentPlan(
       board,
       started.id,
@@ -1755,7 +1824,7 @@ export const boardHandlers = {
       keyPrefix: yield* resolveCardKeyPrefix(plan.started.projectId, projectTitle),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, create);
+    yield* dispatch(deps, create, "regrouped");
     const after = yield* readBoardState(deps);
     const groupKey = after.cards.find((card) => card.id === groupCardId)?.key ?? groupCardId;
     return { groupCardId, groupKey, cardIds: plan.cardIds };
@@ -1763,13 +1832,9 @@ export const boardHandlers = {
 
   board_new_phase: Effect.fn("BoardToolkit.board_new_phase")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const group = yield* findCardByKeyOrId(board, input.groupCardId);
     const cards = yield* resolveCardRefs(board, input.cardIds);
-    for (const card of [group, ...cards]) {
-      yield* refuseOtherWorkersCard(board, deps.scope, card);
-    }
     const plan = boardNewPhasePlan(
       board,
       group.id,
@@ -1795,7 +1860,7 @@ export const boardHandlers = {
       keyPrefix: yield* resolveCardKeyPrefix(plan.group.projectId, projectTitle),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, create);
+    yield* dispatch(deps, create, "regrouped");
     const after = yield* readBoardState(deps);
     const groupKey = after.cards.find((card) => card.id === groupCardId)?.key ?? groupCardId;
     return { groupCardId, groupKey, cardIds: plan.cardIds };
@@ -1810,7 +1875,7 @@ export const boardHandlers = {
     );
     const board = yield* readBoardState(deps);
     const card = yield* findCardByKeyOrId(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
+    yield* refuseOtherWorkersDestructive(board, deps.scope, card, "cancelling its work");
     yield* refuseOwnCard(
       board,
       deps.scope,
@@ -1818,7 +1883,6 @@ export const boardHandlers = {
       "Cancelling its work stops this thread and reclaims the worktree you are running in",
     );
     const cards = yield* resolveCardRefs(board, input.cardIds ?? []);
-    for (const moving of cards) yield* refuseOtherWorkersCard(board, deps.scope, moving);
     const command: BoardCardCancelWorkCommand = {
       type: "board.card.cancel-work",
       commandId: yield* mintCommandId,
@@ -1828,16 +1892,38 @@ export const boardHandlers = {
       ...(cards.length === 0 ? {} : { adoptCardIds: cards.map((moving) => moving.id) }),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, command);
+    yield* dispatch(deps, command, cards.length === 0 ? undefined : "regrouped");
     return { cardId: card.id, key: card.key, cardIds: cards.map((moving) => moving.id) };
   }),
 
   board_set_group_settings: Effect.fn("BoardToolkit.board_set_group_settings")(function* (input) {
     const deps = yield* boardToolDeps;
-    yield* requireRegroupApproval(deps, input.approved);
     const board = yield* readBoardState(deps);
     const card = yield* findCardByKeyOrId(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
+    // Regrouping is free; only turning a group's Automation flag on stands in for a human,
+    // since every card in the group inherits it. Not a group: the decider says so.
+    const group = boardCardGroupOf(board, card);
+    const turnedOn =
+      group === null
+        ? []
+        : boardGroupFlagsTurnedOn({
+            group,
+            change: input,
+            boardWideAutoMerge: yield* boardWideAutoMergeNow(board),
+          });
+    if (turnedOn.length > 0) {
+      if (input.approved !== true) {
+        return yield* new BoardToolError({
+          code: "invalid-input",
+          message: `This turns the group's ${turnedOn.map((flag) => GROUP_FLAG_LABELS[flag]).join(", ")} on for every card inside it, which stands in for a human approving and starting work. Ask the user to confirm it, and once they have, call again with approved: true.`,
+        });
+      }
+      yield* refuseUnattendedApproval(
+        deps,
+        "This run is unattended, so nobody can confirm turning a group's automation on. Leave the group as it is and mention the suggestion in your summary for a human to apply.",
+        card,
+      );
+    }
     const command: BoardCardSetGroupSettingsCommand = {
       type: "board.card.set-group-settings",
       commandId: yield* mintCommandId,
@@ -1849,7 +1935,7 @@ export const boardHandlers = {
       ...(input.autoSignOff === undefined ? {} : { autoSignOff: input.autoSignOff }),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, command);
+    yield* dispatch(deps, command, "automation");
     return { cardId: card.id, key: card.key };
   }),
 
@@ -1857,7 +1943,6 @@ export const boardHandlers = {
     const deps = yield* boardToolDeps;
     const board = yield* readBoardState(deps);
     const card = yield* requireTargetCard(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
     yield* refuseOwnCard(
       board,
       deps.scope,
@@ -1871,7 +1956,7 @@ export const boardHandlers = {
         "Archiving a whole group stops its threads, closes its pull requests and deletes its branches, which",
       );
       for (const descendant of boardCardLiveDescendants(board, card.id)) {
-        yield* refuseOtherWorkersCard(board, deps.scope, descendant);
+        yield* refuseOtherWorkersDestructive(board, deps.scope, descendant, "archiving its group");
         yield* refuseOwnCard(
           board,
           deps.scope,
@@ -1895,7 +1980,6 @@ export const boardHandlers = {
     const deps = yield* boardToolDeps;
     const board = yield* readBoardState(deps);
     const card = yield* requireTargetCard(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
     const command: BoardCardUnarchiveCommand = {
       type: "board.card.unarchive",
       commandId: yield* mintCommandId,
@@ -1913,7 +1997,7 @@ export const boardHandlers = {
     // card left to read one off, and "deleted card-4f3a…" is not an answer a
     // human can check.
     const card = yield* requireTargetCard(board, input.cardId);
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
+    yield* refuseOtherWorkersDestructive(board, deps.scope, card, "deleting it");
     yield* refuseOwnCard(
       board,
       deps.scope,
@@ -2258,6 +2342,7 @@ export const boardHandlers = {
       yield* refuseUnattendedApproval(
         deps,
         "This run is unattended, so nobody can confirm turning automation on. Leave the card as it is and mention the suggestion in your summary for a human to apply.",
+        card,
       );
       // Auto-plan steers the card's planning thread by interrupting it, and
       // an agent never authorises its own card's work.
@@ -2268,7 +2353,6 @@ export const boardHandlers = {
         "Turning its automation on would authorise your own work and can interrupt this very turn",
       );
     }
-    yield* refuseOtherWorkersCard(board, deps.scope, card);
     const command: BoardCardSetAutomationCommand = {
       type: "board.card.set-automation",
       commandId: yield* mintCommandId,
@@ -2279,7 +2363,7 @@ export const boardHandlers = {
       ...(input.autoMerge === undefined ? {} : { autoMerge: input.autoMerge }),
       createdAt: yield* nowIso,
     };
-    yield* dispatch(deps, command);
+    yield* dispatch(deps, command, "automation");
     const after = yield* readBoardState(deps);
     const updated = after.cards.find((candidate) => candidate.id === card.id) ?? card;
     const resolved = resolveBoardCardAutomationIn({
@@ -2303,6 +2387,141 @@ export const boardHandlers = {
     };
   }),
 } satisfies Parameters<typeof BoardToolkit.toLayer>[0];
+
+/** The schedule a caller thread runs for, with the cards its runs created; null for any
+    other thread, and on a server without schedules. */
+const scheduleCaller = Effect.fn("BoardToolkit.scheduleCaller")(function* (
+  threadId: McpThreadInvocationScope["thread"]["threadId"],
+) {
+  const store = yield* Effect.serviceOption(BoardScheduleStore);
+  if (Option.isNone(store)) return null;
+  const run = yield* store.value.runByThread(threadId).pipe(Effect.mapError(internalError));
+  if (run === null) return null;
+  const cards = yield* store.value
+    .createdCards(run.projectId, run.fileId)
+    .pipe(Effect.mapError(internalError));
+  return { store: store.value, projectId: run.projectId, fileId: run.fileId, cards };
+});
+
+/** Whether a thread is a schedule run's: one lookup, without the cards its runs created. */
+const isScheduleRun = Effect.fn("BoardToolkit.isScheduleRun")(function* (
+  threadId: McpThreadInvocationScope["thread"]["threadId"],
+) {
+  const store = yield* Effect.serviceOption(BoardScheduleStore);
+  if (Option.isNone(store)) return false;
+  const run = yield* store.value.runByThread(threadId).pipe(Effect.mapError(internalError));
+  return run !== null;
+});
+
+/** Erased to one shape to wrap them all; `boardHandlers` casts back to each handler's own type. */
+type AnyBoardHandler = (params: never) => Effect.Effect<unknown, BoardToolError>;
+
+const boardWideAutoMergeNow = (board: BoardState) =>
+  Effect.flatMap(ServerSettings.ServerSettingsService, (settings) => settings.getSettings).pipe(
+    Effect.map((settings) => boardWideAutoMergeOn(board, settings.board)),
+    Effect.mapError(internalError),
+  );
+
+/**
+ * The one check at the board handler entry for a schedule run's thread (T3O-117): it
+ * narrows the call, or refuses it, and records the cards the run creates or changes.
+ */
+const scheduleGuarded =
+  (tool: string, handle: AnyBoardHandler) => (params: Record<string, unknown> | undefined) =>
+    Effect.gen(function* () {
+      const context = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+      const thread = Option.isSome(context) ? context.value.thread : undefined;
+      const schedule = thread === undefined ? null : yield* scheduleCaller(thread.threadId);
+      if (thread === undefined || schedule === null) return yield* handle(params as never);
+      const engine = yield* BoardEngine;
+      const board = (yield* engine.getReadModel).board ?? EMPTY_BOARD_STATE;
+      const input = params ?? {};
+      const target = findBoardCardRef(board, input.cardId);
+      const turnsAutoMergeOn =
+        tool === "board_set_automation" && target !== undefined && input.autoMerge !== undefined
+          ? boardAutomationTogglesTurnedOn({
+              board,
+              card: target,
+              change: { autoMerge: input.autoMerge as boolean | null },
+              boardWideAutoMerge: yield* boardWideAutoMergeNow(board),
+            }).some((turned) => turned.toggle === "autoMerge")
+          : false;
+      const decision = scheduleThreadPolicy({
+        board,
+        caller: schedule,
+        tool,
+        params: input,
+        turnsAutoMergeOn,
+      });
+      if (decision.kind === "refuse") {
+        return yield* new BoardToolError({ code: decision.code, message: decision.message });
+      }
+      const result = yield* handle((decision.params ?? params) as never);
+      if (tool === "board_list_projects") {
+        const listed = result as {
+          readonly projects: ReadonlyArray<{ readonly projectId: string }>;
+        };
+        return {
+          ...listed,
+          projects: listed.projects.filter((project) => project.projectId === schedule.projectId),
+        };
+      }
+      if (tool === "board_create_card") {
+        const { cardId, key } = result as { readonly cardId: BoardCardId; readonly key: string };
+        const after = (yield* engine.getReadModel).board ?? EMPTY_BOARD_STATE;
+        const created = after.cards.find((card) => card.id === cardId);
+        const autoMerge =
+          created === undefined
+            ? null
+            : resolveBoardCardAutomationIn({
+                board: after,
+                card: created,
+                boardWideAutoMerge: yield* boardWideAutoMergeNow(after),
+              }).autoMerge;
+        // Board-wide Auto-merge is a human's standing choice for every card, not one this run armed.
+        const autoMergeOn = autoMerge !== null && autoMerge.value && autoMerge.source !== "board";
+        const refusal = created === undefined ? null : createdCardRefusal(created, autoMergeOn);
+        if (refusal !== null) {
+          // Inheriting from a human's started group must never arm unreviewed work.
+          yield* engine
+            .dispatch({
+              type: "board.card.delete",
+              commandId: yield* mintCommandId,
+              cardId,
+              createdAt: yield* nowIso,
+            } satisfies BoardCardDeleteCommand)
+            .pipe(Effect.mapError(dispatchError));
+          return yield* new BoardToolError({
+            code: "rejected",
+            message: `Card ${key} was removed: ${refusal}. Create it outside any group a human has started.`,
+          });
+        }
+        yield* schedule.store
+          .recordCreatedCard({
+            cardId,
+            projectId: schedule.projectId,
+            fileId: schedule.fileId,
+            threadId: thread.threadId,
+            createdAt: yield* nowIso,
+          })
+          .pipe(Effect.mapError(internalError));
+        return result;
+      }
+      if (target !== undefined) {
+        yield* schedule.store
+          .recordTouchedCard(thread.threadId, target.id)
+          .pipe(Effect.mapError(internalError));
+      }
+      return result;
+    });
+
+/** Every handler behind the schedule-run check; the relay's central side uses these too. */
+export const boardHandlers = Object.fromEntries(
+  Object.entries(rawBoardHandlers).map(([tool, handle]) => [
+    tool,
+    scheduleGuarded(tool, handle as unknown as AnyBoardHandler),
+  ]),
+) as unknown as typeof rawBoardHandlers;
 
 /**
  * Every board tool needs a T3 thread caller; writes also need that thread's run to be live.

@@ -75,6 +75,8 @@ import { boardEnvironment } from "../state/board";
 import {
   cardThreadIdsMissingFromShell,
   useBoardCardOffShellThreads,
+  boardCardThreadLabel,
+  cardHasWorkerThreads,
   useBoardCardShellThreads,
 } from "./boardCardThreadRows";
 import { boardThreadWorker, threadWorkerRanOn } from "./workers/threadWorker";
@@ -82,6 +84,7 @@ import { boardAttachmentLimits } from "./boardAttachmentUpload";
 import { boardConflictFix } from "./boardConflictFix";
 import { boardScheduleKind } from "./boardSchedule";
 import { boardQueueInfo } from "./boardQueueInfo";
+import { boardMergeQueueInfo } from "./boardMergeQueueInfo";
 import { BoardCardCapacityPanelHost } from "./BoardCardCapacityPanel";
 import { boardCardBlocksHint, boardCardPriorityStartedNote } from "./boardCardPriority";
 import {
@@ -112,6 +115,8 @@ import {
 } from "./boardCardThreadMenu";
 import type { BoardActivityAgentLookup } from "./BoardCardActivityRail";
 import { boardStageLabel } from "./boardStages";
+import { useBoardAttentionSettle } from "./boardAttentionSettle";
+import { boardCardDetailsStatus } from "./boardCardDetailsStatus";
 import { boardToast } from "./boardToast";
 import { indexBoardLabels } from "./labelColour";
 import {
@@ -144,6 +149,7 @@ import type { BoardPickerOption } from "./BoardSearchAddPicker";
 import {
   describeBoardCheckWorktreeOutcome,
   describeBoardCommandFailure,
+  describeBoardCiSkipStepOutcome,
   describeBoardSkipCiOutcome,
   describeBoardMergeOutcome,
   // T3o: the forced re-check's answer.
@@ -278,6 +284,9 @@ export function BoardCardDetail({
   const mergeCardPullRequest = useAtomCommand(boardEnvironment.mergeCardPullRequest, {
     reportFailure: false,
   });
+  const mergeQueueStartNow = useAtomCommand(boardEnvironment.mergeQueueStartNow, {
+    reportFailure: false,
+  });
   // T3o: "Link one". A refusal renders inline under the input.
   const linkCardPullRequest = useAtomCommand(boardEnvironment.linkCardPullRequest, {
     reportFailure: false,
@@ -297,6 +306,7 @@ export function BoardCardDetail({
   const retryCi = useAtomCommand(boardEnvironment.retryCi, { reportFailure: false });
   const sendBackCi = useAtomCommand(boardEnvironment.sendBackCi, { reportFailure: false });
   const stopCi = useAtomCommand(boardEnvironment.stopCi, { reportFailure: false });
+  const skipCiStep = useAtomCommand(boardEnvironment.skipCiStep, { reportFailure: false });
   const [skippingCi, setSkippingCi] = useState(false);
   const createCard = useAtomCommand(boardEnvironment.createCard);
   // "Remove worktree". Same reason again: a refusal is an answer.
@@ -388,6 +398,22 @@ export function BoardCardDetail({
       disagree. No `now` is passed: the chip's settle grace must not delay this. */
   const stepHeld =
     cardShell !== undefined && boardCardAttention({ card: cardShell, stages })?.reason === "held";
+  // T3o (T3O-134): the phone Details button's status, through the card face's settle grace.
+  const cardThreadShells = useAtomValue(boardEnvironment.cardThreadShellsAtom(environmentId));
+  const { threadIdleSinceByCard, now: attentionNow } = useBoardAttentionSettle({
+    cards: cardShell === undefined ? [] : [cardShell],
+    threadOf: (threadId) => cardThreadShells.get(threadId),
+  });
+  const detailsStatus = (() => {
+    if (cardShell === undefined) return null;
+    const threadIdleSince = threadIdleSinceByCard.get(String(cardShell.cardId));
+    const attention = boardCardAttention({
+      card: threadIdleSince === undefined ? cardShell : { ...cardShell, threadIdleSince },
+      stages,
+      now: attentionNow,
+    });
+    return boardCardDetailsStatus(attention, cardShell.blocked);
+  })();
   /** Whether the card's live step has given up — the failure
       banner's gate and the reason a non-auto-executing stage still offers a
       restart. */
@@ -488,7 +514,11 @@ export function BoardCardDetail({
   const missingThreadIds = cardThreadIdsMissingFromShell(card?.threadLinks ?? [], [
     ...cardShellThreads.values(),
   ]);
-  const offShellThreads = useBoardCardOffShellThreads(environmentId, missingThreadIds);
+  const offShellThreads = useBoardCardOffShellThreads(
+    environmentId,
+    missingThreadIds,
+    card !== null && cardHasWorkerThreads(card.threadLinks) ? card.id : null,
+  );
   // A subagent awaiting approval turns its parent's row violet.
   const subagentRequests = useAtomValue(
     environmentThreadShells.pendingSubagentRequestsAtom(environmentId),
@@ -523,15 +553,15 @@ export function BoardCardDetail({
         threadId: link.threadId,
         role: link.role,
         tombstoned: link.tombstonedAt !== null,
-        // A thread on another worker is not in this server's snapshot.
-        title:
-          thread?.title ??
-          offShellTitle ??
-          (link.workerId !== undefined
-            ? `Thread on ${worker.label}`
-            : offShellThreads.loading && missingThreadIds.includes(link.threadId)
-              ? "Loading thread…"
-              : null),
+        // A thread on another worker is not in this server's snapshot; the board reads its title.
+        title: boardCardThreadLabel({
+          title: thread?.title ?? offShellTitle,
+          loading:
+            link.workerId !== undefined
+              ? offShellThreads.workerLoading
+              : offShellThreads.loading && missingThreadIds.includes(link.threadId),
+          workerLabel: link.workerId !== undefined ? worker.label : null,
+        }),
         threadState,
         awaitingInput,
         subagentAwaitingApproval: source?.subagentAwaitingApproval === true,
@@ -643,6 +673,15 @@ export function BoardCardDetail({
               projects.find((project) => project.id === cardShell.projectId)?.title ??
               "this project",
           }),
+        });
+  // T3o: a merge-queue wait takes the queue section, and its Start now (T3O-128).
+  const mergeQueueInfo =
+    cardShell === undefined
+      ? null
+      : boardMergeQueueInfo({
+          card: cardShell,
+          running: boardRunningStepCount(allShellCards),
+          baseRef: detail?.card.worktree?.baseRefName ?? null,
         });
   // Null whenever reordering could not actually improve the card's position —
   // the rail hides the button rather than offering one that does nothing.
@@ -834,7 +873,7 @@ export function BoardCardDetail({
       })
     : undefined;
   const reviewPhaseRuntimeMode = isBoardReviewStageExecution(reviewExecution)
-    ? effectiveBoardRuntimeMode(reviewExecution.phases.review.runtimeMode, "build")
+    ? effectiveBoardRuntimeMode(reviewExecution.phases.review.runtimeMode)
     : undefined;
   const doneStageId = boardStageWithRole(stageState, "done")?.stageId ?? null;
   const unmetDependencyKeys = dependencies
@@ -873,14 +912,14 @@ export function BoardCardDetail({
       statuses and a card has one live step. */
   const stepPaused = stepPausedByHuman ? { stageLabel: boardStageLabel(stages, card.stage) } : null;
   /** The kept-worktree banner: the card is finished — archived, or
-      in Done with `reclaimWorktreeOnDone` on — and still holds its worktree. */
+      in Done, or cancelled work — still holds its worktree, and the setting wanted it gone. */
   const worktreeKept =
     card.worktree !== null &&
     boardCardWorktreeKept({
       worktreeReady: card.worktree.status === "ready",
       archived: card.archivedAt !== null,
       inDoneStage: doneStageId !== null && card.stage === doneStageId,
-      reclaimWorktreeOnDone: boardSettings.lifecycle.reclaimWorktreeOnDone,
+      worktreeAtDone: boardSettings.lifecycle.worktreeAtDone,
       cancelledWork: boardCardWorktreeIsCancelledWork(card),
     })
       ? {
@@ -977,6 +1016,32 @@ export function BoardCardDetail({
                     : "Try again in a moment.",
         tone: "error",
       });
+    });
+  };
+
+  /** T3o (T3O-130): skip, mark or unmark one step of the running pass. */
+  const onSkipCiStep = (input: {
+    readonly runId: string;
+    readonly stepIndex: number;
+    readonly skip: boolean;
+    readonly stepName: string;
+  }) => {
+    void skipCiStep({
+      environmentId,
+      input: { cardId: card.id, runId: input.runId, stepIndex: input.stepIndex, skip: input.skip },
+    }).then((result) => {
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          boardToast({
+            title: `${input.stepName} could not be skipped`,
+            description: describeBoardCommandFailure(result),
+            tone: "error",
+          });
+        }
+        return;
+      }
+      const toast = describeBoardCiSkipStepOutcome(result.value, input.stepName);
+      if (toast !== null) boardToast(toast);
     });
   };
 
@@ -1203,6 +1268,7 @@ export function BoardCardDetail({
 
   const view = (
     <BoardCardDetailView
+      detailsStatus={detailsStatus}
       group={groupView}
       stageLadderDeferred={parentIsGroup && groupView === null}
       stalledReason={cardShell?.stalledReason}
@@ -1374,12 +1440,26 @@ export function BoardCardDetail({
         });
       }}
       onClose={onClose}
-      queueInfo={queueInfo}
+      queueInfo={mergeQueueInfo ?? queueInfo}
+      mergeQueued={mergeQueueInfo !== null}
       queueForceStartPending={forceStartPending}
-      queueForceStartRequested={cardShell?.forceStart === true}
+      queueForceStartRequested={mergeQueueInfo === null && cardShell?.forceStart === true}
       onQueueForceStart={() => {
         setFeedback(null);
         setForceStartPending(true);
+        if (mergeQueueInfo !== null) {
+          void mergeQueueStartNow({ environmentId, input: { cardId: card.id } }).then((result) => {
+            setForceStartPending(false);
+            if (result._tag === "Failure") {
+              if (!isAtomCommandInterrupted(result)) {
+                setFeedback(describeBoardCommandFailure(result));
+              }
+              return;
+            }
+            setFeedback(describeBoardMergeOutcome(result.value));
+          });
+          return;
+        }
         void forceStartStep({ environmentId, input: { cardId: card.id } }).then((result) => {
           setForceStartPending(false);
           if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -1388,7 +1468,7 @@ export function BoardCardDetail({
         });
       }}
       onQueueMoveToFront={
-        queueMoveToFront === null
+        queueMoveToFront === null || mergeQueueInfo !== null
           ? undefined
           : () =>
               runCommand(
@@ -1520,6 +1600,7 @@ export function BoardCardDetail({
       onSkipCi={onSkipCi}
       onRetryCi={() => onCiAction("retry")}
       onStopCi={() => onCiAction("stop")}
+      onSkipCiStep={onSkipCiStep}
       onCiSendBack={() => onCiAction("send-back")}
       skipCiPending={skippingCi}
       onCreateFollowUp={onCreateFollowUp}

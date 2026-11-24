@@ -36,6 +36,7 @@ export * from "./projectClone.ts";
 export * from "./speech.ts";
 export * from "./pullRequest.ts";
 export * from "./pullRequestReviewGuide.ts";
+export * from "./issue.ts";
 export * from "./orchestrationDispatch.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
@@ -52,11 +53,16 @@ export * from "./threadTitle.ts";
 // T3o: board schema.
 export * from "./board.ts";
 export * from "./boardGroups.ts";
+// T3o: the automation gate-due model (T3O-115).
+export * from "./boardGates.ts";
+// T3o: the merge queue (T3O-128).
+export * from "./boardMergeQueue.ts";
 export * from "./boardUsage.ts";
 export * from "./boardEvent.ts";
 export * from "./boardWorkers.ts";
 // T3o: worker-owned capacity (T3O-86).
 export * from "./boardCapacity.ts";
+export * from "./boardReadinessChecks.ts";
 // T3o: measured actuals and learned baselines (T3O-87).
 export * from "./boardActuals.ts";
 // T3o: outbound-only workers (T3O-84).
@@ -67,6 +73,7 @@ export * from "./boardEnvelope.ts";
 export * from "./boardStopSignal.ts";
 export * from "./boardRetrySchedule.ts";
 export * from "./t3oProjectFile.ts";
+export * from "./boardSchedules.ts";
 export * from "./boardProjectConfig.ts";
 export * from "./boardNotifications.ts";
 export * from "./commandOrigin.ts";

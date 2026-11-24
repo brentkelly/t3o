@@ -6,6 +6,7 @@
  */
 import {
   BOARD_LOCAL_WORKER_ID,
+  BOARD_SEED_LABEL_IDS,
   BOARD_SEED_STAGES,
   BOARD_SEED_STAGE_IDS,
   BoardCardId,
@@ -17,9 +18,12 @@ import {
   boardCiAgentStepId,
   type BoardCiStep,
   type BoardCard,
+  type BoardCiPassStep,
   type BoardCiStepDefinition,
+  type BoardCiStepResult,
   type BoardEvent,
   type BoardState,
+  type BoardCommand,
 } from "@t3tools/contracts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -103,6 +107,12 @@ type Script =
       readonly alsoFailed?: ReadonlyArray<number>;
       /** Force `ranAll`, as an older worker that sends none reads (false). */
       readonly ranAll?: boolean;
+      /** A step's reported failures, by request index (T3O-126). */
+      readonly results?: Readonly<Record<number, BoardCiStepResult>>;
+      /** Steps that passed over flaky tests, by request index. */
+      readonly flaky?: Readonly<Record<number, NonNullable<BoardCiPassStep["flaky"]>>>;
+      /** T3o (T3O-129): tests each step deferred to the nightly, by request index. */
+      readonly deferred?: Readonly<Record<number, NonNullable<BoardCiPassStep["deferred"]>>>;
     })
   | "hang"
   | "drop";
@@ -146,10 +156,23 @@ const scriptedRunner = (scripts: ReadonlyArray<Script>) =>
                 ...(failed && script.result === "failed" && script.headline !== undefined
                   ? { headline: script.headline }
                   : {}),
+                ...(script.results?.[index] === undefined ? {} : { result: script.results[index] }),
+                ...(!failed && script.flaky?.[index] !== undefined
+                  ? { flaky: script.flaky[index] }
+                  : {}),
+                ...(script.deferred?.[index] === undefined
+                  ? {}
+                  : { deferred: script.deferred[index] }),
               },
             });
           }
-          const { alsoFailed: _alsoFailed, ...result } = script;
+          const {
+            alsoFailed: _alsoFailed,
+            results: _results,
+            flaky: _flaky,
+            deferred: _deferred,
+            ...result
+          } = script;
           return {
             ...result,
             ranAll: script.ranAll ?? (runsAll || last === request.steps.length - 1),
@@ -361,7 +384,7 @@ it.effect("a failure gets a fix agent; its fix re-runs every step from the top",
         assert.isDefined(select);
         if (select?.type !== "board.card.select-step") return;
         assert.strictEqual(select.stepId, fixStep);
-        assert.strictEqual(select.stepLabel, "CI fix 1 of 3");
+        assert.strictEqual(select.stepLabel, "CI fix 1 of 5");
         assert.strictEqual(fixing.ci?.fixIssues, 1);
         // Stop on failure is Yes by default: the runner is told nothing.
         assert.isUndefined((yield* requests)[0]?.stopOnFailure);
@@ -820,10 +843,31 @@ it.effect("after the last fix attempt the card stops in CI, and Retry CI starts 
           fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "fixed", finding: "" }, 2),
         );
         yield* h.reactor.drainCi;
+        // T3O-126: past the limit an uncounted flaky check runs first; a real failure stops.
+        const checking = yield* live(h, subject.id);
+        assert.strictEqual(checking.ci?.phase, "fixing");
+        assert.strictEqual(checking.ci?.fixTriage, true);
+        assert.strictEqual(checking.ci?.fixAttempts, 1);
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 2),
+            {
+              verdict: "cannot-fix",
+              finding: "Test fails alone too",
+              issues: [{ id: "s1", status: "cannot-fix" }],
+            },
+            3,
+          ),
+        );
+        yield* h.reactor.drainCi;
         const stopped = yield* live(h, subject.id);
         assert.strictEqual(stopped.stage, ci);
         assert.strictEqual(stopped.ci?.phase, "stopped");
-        assert.strictEqual(stopped.ci?.stopReason, "CI still failing after 1 fix: Test.");
+        assert.strictEqual(
+          stopped.ci?.stopReason,
+          "The fix agent couldn't fix Test: Test fails alone too.",
+        );
         const sentBack = ciRecords(yield* h.decided).filter(
           (record) => record.payload.action.kind === "send-back",
         );
@@ -1918,5 +1962,1155 @@ it.effect("a nearly full disk on this server holds the pass as a machine problem
         freeBytes: (path) => Effect.sync(() => (checked.push(path), 0.5 * 1024 ** 3)),
       }),
     );
+  }),
+);
+
+// T3O-126: a flaky test never stops a card; each flake becomes an auto-built bug card.
+const flakeTitle = { title: "adds two numbers", file: "src/math.test.ts" };
+
+const flakeCards = (commands: ReadonlyArray<HarnessCommand>) =>
+  commands.filter(
+    (command): command is Extract<HarnessCommand, { type: "board.card.create" }> =>
+      command.type === "board.card.create" &&
+      (command as { externalRef?: { system: string } }).externalRef?.system === "t3o-flaky",
+  );
+
+it.effect(
+  "T3O-126: a pass whose only failures are flaky passes, uses no fix and files a bug card",
+  () =>
+    Effect.gen(function* () {
+      const { runner, calls } = yield* scriptedRunner([
+        {
+          result: "passed",
+          failedIndex: null,
+          results: {
+            1: { summary: null, failures: [{ ...flakeTitle, detail: "expected 3", flaky: true }] },
+          },
+          flaky: { 1: [flakeTitle] },
+        },
+      ]);
+      const subject = card("flaky-pass", review);
+      yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          assert.strictEqual(yield* calls, 1);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          const commands = yield* h.commands;
+          assert.isFalse(commands.some((command) => command.type === "board.card.select-step"));
+          const actions = ciRecords(yield* h.decided).map((record) => record.payload.action);
+          assert.isFalse(actions.some((action) => action.kind === "begin-fix"));
+          const stepRecord = actions.find(
+            (action) =>
+              action.kind === "step" && action.index === 1 && action.step.status === "passed",
+          );
+          assert.deepStrictEqual(stepRecord?.kind === "step" ? stepRecord.step.flaky : undefined, [
+            flakeTitle,
+          ]);
+
+          const created = flakeCards(commands);
+          assert.lengthOf(created, 1);
+          const create = created[0]!;
+          assert.deepStrictEqual(create.labels, [BOARD_SEED_LABEL_IDS.bug]);
+          assert.strictEqual(
+            create.externalRef?.id,
+            `${projectId}:src/math.test.ts › adds two numbers`,
+          );
+          assert.strictEqual(create.planReview?.unattended, true);
+          assert.include(create.brief ?? "", "passed when re-run alone");
+          assert.include(create.brief ?? "", "expected 3");
+          const automation = commands.find(
+            (command) =>
+              command.type === "board.card.set-automation" && command.cardId === create.cardId,
+          );
+          assert.deepInclude(automation, {
+            autoPlan: true,
+            autoSignOff: true,
+            autoBuild: true,
+            autoMerge: false,
+          });
+          const moved = commands.find(
+            (command) => command.type === "board.card.move" && command.cardId === create.cardId,
+          );
+          assert.strictEqual(moved?.type === "board.card.move" ? moved.toStage : null, "planning");
+          assert.isTrue(
+            commands.some(
+              (command) =>
+                command.type === "board.card.record-note" &&
+                command.cardId === subject.id &&
+                command.kind === "card-ci-flakes-filed",
+            ),
+          );
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect.each([
+  { label: "Auto-merge off", merge: undefined, own: undefined, allowed: true },
+  { label: "board-wide Auto-merge on", merge: { autoMerge: true }, own: undefined, allowed: false },
+  { label: "the card's own Auto-merge on", merge: undefined, own: true, allowed: false },
+])(
+  "T3O-127: a flake card's own test may be inconclusive under load, with $label",
+  ({ merge: mergeSettings, own, allowed }) =>
+    Effect.gen(function* () {
+      const { runner, requests } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+      const subject = card(`inconclusive-${String(allowed)}-${String(own)}`, review, {
+        externalRef: {
+          system: "t3o-flaky",
+          id: `${projectId}:src/math.test.ts › adds two numbers`,
+          url: null,
+        },
+        ...(own === undefined ? {} : { autoMergeSetting: own }),
+      });
+      const withMerge = settingsWith({
+        building: [codexStep],
+        globalMaxConcurrent: 3,
+        ...(mergeSettings === undefined ? {} : { merge: mergeSettings }),
+      });
+      yield* withGovernor({ board: boardWith([subject]), settings: withMerge }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          const request = (yield* requests)[0]!;
+          assert.strictEqual(request.notFlakyTitle, "src/math.test.ts › adds two numbers");
+          assert.strictEqual(request.inconclusiveTargetAllowed === true, allowed);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-129: a flake card's run request leaves its own target off the skip list", () =>
+  Effect.gen(function* () {
+    const { runner, requests } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+    const target = "src/math.test.ts › adds two numbers";
+    const subject = card("load-sensitive-own", review, {
+      externalRef: { system: "t3o-flaky", id: `${projectId}:${target}`, url: null },
+    });
+    const entry = (file: string, title: string) => ({
+      key: `${file} › ${title}`,
+      file,
+      title,
+      lastFlakedAt: NOW,
+      cardKey: "T3O-1",
+      flakes: 1,
+      lastRunId: "run-0",
+    });
+    const config = {
+      ...ciConfig(),
+      loadSensitive: [
+        entry("src/math.test.ts", "adds two numbers"),
+        entry("e2e/a.spec.ts", "slow"),
+      ],
+    };
+    yield* withGovernor({ board: boardWith([subject], config), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const request = (yield* requests)[0]!;
+        assert.deepStrictEqual(request.loadSensitive, [{ file: "e2e/a.spec.ts", title: "slow" }]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect("T3O-126: a mixed step's fix sees only the real failures; its flake is still filed", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([
+      {
+        result: "failed",
+        failedIndex: 1,
+        results: {
+          1: {
+            summary: null,
+            failures: [
+              { title: "real break", file: "src/a.test.ts" },
+              { ...flakeTitle, flaky: true },
+            ],
+          },
+        },
+      },
+    ]);
+    const subject = card("mixed", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const fixing = yield* live(h, subject.id);
+        assert.strictEqual(fixing.ci?.phase, "fixing");
+        assert.strictEqual(fixing.ci?.fixIssues, 1);
+        const select = (yield* h.commands).find(
+          (command) => command.type === "board.card.select-step",
+        );
+        if (select?.type !== "board.card.select-step") return assert.fail("no fix step");
+        assert.include(select.prompt, "[s1-1] Test: real break");
+        assert.notInclude(select.prompt, "[s1-2]");
+        assert.include(select.prompt, "Flaky, not yours: leave alone.");
+        assert.lengthOf(flakeCards(yield* h.commands), 1);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  { label: "a clean worktree", worktreeDirty: false },
+  { label: "only an untracked file in the worktree", worktreeDirty: "untracked" as const },
+])(
+  "T3O-126: the fix agent's flaky verdict with $label carries the same pass on from the next step",
+  ({ worktreeDirty }) =>
+    Effect.gen(function* () {
+      const { runner, calls, requests } = yield* scriptedRunner([
+        {
+          result: "failed",
+          failedIndex: 0,
+          results: { 0: { summary: null, failures: [flakeTitle] } },
+        },
+        { result: "passed", failedIndex: null },
+      ]);
+      const subject = card(`agent-flaky-${String(worktreeDirty)}`, review);
+      yield* withGovernor({ board: boardWith([subject]), settings, worktreeDirty }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          const fixing = yield* live(h, subject.id);
+          assert.strictEqual(fixing.ci?.phase, "fixing");
+          assert.strictEqual(fixing.ci?.fixAttempts, 1);
+          const runId = fixing.ci!.runId;
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiFixStepId(1, 1),
+              {
+                verdict: "flaky",
+                issues: [{ id: "s0-1", status: "flaky", repro: "vp test src/math.test.ts" }],
+              },
+              2,
+            ),
+          );
+          yield* h.reactor.drainCi;
+          assert.strictEqual(yield* calls, 2);
+          const resumed = (yield* requests)[1]!;
+          // Only the step after the flake runs again, on the same pass.
+          assert.deepStrictEqual(
+            resumed.steps.map((step) => step.name),
+            ["Test"],
+          );
+          assert.strictEqual(resumed.indexOffset, 1);
+          assert.deepStrictEqual(resumed.knownFlaky, ["src/math.test.ts › adds two numbers"]);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          const records = ciRecords(yield* h.decided);
+          assert.strictEqual(
+            records.filter((record) => record.payload.action.kind === "start-pass").length,
+            1,
+          );
+          const resume = records.find((record) => record.payload.action.kind === "flaky-resume");
+          assert.isDefined(resume);
+          assert.strictEqual(resume?.payload.card.ci?.fixAttempts, 0);
+          assert.strictEqual(resume?.payload.card.ci?.flakyChecks, 1);
+          const rewritten = records
+            .map((record) => record.payload.action)
+            .find(
+              (action) =>
+                action.kind === "step" &&
+                action.runId === runId &&
+                action.index === 0 &&
+                action.step.status === "passed",
+            );
+          assert.deepStrictEqual(rewritten?.kind === "step" ? rewritten.step.flaky : undefined, [
+            { ...flakeTitle, repro: "vp test src/math.test.ts", byAgent: true },
+          ]);
+          assert.isTrue(
+            records.some((record) =>
+              record.payload.settled.some(
+                (entry) => entry.runId === runId && entry.outcome === "passed",
+              ),
+            ),
+          );
+          const created = flakeCards(yield* h.commands);
+          assert.lengthOf(created, 1);
+          assert.include(created[0]!.brief ?? "", "vp test src/math.test.ts");
+          assert.include(created[0]!.brief ?? "", "CI fix agent");
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+// T3o (T3O-129): the agent's own words name a whole-step flake, so no script can match them.
+it.effect("T3O-129: a whole-step flaky ruling marks its entry agent-worded", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures: [] } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card("whole-step-agent-worded", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const runId = (yield* live(h, subject.id)).ci!.runId;
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 1),
+            {
+              verdict: "flaky",
+              issues: [{ id: "s0", status: "flaky", title: "the slow one", file: "src/x.ts" }],
+            },
+            2,
+          ),
+        );
+        yield* h.reactor.drainCi;
+        const rewritten = ciRecords(yield* h.decided)
+          .map((record) => record.payload.action)
+          .find(
+            (action) =>
+              action.kind === "step" &&
+              action.runId === runId &&
+              action.index === 0 &&
+              action.step.status === "passed",
+          );
+        assert.deepStrictEqual(rewritten?.kind === "step" ? rewritten.step.flaky : undefined, [
+          { title: "the slow one", file: "src/x.ts", byAgent: true, agentWorded: true },
+        ]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  { label: "a failure the agent never called flaky", worktreeDirty: false, real: true },
+  { label: "an uncommitted edit in the worktree", worktreeDirty: true, real: false },
+])("T3O-126: a flaky verdict with $label re-runs the pass, counted", ({ worktreeDirty, real }) =>
+  Effect.gen(function* () {
+    const failures = real ? [flakeTitle, { title: "real break" }] : [flakeTitle];
+    const { runner, requests } = yield* scriptedRunner([
+      {
+        result: "failed",
+        failedIndex: 0,
+        results: { 0: { summary: null, failures } },
+        deferred: { 0: [{ file: "src/slow.test.ts", title: "boots" }] },
+      },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card(`flaky-not-resumed-${String(worktreeDirty)}`, review);
+    yield* withGovernor({ board: boardWith([subject]), settings, worktreeDirty }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiFixStepId(1, 1),
+            { verdict: "flaky", issues: [{ id: "s0-1", status: "flaky" }] },
+            2,
+          ),
+        );
+        yield* h.reactor.drainCi;
+        const rerun = (yield* requests)[1]!;
+        assert.strictEqual(rerun.indexOffset ?? 0, 0);
+        const records = ciRecords(yield* h.decided);
+        assert.isUndefined(records.find((record) => record.payload.action.kind === "flaky-resume"));
+        assert.strictEqual(
+          records.filter((record) => record.payload.action.kind === "start-pass").length,
+          2,
+        );
+        // T3o (T3O-129): the replaced run's deferrals are noted before the new pass starts.
+        const deferredNotes = (yield* h.commands).filter(
+          (command) =>
+            command.type === "board.card.record-note" && command.kind === "card-ci-deferred",
+        );
+        assert.lengthOf(deferredNotes, 1);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  {
+    label: "a flaky step's rewrite to passed that never lands",
+    failures: [flakeTitle],
+    issues: [{ id: "s0-1", status: "flaky" as const }],
+    rewriteFails: true,
+    flakeCardCount: 1,
+  },
+  {
+    label: "a whole-step flaky report with no test title",
+    failures: [],
+    issues: [{ id: "s0", status: "flaky" as const }],
+    rewriteFails: false,
+    flakeCardCount: 0,
+  },
+  {
+    label: "a flake in the card's own diff",
+    failures: [flakeTitle],
+    issues: [{ id: "s0-1", status: "flaky" as const, inDiff: true }],
+    rewriteFails: false,
+    flakeCardCount: 0,
+  },
+])(
+  "T3O-126: $label re-runs the pass, counted",
+  ({ label, failures, issues, rewriteFails, flakeCardCount }) =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+        { result: "passed", failedIndex: null },
+      ]);
+      const subject = card(`flaky-unlanded-${label.replaceAll(/\W+/g, "-")}`, review);
+      const failCommand = (command: BoardCommand) =>
+        rewriteFails &&
+        command.type === "board.card.record-ci" &&
+        command.action.kind === "step" &&
+        command.action.step.flaky !== undefined;
+      yield* withGovernor({ board: boardWith([subject]), settings, failCommand }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          yield* h.pumpDomain(
+            fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "flaky", issues }, 2),
+          );
+          yield* h.reactor.drainCi;
+          const records = ciRecords(yield* h.decided);
+          assert.isUndefined(
+            records.find((record) => record.payload.action.kind === "flaky-resume"),
+          );
+          assert.strictEqual(
+            records.filter((record) => record.payload.action.kind === "start-pass").length,
+            2,
+          );
+          assert.lengthOf(flakeCards(yield* h.commands), flakeCardCount);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-126: a flaky `more` covers the failures rolled into it, so the pass resumes", () =>
+  Effect.gen(function* () {
+    const failures = Array.from({ length: 32 }, (_, n) => ({
+      title: `flake ${n + 1}`,
+      file: "src/many.test.ts",
+    }));
+    const { runner } = yield* scriptedRunner([
+      { result: "failed", failedIndex: 0, results: { 0: { summary: null, failures } } },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card("flaky-more", review);
+    yield* withGovernor({ board: boardWith([subject]), settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCiAndRun(h, subject, 1);
+        const issues = [
+          ...Array.from({ length: 29 }, (_, n) => ({
+            id: `s0-${n + 1}`,
+            status: "flaky" as const,
+          })),
+          { id: "more", status: "flaky" as const },
+        ];
+        yield* h.pumpDomain(
+          fixCompleted(subject.id, boardCiFixStepId(1, 1), { verdict: "flaky", issues }, 2),
+        );
+        yield* h.reactor.drainCi;
+        const records = ciRecords(yield* h.decided);
+        const resume = records.find((record) => record.payload.action.kind === "flaky-resume");
+        assert.isDefined(resume);
+        const action = resume!.payload.action;
+        assert.lengthOf(action.kind === "flaky-resume" ? action.titles : [], 32);
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.isFalse(
+          flakeCards(yield* h.commands).some((command) =>
+            (command.externalRef?.id ?? "").includes(" more in "),
+          ),
+        );
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect.each([
+  { label: "on unchanged code, the re-run is told the tests it ruled flaky", committed: false },
+  { label: "that commits, the re-run trusts none of its flaky rulings", committed: true },
+])("T3O-126: after a counted fix $label", ({ committed }) =>
+  Effect.gen(function* () {
+    const { runner, requests } = yield* scriptedRunner([
+      {
+        result: "failed",
+        failedIndex: 1,
+        results: {
+          1: { summary: null, failures: [{ title: "real break" }, flakeTitle] },
+        },
+      },
+      { result: "passed", failedIndex: null },
+    ]);
+    const subject = card(`fixed-flaky-${String(committed)}`, review);
+    yield* withGovernor(
+      {
+        board: boardWith([subject]),
+        settings,
+        ...(committed ? { latestBranchCommitIso: "2999-01-01T00:00:00.000Z" } : {}),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiFixStepId(1, 1),
+              {
+                verdict: "fixed",
+                issues: [
+                  { id: "s1-1", status: "resolved" },
+                  { id: "s1-2", status: "flaky" },
+                ],
+              },
+              2,
+            ),
+          );
+          yield* h.reactor.drainCi;
+          const rerun = (yield* requests)[1]!;
+          assert.strictEqual(rerun.indexOffset ?? 0, 0);
+          assert.deepStrictEqual(
+            rerun.knownFlaky,
+            committed ? undefined : ["src/math.test.ts › adds two numbers"],
+          );
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          assert.lengthOf(flakeCards(yield* h.commands), 1);
+        }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+// ── T3O-130: skipping a step of a running pass ─────────────────────────────
+
+interface GatedRun {
+  readonly started: Deferred.Deferred<void>;
+  readonly done: Deferred.Deferred<"passed" | "failed">;
+  readonly reported: Deferred.Deferred<void>;
+}
+
+/** A runner whose steps each run until the test settles them, reporting `running` first as
+    the real one does. Parallel members run together; a cancel interrupts them. */
+const gatedRunner = () => {
+  const runs = new Map<string, Array<GatedRun>>();
+  const attempts = new Map<string, number>();
+  const requests: Array<BoardCiRunRequest> = [];
+  const runOf = (name: string, attempt: number): GatedRun => {
+    const list = runs.get(name) ?? [];
+    runs.set(name, list);
+    while (list.length <= attempt) {
+      list.push({
+        started: Deferred.makeUnsafe(),
+        done: Deferred.makeUnsafe(),
+        reported: Deferred.makeUnsafe(),
+      });
+    }
+    return list[attempt]!;
+  };
+  const runner: BoardCiRunnerShape = {
+    run: (request, emit) =>
+      Effect.gen(function* () {
+        requests.push(request);
+        const groups: Array<
+          Array<{ readonly def: BoardCiStepDefinition; readonly index: number }>
+        > = [];
+        for (const [index, def] of request.steps.entries()) {
+          const last = groups.at(-1);
+          if (def.parallel === true && last !== undefined) last.push({ def, index });
+          else groups.push([{ def, index }]);
+        }
+        let failedIndex: number | null = null;
+        for (const group of groups) {
+          const failed = yield* Effect.forEach(
+            group,
+            ({ def, index }) =>
+              Effect.gen(function* () {
+                const attempt = attempts.get(def.name) ?? 0;
+                attempts.set(def.name, attempt + 1);
+                const run = runOf(def.name, attempt);
+                const base = {
+                  name: def.name,
+                  command: def.command,
+                  timeoutMinutes: def.timeoutMinutes,
+                  ...(def.parallel === true ? { parallel: true } : {}),
+                  startedAt: NOW,
+                };
+                yield* emit({
+                  index,
+                  step: { ...base, status: "running", finishedAt: null, exitCode: null, tail: "" },
+                });
+                yield* Deferred.succeed(run.started, undefined);
+                const status = yield* Deferred.await(run.done);
+                yield* emit({
+                  index,
+                  step: {
+                    ...base,
+                    status,
+                    finishedAt: NOW,
+                    exitCode: status === "failed" ? 1 : 0,
+                    tail: status === "failed" ? "error: it broke" : "",
+                  },
+                });
+                yield* Deferred.succeed(run.reported, undefined);
+                return status === "failed" ? index : null;
+              }),
+            { concurrency: "unbounded" },
+          );
+          failedIndex ??= failed.find((index) => index !== null) ?? null;
+          if (failedIndex !== null && request.stopOnFailure !== false) break;
+        }
+        return failedIndex === null
+          ? { result: "passed" as const, failedIndex: null, ranAll: true }
+          : { result: "failed" as const, failedIndex, exitCode: 1, ranAll: false };
+      }),
+  };
+  return {
+    runner,
+    requests: () => requests,
+    started: (name: string, attempt = 0) => Deferred.await(runOf(name, attempt).started),
+    settle: (name: string, status: "passed" | "failed", attempt = 0) =>
+      Deferred.succeed(runOf(name, attempt).done, status).pipe(
+        Effect.andThen(Deferred.await(runOf(name, attempt).reported)),
+      ),
+  };
+};
+
+const SCRIPT_E2E: BoardCiStep = { ...SCRIPT_A, id: "e2e", name: "E2E", command: "vp e2e" };
+const AUDIT: BoardCiStep = {
+  kind: "agent",
+  id: "audit",
+  name: "Audit",
+  parallel: false,
+  prompt: "Audit it.",
+  model: null,
+  timeoutMinutes: 30,
+};
+
+const skipStep = (h: Harness, cardId: BoardCardId, stepIndex: number, skip = true) =>
+  Effect.gen(function* () {
+    const runId = (yield* live(h, cardId)).ci!.runId;
+    return yield* h.reactor.skipCiStep({ cardId, runId, stepIndex, skip }, () => Effect.void);
+  });
+
+const passStatuses = (h: Harness, cardId: BoardCardId) =>
+  h
+    .ciPasses(cardId)
+    .pipe(Effect.map((passes) => passes.at(-1)?.steps.map((step) => step.status) ?? []));
+
+const ciAgentSelects = (commands: ReadonlyArray<HarnessCommand>, prefix: string) =>
+  commands.filter(
+    (command) =>
+      command.type === "board.card.select-step" &&
+      (command as { stepId: string }).stepId.startsWith(prefix),
+  ) as unknown as ReadonlyArray<{ stepId: string; prompt: string }>;
+
+it.effect("T3O-130: skipping a running script lets the pass pass and move on", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-running", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        yield* gated.settle("Lint", "passed");
+        yield* gated.started("Test");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "skipped" });
+        yield* h.reactor.drainCi;
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "skipped"]);
+        const row = (yield* h.ciPasses(subject.id)).at(-1)!.steps[1]!;
+        assert.strictEqual(row.note, "Skipped");
+        assert.strictEqual((yield* h.ciPasses(subject.id)).at(-1)!.outcome, "passed");
+        assert.lengthOf(gated.requests(), 1);
+        const skips = ciRecords(yield* h.decided).filter(
+          (record) => record.payload.activity?.kind === "card-ci-step-skip",
+        );
+        assert.lengthOf(skips, 1);
+        assert.strictEqual(skips[0]!.payload.activity?.ciStepName, "Test");
+        // The card has left CI: nothing more to skip.
+        assert.deepStrictEqual(
+          yield* h.reactor.skipCiStep(
+            { cardId: subject.id, runId: "ci-any", stepIndex: 1, skip: true },
+            () => Effect.void,
+          ),
+          { outcome: "not-in-ci" },
+        );
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+it.effect(
+  "T3O-130: a pass whose step records were lost, with nothing skipped, is not held as all-skipped",
+  () =>
+    Effect.gen(function* () {
+      // The runner passes but none of its step reports land, as when each record faults.
+      const runner: BoardCiRunnerShape = {
+        run: () => Effect.succeed({ result: "passed" as const, failedIndex: null, ranAll: true }),
+      };
+      const subject = card("skip-lost-records", review);
+      const board = boardWith([subject], mixedConfig([SCRIPT_A]));
+      yield* withGovernor({ board, settings }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCi(h, subject, 1);
+          yield* h.reactor.drainCi;
+          const after = yield* live(h, subject.id);
+          assert.notStrictEqual(after.ci?.stopReason, "Every step was skipped. Use Skip CI.");
+          assert.strictEqual(after.stage, merge);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-130: a later step marked mid-segment is restarted past when it starts", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-mark", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 2), { outcome: "marked" });
+        assert.deepStrictEqual((yield* live(h, subject.id)).ci?.skippedSteps, ["e2e"]);
+        // Unskip and skip again: a mark is reversible until the step starts.
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 2, false), {
+          outcome: "unskipped",
+        });
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 2), { outcome: "marked" });
+        yield* gated.settle("Lint", "passed");
+        yield* gated.started("Test");
+        yield* gated.settle("Test", "passed");
+        yield* gated.started("E2E");
+        yield* h.reactor.drainCi;
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "passed", "skipped"]);
+        // The restart begins at the marked step's group, so nothing earlier re-ran.
+        assert.lengthOf(gated.requests(), 1);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+it.effect("T3O-130: marked agent and forge steps are recorded skipped and never started", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-agent-forge", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, AUDIT, FORGE, SCRIPT_B]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "marked" });
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 2), { outcome: "marked" });
+        yield* gated.settle("Lint", "passed");
+        yield* gated.started("Test");
+        yield* gated.settle("Test", "passed");
+        yield* h.reactor.drainCi;
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+          "passed",
+          "skipped",
+          "skipped",
+          "passed",
+        ]);
+        assert.lengthOf(ciAgentSelects(yield* h.commands, "ci@"), 0);
+        assert.lengthOf(yield* h.mergeStateProbes, 0);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+it.effect("T3O-130: skipping a running forge step drops its in-flight read", () =>
+  Effect.gen(function* () {
+    const { runner } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+    const subject = card("skip-forge", review, { pullRequest: prOpen as never });
+    const forgeNext: BoardCiStep = { ...FORGE, id: "gh-next", name: "Next checks" };
+    let state = mergeStateWith({ passed: 1, pending: 1, failed: 0 });
+    let stuck = false;
+    const asked = yield* Deferred.make<void>();
+    const answer = yield* Deferred.make<void>();
+    yield* withGovernor(
+      {
+        board: boardWith([subject], mixedConfig([SCRIPT_A, FORGE, forgeNext])),
+        settings,
+        pullRequest: foundPr,
+        mergeStateOf: () => state,
+        mergeStateGate: Effect.suspend(() =>
+          stuck
+            ? Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer)))
+            : Effect.void,
+        ),
+      },
+      (h) =>
+        Effect.gen(function* () {
+          yield* enterCiAndRun(h, subject, 1);
+          assert.deepStrictEqual(
+            (yield* live(h, subject.id)).ci?.steps.map((step) => step.status),
+            ["passed", "running", "pending"],
+          );
+          // The first forge step's next read hangs, and the step is skipped meanwhile.
+          stuck = true;
+          yield* TestClock.adjust("30 seconds");
+          yield* Deferred.await(asked);
+          stuck = false;
+          assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "skipped" });
+          yield* h.reactor.drain;
+          assert.deepStrictEqual(
+            (yield* live(h, subject.id)).ci?.steps.map((step) => step.status),
+            ["passed", "skipped", "running"],
+          );
+          // The stale read answers green: it settles neither the skipped step nor the next one.
+          state = mergeStateWith({ passed: 2, pending: 0, failed: 0 });
+          yield* Deferred.succeed(answer, undefined);
+          yield* h.reactor.drainCi;
+          assert.deepStrictEqual(
+            (yield* live(h, subject.id)).ci?.steps.map((step) => step.status),
+            ["passed", "skipped", "running"],
+          );
+          assert.strictEqual(cardStage(yield* h.board, subject.id), ci);
+          // The next step's own read then passes it, once.
+          yield* h.reactor.sweep;
+          yield* h.reactor.drainCi;
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "skipped",
+            "passed",
+          ]);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        }),
+    ).pipe(Effect.provideService(BoardCiRunner, runner));
+  }),
+);
+
+it.effect("T3O-130: a skipped agent step is abandoned and its late verdict changes nothing", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-agent", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, AUDIT, SCRIPT_B]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        yield* gated.settle("Lint", "passed");
+        yield* h.reactor.drain;
+        const runId = (yield* live(h, subject.id)).ci!.runId;
+        assert.lengthOf(ciAgentSelects(yield* h.commands, "ci@"), 1);
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "skipped" });
+        yield* h.reactor.drain;
+        yield* gated.started("Test");
+        // The agent's verdict arrives after the skip: refused, so no failure and no second run.
+        yield* h.pumpDomain(
+          fixCompleted(
+            subject.id,
+            boardCiAgentStepId(runId, 1),
+            { verdict: "failed", summary: "Too late", failures: [] },
+            2,
+          ),
+        );
+        yield* h.reactor.drain;
+        yield* gated.settle("Test", "passed");
+        yield* h.reactor.drainCi;
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "skipped", "passed"]);
+        assert.lengthOf(gated.requests(), 2);
+        assert.lengthOf(ciAgentSelects(yield* h.commands, "ci-fix@"), 0);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+it.effect(
+  "T3O-130: an agent step marked as it started fails nothing when its verdict ends it skipped",
+  () =>
+    Effect.gen(function* () {
+      const gated = gatedRunner();
+      const subject = card("mark-agent-race", review);
+      const board = boardWith([subject], mixedConfig([SCRIPT_A, AUDIT, SCRIPT_B]));
+      yield* withGovernor({ board, settings }, (h) =>
+        Effect.gen(function* () {
+          yield* enterCi(h, subject, 1);
+          yield* gated.started("Lint");
+          yield* gated.settle("Lint", "passed");
+          yield* h.reactor.drain;
+          const runId = (yield* live(h, subject.id)).ci!.runId;
+          assert.lengthOf(ciAgentSelects(yield* h.commands, "ci@"), 1);
+          // The race: a mark that landed before the running record leaves a running row marked.
+          yield* Ref.update(h.model, (current) => ({
+            ...current,
+            board: {
+              ...current.board!,
+              cards: current.board!.cards.map((entry) =>
+                entry.id === subject.id && entry.ci !== null
+                  ? { ...entry, ci: { ...entry.ci, skippedSteps: [AUDIT.id] } }
+                  : entry,
+              ),
+            },
+          }));
+          yield* h.pumpDomain(
+            fixCompleted(
+              subject.id,
+              boardCiAgentStepId(runId, 1),
+              { verdict: "failed", summary: "It broke", failures: [] },
+              2,
+            ),
+          );
+          yield* h.reactor.drain;
+          assert.lengthOf(ciAgentSelects(yield* h.commands, "ci-fix@"), 0);
+          yield* gated.started("Test");
+          yield* gated.settle("Test", "passed");
+          yield* h.reactor.drainCi;
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "skipped",
+            "passed",
+          ]);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+    }),
+);
+
+const PARALLEL_B: BoardCiStep = { ...SCRIPT_B, parallel: true };
+
+it.effect("T3O-130: skipping a parallel member restarts its group without it", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-parallel", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, PARALLEL_B]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        yield* gated.started("Test");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "skipped" });
+        yield* h.reactor.drain;
+        yield* gated.started("Lint", 1);
+        assert.deepStrictEqual(
+          gated.requests()[1]?.steps.map((step) => step.name),
+          ["Lint"],
+        );
+        yield* gated.settle("Lint", "passed", 1);
+        yield* h.reactor.drainCi;
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), ["passed", "skipped"]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+// The runner's slice is contiguous (`indexOffset` on the worker wire), so a mark splits its group.
+it.effect("T3O-130: a step marked mid-group splits the group at the mark", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-mid-group", review);
+    const typecheck: BoardCiStep = { ...SCRIPT_B, id: "tc", name: "Typecheck", parallel: true };
+    const format: BoardCiStep = { ...SCRIPT_B, id: "fmt", name: "Format", parallel: true };
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B, typecheck, format]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 2), { outcome: "marked" });
+        yield* gated.settle("Lint", "passed");
+        yield* gated.started("Typecheck");
+        yield* h.reactor.drain;
+        yield* gated.settle("Test", "passed", 1);
+        yield* gated.settle("Format", "passed", 1);
+        yield* h.reactor.drainCi;
+        // The restart runs Test alone, then Format: the mark splits its group for the visit.
+        assert.deepStrictEqual(
+          gated
+            .requests()
+            .map((request) => [request.indexOffset ?? 0, request.steps.map((step) => step.name)]),
+          [
+            [0, ["Lint", "Test", "Typecheck", "Format"]],
+            [1, ["Test"]],
+            [3, ["Format"]],
+          ],
+        );
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+        assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+          "passed",
+          "passed",
+          "skipped",
+          "passed",
+        ]);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+it.effect("T3O-130: a skip never carries a pass past a parallel sibling's real failure", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-sibling-failed", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A, PARALLEL_B]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Test");
+        yield* gated.settle("Lint", "failed");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 1), { outcome: "skipped" });
+        yield* h.reactor.drainCi;
+        const fixing = yield* live(h, subject.id);
+        assert.strictEqual(fixing.ci?.phase, "fixing");
+        assert.lengthOf(gated.requests(), 1);
+        const fixes = ciAgentSelects(yield* h.commands, "ci-fix@");
+        assert.lengthOf(fixes, 1);
+        assert.include(fixes[0]!.prompt, 'CI step "Lint" failed.');
+        assert.include(fixes[0]!.prompt, 'Skipped by a human this visit: "Test".');
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
+  }),
+);
+
+/** Mark step `index` as the runner's first report is dispatched, so the segment already runs. */
+const markOnFirstReport = (index: number) => {
+  const ref: { h: Harness | null; cardId: BoardCardId | null } = { h: null, cardId: null };
+  const onDispatch = (command: HarnessCommand) => {
+    const { h, cardId } = ref;
+    if (
+      h === null ||
+      cardId === null ||
+      command.type !== "board.card.record-ci" ||
+      command.action.kind !== "step" ||
+      command.action.index !== 0
+    ) {
+      return Effect.void;
+    }
+    ref.h = null;
+    return Effect.asVoid(
+      h.reactor.skipCiStep(
+        { cardId, runId: command.action.runId, stepIndex: index, skip: true },
+        () => Effect.void,
+      ),
+    );
+  };
+  return { ref, onDispatch };
+};
+
+it.effect(
+  "T3O-130: a marked step that fails before its restart, even as a machine problem, fails nothing",
+  () =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 2, exitCode: 127, headline: libraryHeadline },
+      ]);
+      const subject = card("skip-backstop", review);
+      const mark = markOnFirstReport(2);
+      const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
+      yield* withGovernor({ board, settings, onDispatch: mark.onDispatch }, (h) =>
+        Effect.gen(function* () {
+          mark.ref.h = h;
+          mark.ref.cardId = subject.id;
+          yield* enterCiAndRun(h, subject, 1);
+          assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "passed",
+            "skipped",
+          ]);
+          const actions = ciRecords(yield* h.decided).map((record) => record.payload.action);
+          assert.isFalse(actions.some((action) => action.kind === "begin-fix"));
+          assert.isFalse(
+            actions.some((action) => action.kind === "finish-pass" && action.result !== "passed"),
+          );
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect(
+  "T3O-130: with Stop on failure No, a skipped failure beside a real one points the fix at the real one",
+  () =>
+    Effect.gen(function* () {
+      const { runner } = yield* scriptedRunner([
+        { result: "failed", failedIndex: 1, alsoFailed: [2], exitCode: 1 },
+      ]);
+      const subject = card("skip-swap", review);
+      const mark = markOnFirstReport(1);
+      const board = boardWith([subject], noStopConfig([SCRIPT_A, SCRIPT_B, SCRIPT_E2E]));
+      yield* withGovernor({ board, settings, onDispatch: mark.onDispatch }, (h) =>
+        Effect.gen(function* () {
+          mark.ref.h = h;
+          mark.ref.cardId = subject.id;
+          yield* enterCiAndRun(h, subject, 1);
+          const fixing = yield* live(h, subject.id);
+          assert.strictEqual(fixing.ci?.phase, "fixing");
+          assert.deepStrictEqual(yield* passStatuses(h, subject.id), [
+            "passed",
+            "skipped",
+            "failed",
+          ]);
+          const fixes = ciAgentSelects(yield* h.commands, "ci-fix@");
+          assert.lengthOf(fixes, 1);
+          assert.include(fixes[0]!.prompt, 'CI step "E2E" failed.');
+          assert.include(fixes[0]!.prompt, 'Skipped by a human this visit: "Test".');
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect.each(["held", "stopped"] as const)(
+  "T3O-130: a Retry from %s keeps (held) or clears (stopped) the visit's skips",
+  (phase) =>
+    Effect.gen(function* () {
+      const { runner, calls } = yield* scriptedRunner([{ result: "passed", failedIndex: null }]);
+      const subject = card(`skip-retry-${phase}`, ci, {
+        ci: {
+          runId: "ci-old",
+          entry: 1,
+          fixAttempts: 0,
+          maxFixAttempts: 2,
+          phase,
+          steps: [
+            { id: "lint", name: "Lint", status: "skipped", startedAt: null, finishedAt: NOW },
+            { id: "test", name: "Test", status: "cancelled", startedAt: null, finishedAt: null },
+          ],
+          stopReason: "Stopped by you. Retry CI to run it again.",
+          // Every step is skipped: possible after a config edit carried the marks over.
+          skippedSteps: ["lint", "test"],
+        },
+      });
+      const board = boardWith([subject], mixedConfig([SCRIPT_A, SCRIPT_B]));
+      yield* withGovernor({ board, settings }, (h) =>
+        Effect.gen(function* () {
+          yield* h.reactor.drain;
+          assert.deepStrictEqual(yield* h.reactor.retryCi(subject.id), { outcome: "retried" });
+          yield* h.reactor.drainCi;
+          const after = yield* live(h, subject.id);
+          if (phase === "held") {
+            assert.strictEqual(yield* calls, 0);
+            assert.strictEqual(after.ci?.phase, "held");
+            assert.strictEqual(after.ci?.stopReason, "Every step was skipped. Use Skip CI.");
+            assert.deepStrictEqual(after.ci?.skippedSteps, ["lint", "test"]);
+          } else {
+            assert.strictEqual(yield* calls, 1);
+            assert.strictEqual(after.stage, merge);
+          }
+        }),
+      ).pipe(Effect.provideService(BoardCiRunner, runner));
+    }),
+);
+
+it.effect("T3O-130: a step skip is refused outside a running pass, and for the last step", () =>
+  Effect.gen(function* () {
+    const gated = gatedRunner();
+    const subject = card("skip-refused", review);
+    const board = boardWith([subject], mixedConfig([SCRIPT_A]));
+    yield* withGovernor({ board, settings }, (h) =>
+      Effect.gen(function* () {
+        assert.deepStrictEqual(
+          yield* h.reactor.skipCiStep(
+            { cardId: subject.id, runId: "ci-none", stepIndex: 0, skip: true },
+            () => Effect.void,
+          ),
+          { outcome: "not-in-ci" },
+        );
+        yield* enterCi(h, subject, 1);
+        yield* gated.started("Lint");
+        assert.deepStrictEqual(yield* skipStep(h, subject.id, 0), { outcome: "last-step" });
+        assert.deepStrictEqual(
+          yield* h.reactor.skipCiStep(
+            { cardId: subject.id, runId: "ci-stale", stepIndex: 0, skip: true },
+            () => Effect.void,
+          ),
+          { outcome: "not-running" },
+        );
+        yield* gated.settle("Lint", "passed");
+        yield* h.reactor.drainCi;
+        assert.strictEqual(cardStage(yield* h.board, subject.id), merge);
+      }),
+    ).pipe(Effect.provideService(BoardCiRunner, gated.runner));
   }),
 );

@@ -7,6 +7,7 @@
 import type {
   BoardCiAgentStepPayload,
   BoardCiFixIssue,
+  BoardCiFixIssueReport,
   BoardCiHeadline,
   BoardCiStepResult,
   BoardCard,
@@ -110,6 +111,9 @@ export interface BoardCiFailure {
   readonly exitCode: number | null;
   readonly tail: string;
   readonly logPath: string | null;
+  /** T3o (T3O-127): the step's load reading. */
+  readonly cpuPressure?: number;
+  readonly underLoad?: boolean;
   /** What the step reported in its result file. */
   readonly result?: BoardCiStepResult | null;
   /** What failed and why, as the runner read it. */
@@ -147,6 +151,8 @@ export type BoardStagePlan =
         readonly round: number;
         readonly mode: BoardReviewRoundMode;
       };
+      /** T3o (T3O-126): a CI flaky-only check, uncounted, past the fix limit. */
+      readonly ciTriage?: true;
     }
   | {
       readonly kind: "complete";
@@ -163,7 +169,14 @@ export type BoardStagePlan =
   | { readonly kind: "escalate"; readonly question: string }
   /** Run the stage's CI steps from the top: the board runs them
       itself, no agent. */
-  | { readonly kind: "ci-pass" }
+  | {
+      readonly kind: "ci-pass";
+      /** T3o (T3O-126): the fix agent found only flakes and changed nothing: the same pass
+          carries on, uncounted. Absent re-runs every step after a counted fix. */
+      readonly flaky?: true;
+      /** The issues the fix agent ruled flaky, for their bug cards. */
+      readonly flakyIssues?: ReadonlyArray<BoardCiFixIssueReport>;
+    }
   /** A CI agent step reported: record its verdict, then carry on
       with the pass, or treat a failed verdict as the pass's failure. */
   | {

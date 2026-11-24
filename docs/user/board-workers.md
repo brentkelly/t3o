@@ -83,7 +83,7 @@ folder there, after fetching it. So the board server needs, for each project wit
 - **The step's provider signed in there.** If it isn't, cards wait violet with "Sign in on the board
   server": run `claude auth login` (or your provider's sign-in) on the board server.
 
-The board server's readiness script only matters for builds, so a board server that fails it still
+The board server's readiness only matters for builds, so a board server that fails it still
 plans. Planning that was already running on a worker when you upgraded carries on there.
 
 ## How a worker is chosen
@@ -102,7 +102,8 @@ The board server is in the pool when it's ready; declare it zero build capacity 
 planning only.
 
 **Pin builds to…** in a card's details restricts its builds to one worker; it doesn't affect
-planning. Each worker in the picker says whether it's ready and what it offers. A card that holds a
+planning. To pin a card as you create it, use the pin icon beside the clock in the New card dialog's
+footer. Each worker in the picker says whether it's ready and what it offers. A card that holds a
 worktree stays on its worker: the board only moves it if you **Move** it or its worker is removed.
 **Unpin** leaves a placed card where it is. There is no longer a default worker.
 
@@ -253,13 +254,105 @@ submodules, then the project's setup script. The card shows **Preparing** while 
 details list the stages, with **Retry**, **Cancel setup** and the full log. Setup that runs longer
 than the project's setup timeout (30 minutes unless changed in the Resources tab) fails.
 
-**Readiness** says whether a worker can run a project's cards at all. The worker runs the project's
-readiness script, `.t3/ready.sh` unless the Resources tab names another, as it's committed on the
-default branch. Write it to check the machine — tools installed, services running, credentials
-present — not files in the repository. A project with no readiness script is ready wherever it has
-a checkout. A worker that isn't ready for a project takes none of its cards and can't be pinned
-for it. The worker re-checks every hour while ready and every 15 minutes while not;
-**Re-check** in the Resources tab, or **Re-check all** on the Workers page, checks now.
+**Readiness** says whether a worker can run a project's cards at all. T3o checks it before a
+worker takes a project's cards, then every hour while ready and every 15 minutes while not;
+**Re-check** in the Resources tab, or **Re-check all** on the Workers page, checks now. A worker
+that isn't ready for a project takes none of its cards and can't be pinned for it. A project with no
+checks and no trusted script is ready wherever it has a checkout.
+
+Readiness comes from two places:
+
+- **Checks** in the project's `t3o.json`, under `resources.readiness.checks`. T3o runs them itself:
+  nothing in `t3o.json` chooses which program runs, what arguments it gets, or which file is read,
+  so no project code runs on the hourly timer.
+- **The readiness script** (`.t3/ready.sh` unless the Resources tab names another), as committed on
+  the default branch. It runs only if you switch on **Run this project's readiness script** in the
+  project's Resources tab. It runs on every worker, every hour, as you, so whatever lands on the
+  default branch runs next: only switch it on for projects whose code you trust. No project is
+  trusted until you switch it on, and agents can't switch it on. Until you do, the script is skipped
+  and the worker row says so, without making the worker not-ready.
+
+Every check takes an optional `name`, a `fix` shown when it fails (labelled as suggested by the
+project, plain text, at most 200 characters), `"warn": true` to report a failure as a warning
+instead of not-ready, and `os` (`linux`, `darwin`, `win32`) or `arch` (`x64`, `arm64`) to run
+only on matching workers; elsewhere it shows as skipped.
+
+```json
+"readiness": {
+  "checks": [
+    { "command": "cmake", "fix": "sudo apt install cmake", "os": ["linux"] },
+    { "command": "node", "version": { "from": ".node-version" } },
+    { "command": "pnpm" },
+    { "rustToolchain": "rust-toolchain.toml" },
+    { "cargoConfig": { "contains": "rustc-slot" } },
+    { "exists": "$PLAYWRIGHT_BROWSERS_PATH/chromium-*" },
+    { "exists": "~/.local/state/build-seed/refresh.log", "maxAgeHours": 3, "warn": true },
+    { "env": "ANDROID_HOME" },
+    { "docker": { "plugins": ["compose", "buildx"], "loggedIn": ["ghcr.io"] } },
+    { "git": "identity" }, { "git": "fetch" }, { "git": "push" },
+    { "gh": "github.com" },
+    { "writable": "$TMPDIR" }
+  ],
+  "timeoutSeconds": 120
+}
+```
+
+- `command`: a bare name, found on the worker's `PATH` or in the usual places mise, asdf, nvm, fnm,
+  volta, rustup and Homebrew install to. Without `version`, nothing is run: the file just has to be
+  there and executable. A binary is refused if another user owns it, others can write to it, or it
+  sits in a checkout, a worktree, a temp folder, `~/.cache`, a package store (`~/.npm`, cargo's
+  registry, `node_modules`, …) or the T3 home.
+- `version` works only for `node npm pnpm yarn bun deno cmake make gcc clang git docker gh python3
+  go java ruby php dotnet rustc cargo xcodebuild`, and only when the binary is a native program:
+  T3o runs it with that tool's own version flag and compares the first version number to
+  `atLeast`, or to the major and minor version a repository file on the default branch names (`.node-version`,
+  `.nvmrc`, `package.json`'s `engines.<command>`, `.python-version`, `pyproject.toml`, `go.mod`,
+  `.ruby-version`, `.java-version`, `composer.json`, `global.json`). A tool that is a script (npm, a
+  corepack pnpm) gets a warning that its version wasn't checked. Aliases like `lts/*` warn too.
+- `rustToolchain`: the `channel` the repository's `rust-toolchain.toml` pins is installed in rustup.
+- `cargoConfig`: your cargo config (`$CARGO_HOME/config.toml` or `~/.cargo/config.toml`) contains
+  the text. Lines whose key mentions a token, password, secret, credential or auth never match.
+- `exists`: the path is there, and with `maxAgeHours`, was modified that recently. `writable`: you
+  can write to the path; nothing is created. Paths start with `/`, `~/` or one of `$HOME`, `$TMPDIR`,
+  `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, `$JAVA_HOME`, `$CARGO_HOME`, `$RUSTUP_HOME`,
+  `$PLAYWRIGHT_BROWSERS_PATH` or `$XDG_*`; never `..` or a path inside the repository. They must
+  stay under your home, the temp folder, `/usr`, `/opt`, `/etc`, `/nix`, `/dev`, `/Library` or
+  `/Applications`, never `/proc`, `/sys`, `/run` or a network mount. `exists` may use `*` within a
+  folder name, in at most two folders, and not directly under your home.
+- `env`: the environment variable is set and non-empty. Its value is never shown.
+- `docker`: the daemon answers `docker info`, each plugin is installed, and you are logged in to
+  each `loggedIn` registry (read from the keys of your Docker config, never the credentials).
+- `git`: `identity` (your global user.name and user.email), `fetch` (the remote answers without a
+  prompt), or `push` (GitHub says you can push, asked through `gh`; other hosts give a warning).
+  **These contact the remote every hour, with your credentials.** No repository hook runs.
+- `gh`: the GitHub CLI is signed in to that host. For github.com, a token your `gitenv` file gives
+  the project counts, as it does for card work.
+
+At most 50 checks run per project; they share `timeoutSeconds` (at most 600) with the script, and
+every one runs even after one fails. Each check runs from `/`, with no input and only a short list
+of environment variables (`PATH`, `HOME`, locale, `TMPDIR`, `XDG_*`, the SSH agent, Docker and Rust
+homes, and GitHub tokens for `gh`). On Windows workers, checks that run a program show as
+unsupported.
+
+**Kinds T3o will not add**, so a project can never use readiness to do these: arbitrary commands or
+arguments; network probes (they could reach cloud metadata or your LAN, and tell a repository's
+author which machines run it); cloud or Kubernetes sign-in checks (they run credential helpers and
+touch real clusters); package-manager queries like `pip show`, `npm ls` or Python imports (they run
+code); `gradle`/`mvn --version`, `sdkmanager` and `xcrun simctl`; disk, memory or CPU checks (the
+capacity model owns those); `/proc` and sysctl reads; and reading arbitrary files.
+
+**What readiness can't protect against.** Code a project already ran on a machine (its setup, CI or
+a card's agent) ran as you and can persist itself: in the checkout's `.git/config`, a version
+manager's config, Docker CLI plugins, shell profiles and so on. The hourly checks may then run it.
+Readiness can't close that; only running workers under a separate account would.
+
+A board that doesn't know a check ignores it with a warning on import, so a newer `t3o.json` still
+imports on an older board. A worker on an older T3o can't run checks, and could run a script you
+haven't trusted, so the board doesn't ask it: its row says to update it, and it takes no cards for
+projects that have checks or a trusted script.
+
+Only readiness is limited this way. Setup scripts and CI still run the branch's code when a card
+starts work.
 
 Setup and readiness output is visible to everyone who uses the board, so scripts shouldn't print
 secrets.
@@ -286,12 +379,16 @@ popover lists the cards each one has paused, with **Open Workers settings**.
 
 ## Keeping a worker up to date
 
-A worker learns from each board, every time it connects, whether the board can still use it. A
-board updated past what the worker speaks says so straight away, and `pnpm t3o-worker status`
-shows it as **needs update**.
+A worker learns from each board, every time it connects, whether the board can still use it and
+which T3o release the board runs. A board updated past what the worker speaks, or running a newer
+T3o release than the worker, says so straight away, and `pnpm t3o-worker status` shows it as
+**needs update**. Only the first stops the worker taking new cards; a worker that is just behind
+the board's release keeps working until it updates. Only tagged releases are compared: a board
+running a build past a tag, or a dev build, never asks its workers to update.
 
 `pnpm t3o-worker auto-update --install` adds a systemd timer that checks for that every two
-minutes and runs `pnpm t3o-update` when it's set. Checking only reads a file on the worker; GitHub
+minutes and runs `pnpm t3o-update` when it's set. So releasing T3o and updating the board's
+service is enough: its workers follow within a few minutes. Checking only reads a file on the worker; GitHub
 is contacted only when an update is due. `--check` reports without updating, and `--uninstall`
 removes the timer (`pnpm run uninstall-t3o-service` removes it too). Its runs are in
 `journalctl -u t3o-auto-update`.
@@ -311,6 +408,8 @@ removes the timer (`pnpm run uninstall-t3o-service` removes it too). Its runs ar
   worker on **Needs update** until that release is out; the timer then retries every 30 minutes.
 - Agent turns running on the worker are interrupted when the service restarts, as with any update.
 - Workers on a release from before auto-update never report the flag: update them by hand once.
+  Workers on a release from before boards sent their release only update for a protocol change:
+  update them by hand once to follow the board's releases.
 
 ## Threads on a worker
 
@@ -323,6 +422,32 @@ connect to the board's address directly.
 Agents on a worker keep reaching the board through their own server, which passes their board calls
 on to the board server. While the board server isn't connected to that worker, an agent's board
 calls fail with a message telling it to retry shortly.
+
+A card's agent can edit, move, archive and regroup cards that run on other machines, and the
+changed card's activity says which card and machine the change came from. It can't delete them,
+cancel their work or archive a whole group whose cards run elsewhere; ask for those from the app.
+
+## Scheduling a t3o.json task on a worker
+
+A project's `t3o.json` schedules can run on a worker as well as on the board server: pick the
+worker in the import dialog's **Run on** picker, or later on the project's **Schedules** tab. The
+picker lists each worker with whether it is connected and ready for the project; one that is
+offline, out of date or not ready for the project can't be picked until it is.
+
+- **The board server keeps the time.** Every schedule fires on the board server's clock, and only
+  while the board server is up. The worker only runs what the board sends it.
+- **A run due while the worker can't take it is skipped**, and shows amber as skipped with the
+  reason: offline, needs a T3o update, not ready for the project, its provider signed out, or at
+  its agent limit. The Schedules tab warns while its worker is offline and offers to move it.
+- **Its board tools reach the board**, limited to the schedule's project, as on the board server.
+  A run's board tools reach its own cards wherever they run; what a run may do to them is
+  unchanged.
+- **A worker's agent limit is approximate for schedule runs**: a run counts against it from its
+  launch, but the hold lapses while the worktree is set up, so a burst can briefly exceed it. A
+  schedule never has two runs going at once.
+- The worker keeps the latest runs and removes older settled ones, their worktrees and branches
+  with them, as on the board server; a run that filed or changed a card keeps its thread. This carries on after the schedule
+  moves to another machine, each time it fires, while the old worker is online.
 
 ## Removing a worker
 
@@ -355,9 +480,9 @@ threads are kept.
 ## Project checkouts
 
 On **Settings → Board → Workers**, each worker lists the board's projects beneath it: whether it
-has a copy, and what the project's readiness script last said there. A worker can only run cards
+has a copy, and what the project's readiness checks last said there. A worker can only run cards
 for projects it has checked out and ready. It matches them by the repository's git remote.
-**Re-check** runs the readiness script again.
+**Re-check** checks again. A Ready row with warnings or a skipped script opens to the full output.
 
 For a project a worker doesn't have, press **Set up on worker**. The worker clones the project's
 remote into its projects folder, using that machine's git credentials, and you can change the

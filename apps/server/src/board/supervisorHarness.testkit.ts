@@ -11,6 +11,7 @@ import {
   BoardStageId,
   DEFAULT_BOARD_AUTO_ARCHIVE_AFTER_DAYS,
   DEFAULT_BOARD_AUTO_ARCHIVE_DONE,
+  DEFAULT_BOARD_WORKTREE_AT_DONE,
   DEFAULT_BOARD_AUTO_COLLAPSE_EMPTY_STAGES,
   DEFAULT_BOARD_COST_EMPHASIS_USD,
   DEFAULT_BOARD_BUILD_PROMPT,
@@ -35,6 +36,7 @@ import {
   type BoardStageExecutionReview,
   type BoardCardWorktree,
   type BoardSettings,
+  type BoardWorktreeAtDone,
   type BoardStageExecution,
   type BoardState,
   type BoardCiPass,
@@ -375,10 +377,9 @@ export const settingsWith = (input: {
   /** Overrides for the Code review stage's config (`draftPullRequests`).
       Absent leaves it at the compiled-in defaults. */
   readonly review?: Partial<BoardStageExecutionReview>;
-  /** Whether a card reaching Done with a merged pull request has its worktree
-      reclaimed there rather than at archive. Defaults to the shipped default
-      (on), so a suite that says nothing exercises what users actually run. */
-  readonly reclaimWorktreeOnDone?: boolean;
+  /** What a finished card's worktree gets. Defaults to the shipped default (`remove`), so a
+      suite that says nothing exercises what users actually run. */
+  readonly worktreeAtDone?: BoardWorktreeAtDone;
   /** Overrides for the Build stage's `submit` step: the prompt, model
       and limits behind "Submit for merge — no review". Absent leaves the
       compiled-in defaults. */
@@ -430,7 +431,7 @@ export const settingsWith = (input: {
     workers: input.workers ?? {},
   },
   lifecycle: {
-    reclaimWorktreeOnDone: input.reclaimWorktreeOnDone ?? true,
+    worktreeAtDone: input.worktreeAtDone ?? DEFAULT_BOARD_WORKTREE_AT_DONE,
     autoArchiveDone: input.autoArchiveDone ?? DEFAULT_BOARD_AUTO_ARCHIVE_DONE,
     autoArchiveAfterDays: input.autoArchiveAfterDays ?? DEFAULT_BOARD_AUTO_ARCHIVE_AFTER_DAYS,
   },
@@ -476,6 +477,8 @@ export type Harness = {
    * commands, so outcomes the card state does not carry (a pure report) are read here.
    */
   readonly decided: Effect.Effect<ReadonlyArray<HarnessEvent>>;
+  /** A card's CI pass rows, as the SQL projection keeps them. */
+  readonly ciPasses: (cardId: BoardCardId) => Effect.Effect<ReadonlyArray<BoardCiPass>>;
   /** Every merge the reactor asked the forge for, in order. */
   readonly mergeAttempts: Effect.Effect<ReadonlyArray<{ readonly number: number }>>;
   /** The merge method of each attempt, in the same order. */
@@ -568,6 +571,8 @@ export function withGovernor(
     /** Reject every `thread.create`, so a test can drive the spawn-failure path
         (a thread the engine refuses to create) without a provider double. */
     readonly rejectThreadCreate?: boolean;
+    /** Fail the board commands it picks, as a dispatch that never lands. */
+    readonly failCommand?: (command: BoardCommand) => boolean;
     /** Provider instances turned off for every project: a spawn on one is
         refused with the provider-disabled reason. */
     readonly providerDisabled?: ReadonlyArray<string>;
@@ -632,7 +637,13 @@ export function withGovernor(
     /** T3o: the same answer, read afresh on every probe, for a test
         whose checks CHANGE between two probes — a failed check a CI fix's
         push turned into a pending one. Takes precedence over `mergeState`. */
-    readonly mergeStateOf?: () => BoardMergeState;
+    readonly mergeStateOf?: (request: { readonly number: number }) => BoardMergeState;
+    /** T3o: each branch's own pull request, for tests with several cards (T3O-128). Takes
+        precedence over `pullRequest` for a branch it names, and answers number lookups. */
+    readonly pullRequestsByBranch?: ReadonlyMap<string, BoardFoundPullRequest>;
+    /** T3o: what a merge of this number answers, read afresh: `undefined` succeeds, a string is
+        the host's refusal. Takes precedence over `mergeFailure` and `mergeOutcomes`. */
+    readonly mergeFailureOf?: (number: number) => string | undefined;
     /** Awaited before each merge-state read answers: a forge that is slow, or never answers. */
     readonly mergeStateGate?: Effect.Effect<void>;
     /**
@@ -650,8 +661,9 @@ export function withGovernor(
     readonly localMergeConflict?: "conflict" | "unresolvable" | "unfetched";
     /** Make the stubbed `statusDetails` report uncommitted changes, so a test
         can drive the reclaim refusal — the case where the checkout holds work
-        that exists nowhere else and must NOT be deleted to save disk. */
-    readonly worktreeDirty?: boolean;
+        that exists nowhere else and must NOT be deleted to save disk. `"untracked"` leaves
+        only an untracked file. */
+    readonly worktreeDirty?: boolean | "untracked";
     /** Make the durability probe find the worktree's commits nowhere else:
         no remote ref contains HEAD and two commits are unmerged.
         Durable by default, since that is what a merged card looks like. */
@@ -752,12 +764,28 @@ export function withGovernor(
       }
       if (payload.started !== null) ciPassRows.set(payload.started.runId, payload.started);
       const action = payload.action;
-      if (action.kind === "step") {
-        const row = ciPassRows.get(action.runId);
+      const stepRow =
+        payload.stepRow ??
+        (action.kind === "step"
+          ? { runId: action.runId, index: action.index, step: action.step }
+          : undefined);
+      if (stepRow !== undefined) {
+        const row = ciPassRows.get(stepRow.runId);
         if (row !== undefined) {
-          ciPassRows.set(action.runId, {
+          ciPassRows.set(stepRow.runId, {
             ...row,
-            steps: row.steps.map((step, index) => (index === action.index ? action.step : step)),
+            steps: row.steps.map((step, index) =>
+              index !== stepRow.index
+                ? step
+                : "step" in stepRow
+                  ? stepRow.step
+                  : {
+                      ...step,
+                      status: stepRow.patch.status,
+                      finishedAt: stepRow.patch.finishedAt,
+                      ...(stepRow.patch.note === undefined ? {} : { note: stepRow.patch.note }),
+                    },
+            ),
           });
         }
       }
@@ -857,6 +885,11 @@ export function withGovernor(
     const dispatchBoard = (command: BoardCommand) =>
       recordCommand(command).pipe(
         Effect.andThen(
+          input.failCommand?.(command) === true
+            ? Effect.die(new Error(`fixture failed ${command.type}`))
+            : Effect.void,
+        ),
+        Effect.andThen(
           Effect.gen(function* () {
             const context = yield* loadDecisionContext(command, boardQueriesStub, gateway);
             const outcome = yield* decideBoardCommand({
@@ -917,7 +950,7 @@ export function withGovernor(
       resolveDefaultBranchName: () => Effect.succeed("main"),
       statusDetails: () =>
         Effect.succeed({
-          hasWorkingTreeChanges: input.worktreeDirty === true,
+          hasWorkingTreeChanges: input.worktreeDirty !== undefined && input.worktreeDirty !== false,
           hasUpstream: true,
           aheadCount: 0,
         }),
@@ -985,7 +1018,12 @@ export function withGovernor(
         if (request.args?.[0] === "status" && request.args[1] === "--porcelain") {
           return (input.duringDurabilityProbe?.(model) ?? Effect.void).pipe(
             Effect.as({
-              stdout: input.worktreeDirty === true ? " M README.md\n" : "",
+              stdout:
+                input.worktreeDirty === true
+                  ? " M README.md\n"
+                  : input.worktreeDirty === "untracked"
+                    ? "?? scratch.txt\n"
+                    : "",
               stderr: "",
               exitCode: 0,
             }),
@@ -1117,6 +1155,8 @@ export function withGovernor(
         ]).pipe(
           Effect.andThen(input.onPullRequestLookup ?? Effect.void),
           Effect.andThen(() => {
+            const byBranch = input.pullRequestsByBranch?.get(request.branch);
+            if (byBranch !== undefined) return Effect.succeed(byBranch);
             const configured = input.pullRequestOf?.() ?? input.pullRequest;
             if (configured !== undefined && configured !== null && "failWith" in configured) {
               return Effect.fail(
@@ -1135,6 +1175,10 @@ export function withGovernor(
           { number: request.number, forced: request.force === true },
         ]).pipe(
           Effect.andThen(() => {
+            const byNumber = [...(input.pullRequestsByBranch?.values() ?? [])].find(
+              (candidate) => candidate.number === request.number,
+            );
+            if (byNumber !== undefined) return Effect.succeed(byNumber);
             const configured =
               input.pullRequestByNumber !== undefined
                 ? input.pullRequestByNumber
@@ -1162,7 +1206,12 @@ export function withGovernor(
           ),
           Effect.andThen((attempts) => {
             const scripted = input.mergeOutcomes?.[attempts.length - 1];
-            const detail = scripted === undefined ? input.mergeFailure : (scripted ?? undefined);
+            const detail =
+              input.mergeFailureOf !== undefined
+                ? input.mergeFailureOf(request.number)
+                : scripted === undefined
+                  ? input.mergeFailure
+                  : (scripted ?? undefined);
             return detail === undefined
               ? Effect.void
               : Effect.fail(
@@ -1178,7 +1227,7 @@ export function withGovernor(
         Ref.update(mergeStateProbes, (probes) => [...probes, { number: request.number }]).pipe(
           Effect.andThen(input.mergeStateGate ?? Effect.void),
           Effect.andThen(() => {
-            const configured = input.mergeStateOf?.() ?? input.mergeState;
+            const configured = input.mergeStateOf?.(request) ?? input.mergeState;
             return configured === undefined
               ? Effect.fail(
                   new BoardPullRequestGatewayError({
@@ -1336,6 +1385,8 @@ export function withGovernor(
           ),
           commands: Ref.get(commands),
           decided: Ref.get(decided),
+          ciPasses: (cardId) =>
+            Effect.sync(() => [...ciPassRows.values()].filter((pass) => pass.cardId === cardId)),
           mergeAttempts: Ref.get(mergeAttempts),
           mergeMethods: Ref.get(mergeMethods),
           mergeStateProbes: Ref.get(mergeStateProbes),

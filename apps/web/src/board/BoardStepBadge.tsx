@@ -1,8 +1,7 @@
 /**
- * The numbered step badge shared by CI and Code review, and the
- * shimmer a running step's name wears. Colours per `docs/t3o/status-colours.md`:
- * a done step's tick is green, a running step solid blue, a failure amber (blue
- * while a fix agent works on it), a cancelled step a grey dash.
+ * The numbered step badge shared by CI and Code review, and a running step's
+ * shimmer. Colours per `docs/t3o/status-colours.md`: green tick done, blue
+ * running or being fixed, amber failure (an amber tick: passed over flakes).
  */
 import { CheckIcon, MinusIcon, XIcon } from "lucide-react";
 
@@ -18,6 +17,8 @@ const STATE_LABEL: Record<BoardStepBadgeState, string> = {
   failed: "Failed",
   fixing: "Failed, being fixed",
   cancelled: "Cancelled",
+  skipped: "Skipped",
+  flaky: "Passed over flaky tests",
 };
 
 export function BoardStepBadge({
@@ -32,14 +33,16 @@ export function BoardStepBadge({
       ? { className: "bg-success", icon: <CheckIcon className="size-[7px]" strokeWidth={4} /> }
       : state === "failed"
         ? { className: "bg-warning", icon: <XIcon className="size-[7px]" strokeWidth={4} /> }
-        : state === "fixing"
-          ? { className: "bg-info", icon: <XIcon className="size-[7px]" strokeWidth={4} /> }
-          : state === "cancelled"
-            ? {
-                className: "bg-muted-foreground",
-                icon: <MinusIcon className="size-[7px]" strokeWidth={4} />,
-              }
-            : null;
+        : state === "flaky"
+          ? { className: "bg-warning", icon: <CheckIcon className="size-[7px]" strokeWidth={4} /> }
+          : state === "fixing"
+            ? { className: "bg-info", icon: <XIcon className="size-[7px]" strokeWidth={4} /> }
+            : state === "cancelled" || state === "skipped"
+              ? {
+                  className: "bg-muted-foreground",
+                  icon: <MinusIcon className="size-[7px]" strokeWidth={4} />,
+                }
+              : null;
   return (
     <span
       aria-label={`Step ${index}: ${STATE_LABEL[state]}`}

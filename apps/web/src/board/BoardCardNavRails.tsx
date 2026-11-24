@@ -67,6 +67,8 @@ function BoardCardNavRail(props: {
         "pointer-events-none absolute top-1/3 z-[1] flex h-1/3 w-[46px] items-center justify-center opacity-0 transition-opacity duration-120",
         props.side === "left" ? "left-0" : "right-0",
         "group-hover/sheet:opacity-100 [&:has(:focus-visible)]:opacity-100 [@media(hover:none)]:opacity-100",
+        // T3o (T3O-134): the full-screen phone card has no room for side bands.
+        "max-sm:hidden",
       )}
       style={bandStyle(props.side)}
     >

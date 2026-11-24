@@ -6,6 +6,7 @@
  */
 import type {
   BoardCheckCardWorktreeResult,
+  BoardCiSkipStepResult,
   BoardMergeCardPullRequestResult,
   BoardRefreshCardPullRequestResult,
   BoardRemoveCardWorktreeResult,
@@ -45,6 +46,8 @@ export function describeBoardMergeOutcome(result: BoardMergeCardPullRequestResul
       return "The branch conflicts with its base. Resolving the conflicts, then merging.";
     case "checks-fix":
       return "The pull request's checks failed. Fixing them, then merging once CI passes.";
+    case "queued":
+      return "Another card is resolving conflicts with the same base, so this one waits its turn in the merge queue.";
     case "refused":
       return result.detail && result.detail.length > 0
         ? result.detail
@@ -192,12 +195,53 @@ export function describeBoardCheckWorktreeOutcome(
       return `Still kept: ${boardCardWorktreeKeptReason(result.reason)}.`;
     case "busy":
       return "A cleanup of this worktree is already running. Check again in a moment.";
+    case "kept-by-setting":
+      return "Kept: Board settings keep a card's worktree at Done (Lifecycle). Only its ignored files are cleared.";
     case "not-finished":
-      return "This card's worktree isn't cleaned up automatically: it is not archived, and either not in Done or Done cleanup is off.";
+      return "This card's worktree isn't cleaned up automatically: it is neither archived nor in Done.";
     case "unknown-card":
       return "This card no longer exists.";
     case "failed":
       return "The worktree could not be checked. See the server log for details.";
+  }
+}
+
+/** T3o (T3O-130): what a step skip's answer says, or null when it did what was asked. */
+export function describeBoardCiSkipStepOutcome(
+  result: BoardCiSkipStepResult,
+  stepName: string,
+): {
+  readonly title: string;
+  readonly description?: string;
+  readonly tone: "info" | "error";
+} | null {
+  switch (result.outcome) {
+    case "skipped":
+    case "marked":
+    case "unskipped":
+      return null;
+    case "last-step":
+      return {
+        title: `${stepName} was not skipped`,
+        description: "Use Skip CI to skip all of CI.",
+        tone: "info",
+      };
+    case "not-running":
+      return {
+        title: `${stepName} was not skipped`,
+        description: "The step has finished, or this CI pass is no longer running.",
+        tone: "info",
+      };
+    case "not-in-ci":
+      return { title: "The card is no longer in CI", tone: "info" };
+    case "unknown-card":
+      return { title: "This card no longer exists.", tone: "error" };
+    case "failed":
+      return {
+        title: `${stepName} could not be skipped`,
+        description: "See the server log for details.",
+        tone: "error",
+      };
   }
 }
 

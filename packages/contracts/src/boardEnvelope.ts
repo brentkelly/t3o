@@ -31,6 +31,11 @@ export const BOARD_ENVELOPE_QUESTION_MECHANISM =
 
 /** `board_move_card` is agent-reachable, so the envelope, not the editable prompt, forbids
     it. Holds on every stance and on a stage with no steps. */
+/** The board's Ready for merge and Auto-merge gates own every card's merge. A watch until merged
+    keeps the thread Working until a merge only the board makes, so the step would never end. */
+export const BOARD_ENVELOPE_MERGE_GUARD =
+  "The board merges this card's pull request: never merge it yourself, by tool or `gh pr merge`, and never watch a pull request until it merges.";
+
 export const BOARD_ENVELOPE_MOVE_GUARD =
   "Never move the card between stages yourself; finish your work and the board or a human moves the card on.";
 
@@ -38,6 +43,18 @@ export const BOARD_ENVELOPE_MOVE_GUARD =
     not, so the log exists however the plan was reached. */
 export const BOARD_ENVELOPE_DECISION_LOG =
   "Before you call board_propose_plans, record every decision this planning session made with board_record_decisions: what was asked, what was decided, a one-line reason and who decided (agent, or human when the user answered). Flag a call you were not sure about as unclear, and a call that shapes the work as important.";
+
+/** T3o: planning runs in the shared project root with no worktree of its own (T3O-115). */
+export const BOARD_ENVELOPE_PLAN_ROOT_GUARD =
+  "Planning runs in the shared project root, not a worktree of its own: read anything you need, but do not edit files, switch branches or run git commands that change the repository there.";
+
+/** T3o: the board's reply to a question an unattended planning run asked anyway (T3O-115). */
+export const BOARD_AUTO_ANSWER_TEXT =
+  "Nobody will answer this: decide it yourself, record the decision with board_record_decisions flagged unclear, and continue.";
+
+/** T3o: an unattended planning run has nobody to answer it (T3O-115). */
+export const BOARD_AUTO_PLAN_NO_QUESTIONS =
+  "Nobody will answer a question here: never raise a user-input request or complete blocked. Decide it yourself, record the decision with board_record_decisions flagged unclear, and continue.";
 
 /** What an auto-planned run is told: no more questions.
     Rides the postamble of a fresh auto-plan run and is the steering turn sent
@@ -54,14 +71,18 @@ const BOARD_AUTO_PLAN_REOPENED_NOTE =
 const reopenedSuffix = (options: { readonly reopened?: boolean } | undefined) =>
   options?.reopened === true ? ` ${BOARD_AUTO_PLAN_REOPENED_NOTE}` : "";
 
-/** The full auto-plan instruction: with Auto sign-off on a single plan is approved without a
-    human; without it the plan waits for the user's approval. A split always waits. */
+/** T3o: what Auto sign-off does to the planner's proposal, plans and splits alike (T3O-115). */
+export const BOARD_AUTO_SIGN_OFF_NOTE =
+  "Auto sign-off is on: when you complete planning, what you proposed is approved without the user, unclear decisions included, and the card moves to Ready. A split is approved the same way, so split only when the work clearly warrants it.";
+
+/** The full auto-plan instruction: with Auto sign-off on the proposal is approved without a
+    human; without it the plan waits for the user's approval. */
 export function boardAutoPlanInstruction(
   autoSignOff: boolean,
   options?: { readonly reopened?: boolean },
 ): string {
   const base = autoSignOff
-    ? `${BOARD_AUTO_PLAN_INSTRUCTION} Auto sign-off is on: a single plan you propose is approved automatically, unclear decisions included, so make each call the way you would defend it in review. A proposed split always waits for the user's approval.`
+    ? `${BOARD_AUTO_PLAN_INSTRUCTION} ${BOARD_AUTO_SIGN_OFF_NOTE} Make each call the way you would defend it in review.`
     : `${BOARD_AUTO_PLAN_INSTRUCTION} Your plan will be presented to the user for approval, so make each call the way you would defend it in review.`;
   return `${base}${reopenedSuffix(options)}`;
 }
@@ -82,7 +103,7 @@ export const BOARD_ENVELOPE_PLAN_DELIVERABLE = [
   BOARD_ENVELOPE_DECISION_LOG,
   "When the plan is agreed, record it with board_propose_plans, as ONE plan.",
   "To revise a plan you have already proposed, patch it with board_edit_plan rather than resending it.",
-  "Two or more plans is not a longer plan: it splits this card into that many child cards, each with its own branch, build and code review, and holds the card behind a human approval gate until someone approves it.",
+  "Two or more plans is not a longer plan: it splits this card into that many child cards, each with its own branch, build and code review, and holds the card at an approval gate until the split is approved.",
   "Split only when this card is a large feature whose parts are worth building and reviewing one at a time, or whose parts could be built concurrently for a real speed-up; then pass splitRationale saying why.",
   "A bug fix, a contained change, or work that is merely long is one plan with several sections.",
   "In a split, mark each plan planned: true when it is a full implementation plan, or planned: false when it is a brief that still needs planning, and pass recommendedAutoBuild and recommendedMergeTarget: every child fully planned → auto-build on with its own branch; an epic breakdown → auto-build off, inherit; already inside a group with its own branch → prefer inherit.",
@@ -218,10 +239,10 @@ function boardLinkedPullRequestLines(
   ];
 }
 
-/** Regrouping needs a human: an unattended run has no one to confirm
-    it, so it never regroups. */
-export const BOARD_ENVELOPE_REGROUP_GUARD =
-  "Do not regroup cards (move them between groups, indent, outdent, group them, or change a group's settings) without a human's explicit confirmation.";
+/** Turning automation on stands in for a human approving work: an unattended run has no one
+    to confirm it, so it never does. Regrouping is free (T3O-114). */
+export const BOARD_ENVELOPE_AUTOMATION_GUARD =
+  "Do not turn a card's or group's Automation toggles on without a human's explicit confirmation.";
 
 /** An unattended run carries the `/unattended` stance. The completion sentence is the only
     place a `stepId` is named, and only on a stepped stage. */
@@ -247,7 +268,7 @@ export function boardStepPostamble(input: {
   readonly step: Pick<ComposeStepPromptStep, "stepId" | "stepLabel">;
   /** An auto-planned planning run. */
   readonly autoPlan?: boolean;
-  /** With `autoPlan`: a single plan is approved without a human. */
+  /** Auto sign-off is on: what the planner proposes is approved without a human. */
   readonly autoSignOff?: boolean;
 }): string {
   const { step } = input;
@@ -269,18 +290,30 @@ export function boardStepPostamble(input: {
         // Claude 5-era models, so asking for one made agents report a missing
         // tool. The supervisor still reads a plan tool when a provider emits one.
         `Commit as you go: the supervisor watches for new commits and activity to tell a productive long job from a wedged one, and a run that shows neither will be nudged and eventually escalated.`,
-        boardBlockedInstruction(step.stepId),
-        BOARD_ENVELOPE_REGROUP_GUARD,
+        input.role === "plan" && input.autoPlan === true
+          ? BOARD_AUTO_PLAN_NO_QUESTIONS
+          : boardBlockedInstruction(step.stepId),
+        BOARD_ENVELOPE_AUTOMATION_GUARD,
       ];
   const deliverable =
     input.role === "plan"
       ? input.autoPlan === true
-        ? [BOARD_ENVELOPE_PLAN_DELIVERABLE, boardAutoPlanInstruction(input.autoSignOff === true)]
-        : [BOARD_ENVELOPE_PLAN_DELIVERABLE]
+        ? [
+            BOARD_ENVELOPE_PLAN_DELIVERABLE,
+            boardAutoPlanInstruction(input.autoSignOff === true),
+            BOARD_ENVELOPE_PLAN_ROOT_GUARD,
+          ]
+        : [
+            BOARD_ENVELOPE_PLAN_DELIVERABLE,
+            ...(input.autoSignOff === true ? [BOARD_AUTO_SIGN_OFF_NOTE] : []),
+            BOARD_ENVELOPE_PLAN_ROOT_GUARD,
+          ]
       : input.role === "build"
         ? [BOARD_ENVELOPE_BUILD_DELIVERABLE]
         : [];
-  return [...stance, ...deliverable, BOARD_ENVELOPE_MOVE_GUARD].join("\n");
+  return [...stance, ...deliverable, BOARD_ENVELOPE_MERGE_GUARD, BOARD_ENVELOPE_MOVE_GUARD].join(
+    "\n",
+  );
 }
 
 /**
@@ -332,7 +365,7 @@ export function planReviewInstructionsClosing(input: {
 }): string {
   const finish = input.humanInLoop
     ? `With a human in the loop: if you need a human decision, ${BOARD_ENVELOPE_QUESTION_MECHANISM}. Then summarise the final plan in the thread, wait for the human's sign-off, and only then call board_complete_step.`
-    : "This run is unattended: ask nothing. Decide every question yourself, flag a call you are unsure of as unclear with board_record_decisions, summarise the final plan in the thread, then call board_complete_step without waiting.";
+    : "This run is unattended: ask nothing. Decide every question yourself, flag a contentious or uncertain call as unclear or important with board_record_decisions, summarise the final plan in the thread, then call board_complete_step without waiting.";
   return [
     "Board rules for the plan review. These come after the text above and take precedence over it:",
     `- ${input.rounds} is a maximum. Stop as soon as a round produces no new substantive finding, and record that call (rounds run, converged or not) with board_record_decisions.`,
@@ -345,7 +378,7 @@ export function planReviewInstructionsClosing(input: {
     `- ${finish}`,
     ...(input.humanInLoop
       ? [
-          "- If an auto-plan instruction arrives during the review, it overrides the human-in-the-loop rules above but not the review itself: run the remaining rounds as normal. Ask the user nothing further and never wait on them for any reason. Make every remaining decision yourself and record it with board_record_decisions, flagging a contentious or uncertain one as unclear. When the review is done, summarise the final plan in the thread and call board_complete_step without waiting for sign-off.",
+          "- If an auto-plan instruction arrives during the review, it overrides the human-in-the-loop rules above but not the review itself: run the remaining rounds as normal. Ask the user nothing further and never wait on them for any reason. Make every remaining decision yourself and record it with board_record_decisions, flagging a contentious or uncertain one as unclear or important. When the review is done, summarise the final plan in the thread and call board_complete_step without waiting for sign-off.",
         ]
       : []),
   ].join("\n");
@@ -883,6 +916,9 @@ export interface BoardCiFixFailure {
   readonly exitCode: number | null;
   readonly tail: string;
   readonly logPath: string | null;
+  /** T3o (T3O-127): host CPU pressure when the step started, and whether that was under load. */
+  readonly cpuPressure?: number;
+  readonly underLoad?: boolean;
   /** What the step reported in its result file. */
   readonly result?: {
     readonly summary: string | null;
@@ -920,15 +956,38 @@ function lastLinesWithin(tail: string, budget: number): string {
  * and the completion contract. Not editable; Settings shows them after the
  * project's fix prompt.
  */
-export function boardCiFixPromptRules(failureCount: number): ReadonlyArray<string> {
+export function boardCiFixPromptRules(
+  failureCount: number,
+  options: { readonly triage?: boolean; readonly notFlakyTitle?: string } = {},
+): ReadonlyArray<string> {
+  // T3o (T3O-126): a flake never stops a card; the fix agent is the board's flake check.
+  const flakyRules = [
+    "Before fixing a failing test from a script step, re-run that test alone with the project's own test runner. Re-run its whole file instead when this card's diff touches that test file or any test setup, fixture or helper file. With more than 10 failures in one step, re-run 3 first: if any fails, treat the step's failures as real. Only a test you re-ran yourself and saw pass is flaky: never extrapolate from a sample, and mark `more` flaky only when you re-ran every failure it covers. Afterwards `git status` must be clean: revert anything the re-runs wrote.",
+    'A test that passes when re-run alone is a flake: mark its issue "flaky" with its `title` (`file › name`), `file`, the `repro` command you ran, and `inDiff` (whether this card\'s diff touches it). Do not edit a flake outside this card\'s diff: the board files it as its own bug card. A flake inside this card\'s diff is a real failure of this card, never "flaky".',
+    "Agent and forge-checks steps are never flaky.",
+    ...(options.notFlakyTitle === undefined
+      ? []
+      : [
+          `This card exists to fix the flaky test \`${options.notFlakyTitle}\`: it is never flaky here. Fix it.`,
+        ]),
+  ];
+  if (options.triage === true) {
+    return [
+      "This is a flaky check, not a fix: the card's fix attempts are used up. Only re-run the failing tests and report.",
+      ...flakyRules,
+      "",
+      `Complete with outcome "succeeded" and a payload shaped ${BOARD_CI_FIX_PAYLOAD_SHAPE}, giving every issue by its id. Use "flaky" only when every issue is flaky. When any failure is real, edit nothing and use "cannot-fix" with a \`finding\` naming it.`,
+    ];
+  }
   return [
     ...(failureCount > 1
       ? ["Later failures may be caused by earlier ones. Work through them in order."]
       : []),
+    ...flakyRules,
     "Updating a test that this card's change made out of date is fine. Never delete, skip or loosen a check to hide a real failure.",
-    "If a failure also happens on the base branch, still fix it, but keep that fix minimal and in its own commit.",
+    "If a failure also happens on the base branch, still fix it, in its own commit. Neither that, nor the fix being large or needing you to choose a behaviour, is a reason for cannot-fix: choose what the tests and specs point to and say why in the commit message.",
     "",
-    `Do not run the CI steps yourself to finish: the board re-runs every step from the top after you report. Complete with outcome "succeeded" and a payload shaped ${BOARD_CI_FIX_PAYLOAD_SHAPE}, giving every issue by its id. Use "fixed" once your fixes are committed and pushed (give \`fixedSha\`), or with nothing to commit when a failure looks transient and a re-run should clear it. Use "cannot-fix", with a \`finding\` saying why, when any issue can't be fixed from this worktree, or only by hiding it: still fix and push the others, and mark each issue "resolved" or "cannot-fix".`,
+    `Do not run the CI steps yourself to finish: the board re-runs every step from the top after you report. Complete with outcome "succeeded" and a payload shaped ${BOARD_CI_FIX_PAYLOAD_SHAPE}, giving every issue by its id. Use "fixed" once your fixes are committed and pushed (give \`fixedSha\`), or with nothing to commit when a failure looks transient and a re-run should clear it. Use "flaky" only when every issue is flaky and you changed nothing: the pass carries on from where it stopped. When some are flaky and some real, fix the real ones, mark the others "flaky" and use "fixed". Use "cannot-fix", with a \`finding\` saying why, only when a human is certainly needed: an issue that can't be fixed from this worktree, or only by hiding it. Still fix and push the others, and mark each issue "resolved", "flaky" or "cannot-fix".`,
   ];
 }
 
@@ -950,8 +1009,23 @@ export function composeBoardCiFixPrompt(input: {
     readonly line?: number;
     readonly detail?: string;
   }>;
+  /** A flaky-only check, run once the fixes are used up (T3O-126). */
+  readonly triage?: boolean;
+  /** A flake card's own target test, which is never flaky. */
+  readonly notFlakyTitle?: string;
+  /** T3o (T3O-130): steps a human skipped this CI visit. */
+  readonly skipped?: ReadonlyArray<string>;
 }): string {
   const { failures, issues } = input;
+  // Script-flagged flakes beside real failures: listed so the agent leaves them alone.
+  const flagged = failures.flatMap((failure) =>
+    (failure.result?.failures ?? []).flatMap((entry) => {
+      const flake = entry as { readonly title?: unknown; readonly flaky?: unknown };
+      return flake.flaky === true && typeof flake.title === "string"
+        ? [`- ${failure.stepName}: ${flake.title}`]
+        : [];
+    }),
+  );
   const tailBudget = Math.floor(BOARD_CI_FIX_TAIL_BUDGET / Math.max(1, failures.length));
   const where = (issue: { readonly file?: string; readonly line?: number }) =>
     issue.file === undefined
@@ -977,6 +1051,13 @@ export function composeBoardCiFixPrompt(input: {
       `\`${failure.command}\` ${ended}.`,
       ...(failure.logPath === null ? [] : [`The full log is at \`${failure.logPath}\`.`]),
       ...(summary === null ? [] : [`The step reported: ${summary}`]),
+      ...(failure.cpuPressure === undefined
+        ? []
+        : [
+            failure.underLoad === true
+              ? `It ran with the host under load (CPU pressure ${Math.round(failure.cpuPressure)} %). A timeout here may be the host's load, not the code: if the test passes when re-run alone, report it flaky rather than loosening a timeout.`
+              : `It ran at host CPU pressure ${Math.round(failure.cpuPressure)} %.`,
+          ]),
       "The last lines of its output:",
       "```",
       tail.length > 0 ? tail : "(no output)",
@@ -986,15 +1067,33 @@ export function composeBoardCiFixPrompt(input: {
   return [
     input.prompt,
     "",
-    `${failedSteps} This is fix attempt ${input.attempt} of ${input.maxAttempts}.`,
+    input.triage === true
+      ? `${failedSteps} The card's ${input.maxAttempts} fix attempts are used up; this is a flaky check.`
+      : `${failedSteps} This is fix attempt ${input.attempt} of ${input.maxAttempts}.`,
     "",
-    `The issues to fix (${issues.length}):`,
+    ...(input.skipped === undefined || input.skipped.length === 0
+      ? []
+      : [
+          `Skipped by a human this visit: ${input.skipped.map((name) => `"${name}"`).join(", ")}. Failures after them may come from the skip.`,
+          "",
+        ]),
+    `The issues to ${input.triage === true ? "check" : "fix"} (${issues.length}):`,
     ...issues.map(
       (issue, index) =>
         `${index + 1}. [${issue.id}] ${issue.stepName}: ${issue.title}${where(issue)}${issue.detail === undefined ? "" : `: ${clipIssueDetail(issue.detail)}`}`,
     ),
+    ...(flagged.length === 0
+      ? []
+      : [
+          "",
+          "Flaky, not yours: leave alone. The script saw these fail and then pass on a re-run; the board files them as bug cards:",
+          ...flagged,
+        ]),
     ...blocks,
     "",
-    ...boardCiFixPromptRules(failures.length),
+    ...boardCiFixPromptRules(failures.length, {
+      ...(input.triage === true ? { triage: true } : {}),
+      ...(input.notFlakyTitle === undefined ? {} : { notFlakyTitle: input.notFlakyTitle }),
+    }),
   ].join("\n");
 }

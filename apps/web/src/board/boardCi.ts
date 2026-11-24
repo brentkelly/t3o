@@ -10,6 +10,7 @@ import {
   boardCiFixStepId,
   decodeBoardCiFixPayload,
   isBoardCiStepFailure,
+  isBoardCiStepSkipped,
   parseBoardCiFixStepId,
   type BoardCiFixIssueStatus,
   type BoardCardCi,
@@ -29,14 +30,20 @@ export type BoardStepBadgeState =
   | "passed"
   | "failed"
   | "fixing"
-  | "cancelled";
+  | "cancelled"
+  // T3o (T3O-130): a human skipped it. Neutral grey, never green.
+  | "skipped"
+  | "flaky";
 
-/** A CI step's badge: a failure a fix agent is working on is blue, not amber. */
+/** A CI step's badge: a failure a fix agent is working on is blue, not amber, and a
+    step that passed only over flakes is an amber warning, never green. */
 export function boardCiStepBadgeState(
   status: BoardCiStepStatus,
   fixing: boolean,
+  flaky = false,
 ): BoardStepBadgeState {
   if (status === "failed" || status === "timed-out") return fixing ? "fixing" : "failed";
+  if (status === "passed" && flaky) return "flaky";
   return status;
 }
 
@@ -53,14 +60,20 @@ const SEGMENT_WORD: Record<BoardStepBadgeState, string> = {
   failed: "failed",
   fixing: "being fixed",
   cancelled: "cancelled",
+  skipped: "skipped",
+  flaky: "passed over flaky tests",
 };
 
 /** One progress segment per step of the entry's current pass. */
 export function boardCiSegments(ci: BoardCardCi): ReadonlyArray<BoardCiSegment> {
   const fixing = ci.phase === "fixing";
   return ci.steps.map((step) => {
-    const state = boardCiStepBadgeState(step.status, fixing);
-    return { name: step.name, state, tooltip: `${step.name} · ${SEGMENT_WORD[state]}` };
+    const state = boardCiStepBadgeState(step.status, fixing, step.flaky === true);
+    const word =
+      state === "pending" && isBoardCiStepSkipped(ci, step)
+        ? "will be skipped"
+        : SEGMENT_WORD[state];
+    return { name: step.name, state, tooltip: `${step.name} · ${word}` };
   });
 }
 
@@ -120,7 +133,9 @@ function boardCiHeldLabel(ci: Pick<BoardCardCi, "machine" | "stopReason">): stri
 export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
   const segments = boardCiSegments(ci);
   const fixSegment = boardCiFixSegment(ci);
-  const total = ci.steps.length;
+  // T3o (T3O-130): a skipped step is out of the count, which is passed over steps that run.
+  const skipped = ci.steps.filter((step) => step.status === "skipped").length;
+  const total = ci.steps.length - skipped;
   const failedCount = ci.steps.filter((step) => isBoardCiStepFailure(step.status)).length;
   const passed = ci.steps.filter((step) => step.status === "passed").length;
   const running = ci.steps.find((step) => step.status === "running");
@@ -142,7 +157,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
         segments,
         fixSegment,
         count,
-        detail: "Every step passed",
+        detail: boardCiPassedDetail(skipped, boardCiDeferredCount(ci.steps)),
         tooltip: "CI passed; the card moves on",
       };
     // Held says why, and a machine problem says so.
@@ -208,7 +223,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
               : ci.headline !== undefined
                 ? boardCiHeadlineText(ci.headline)
                 : `${failed.name} ${failWord(failed.status)}`,
-          tooltip: `CI over ${total} ${total === 1 ? "step" : "steps"}`,
+          tooltip: `CI over ${ci.steps.length} ${ci.steps.length === 1 ? "step" : "steps"}`,
         };
       }
       const index = ci.steps.indexOf(running);
@@ -227,7 +242,7 @@ export function boardCiFace(ci: BoardCardCi, nowMs: number): BoardCiFace {
           failedCount > 0
             ? `${failedCount} failed · running ${running.name} · ${elapsed}`
             : `${running.name} · ${elapsed}`,
-        tooltip: `Step ${index + 1} of ${total} running${
+        tooltip: `Step ${index + 1} of ${ci.steps.length} running${
           progress === null || running.progress?.message == null
             ? ""
             : ` · ${running.progress.message}`
@@ -322,7 +337,46 @@ export function boardCiPassSummary(pass: Pick<BoardCiPass, "outcome" | "steps">)
   const failed = failures[0];
   if (failed !== undefined) return `${failed.name} ${failWord(failed.status)}`;
   if (pass.outcome === "skipped") return "Skipped by a human";
-  return "";
+  // T3o (T3O-130): a pass that skipped steps says how many, beside its chip.
+  const skipped = pass.steps.filter((step) => step.status === "skipped").length;
+  // T3o (T3O-129): and the tests it deferred, so a green chip never hides them.
+  const deferred = boardCiDeferredCount(pass.steps);
+  return [
+    ...(skipped === 0 ? [] : [`${skipped} skipped`]),
+    ...(deferred === 0 ? [] : [`${deferred} deferred`]),
+  ].join(" · ");
+}
+
+/** T3o (T3O-129): what a step's deferred tests are called in the CI pane. */
+export function boardCiDeferredLabel(count: number): string {
+  return `${count} load-sensitive ${count === 1 ? "test" : "tests"} deferred to the nightly`;
+}
+
+function boardCiPassedDetail(skipped: number, deferred: number): string {
+  if (skipped === 0 && deferred === 0) return "Every step passed";
+  return [
+    "Passed",
+    ...(skipped === 0 ? [] : [`${skipped} skipped`]),
+    ...(deferred === 0 ? [] : [`${deferred} deferred`]),
+  ].join(" · ");
+}
+
+/** T3o (T3O-129): load-sensitive tests the steps that ran deferred to the nightly. A full
+    pass row lists them; a shell step carries the count. */
+function boardCiDeferredCount(
+  steps: ReadonlyArray<{
+    readonly status: BoardCiStepStatus;
+    readonly deferred?: ReadonlyArray<unknown> | number;
+  }>,
+): number {
+  return steps.reduce(
+    (total, step) =>
+      step.status === "skipped"
+        ? total
+        : total +
+          (typeof step.deferred === "number" ? step.deferred : (step.deferred?.length ?? 0)),
+    0,
+  );
 }
 
 /** The CI tab header's status chip. */
@@ -414,7 +468,10 @@ export interface BoardCiFixRow {
 export function boardCiFixRow(input: {
   readonly pass: Pick<BoardCiPass, "runId" | "entry" | "steps" | "fixThreadId">;
   readonly completions: ReadonlyArray<Pick<BoardStepCompletion, "stepId" | "payload" | "threadId">>;
-  readonly ci: Pick<BoardCardCi, "runId" | "phase" | "fixAttempts" | "maxFixAttempts"> | null;
+  readonly ci: Pick<
+    BoardCardCi,
+    "runId" | "phase" | "fixAttempts" | "maxFixAttempts" | "flakyChecks" | "fixTriage"
+  > | null;
 }): BoardCiFixRow | null {
   const issues = boardCiFixIssues(input.pass.steps);
   if (issues.length === 0) return null;
@@ -422,7 +479,15 @@ export function boardCiFixRow(input: {
     input.ci !== null && input.ci.runId === input.pass.runId && input.ci.phase === "fixing";
   const { entry, fixThreadId } = input.pass;
   const liveStepId =
-    fixingNow && input.ci !== null ? boardCiFixStepId(entry, input.ci.fixAttempts) : null;
+    fixingNow && input.ci !== null
+      ? // The executor numbers fixes and flaky checks together (T3O-126).
+        boardCiFixStepId(
+          entry,
+          input.ci.fixAttempts +
+            (input.ci.flakyChecks ?? 0) +
+            (input.ci.fixTriage === true ? 1 : 0),
+        )
+      : null;
   const completion = input.completions.findLast((candidate) =>
     fixThreadId === null
       ? candidate.stepId === liveStepId
@@ -446,7 +511,10 @@ export function boardCiFixRow(input: {
     return {
       state: "running",
       badge: "fixing",
-      headline: `Fix ${Math.max(1, input.ci.fixAttempts)} of ${input.ci.maxFixAttempts} · ${count}`,
+      headline:
+        input.ci.fixTriage === true
+          ? `Flaky check · ${count}`
+          : `Fix ${Math.max(1, input.ci.fixAttempts)} of ${input.ci.maxFixAttempts} · ${count}`,
       issues: outcomes,
       fixedSha: null,
     };

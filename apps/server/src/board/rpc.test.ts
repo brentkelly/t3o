@@ -8,6 +8,8 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSessionId,
+  AuthSettingsWriteScope,
+  EnvironmentId,
   BoardCardId,
   BoardStageId,
   CommandId,
@@ -101,6 +103,7 @@ const supervisorCalls: {
   checkWorktree: Array<string>;
   link: Array<string>;
   ciAction: Array<string>;
+  skipStep: Array<string>;
 } = {
   refresh: [],
   merge: [],
@@ -110,6 +113,7 @@ const supervisorCalls: {
   checkWorktree: [],
   link: [],
   ciAction: [],
+  skipStep: [],
 };
 
 const supervisorStub: SupervisorReactorShape = {
@@ -121,6 +125,7 @@ const supervisorStub: SupervisorReactorShape = {
   fireSchedules: Effect.void,
   fireAutoArchives: Effect.void,
   startArmed: Effect.void,
+  tick: Effect.void,
   fireRetries: Effect.void,
   fireAutoMerges: Effect.void,
   releaseThreads: Effect.void,
@@ -166,6 +171,7 @@ const supervisorStub: SupervisorReactorShape = {
       supervisorCalls.merge.push(String(cardId));
       return { outcome: "merged", number: 284 } as const;
     }),
+  mergeQueueStartNow: () => Effect.succeed({ outcome: "merged", number: 284 } as const),
   submitForMerge: (cardId) =>
     Effect.sync(() => {
       supervisorCalls.submit.push(String(cardId));
@@ -185,6 +191,11 @@ const supervisorStub: SupervisorReactorShape = {
         : ({ outcome: "retried" } as const);
     }),
   ciSendBack: () => Effect.succeed({ outcome: "not-in-ci" } as const),
+  skipCiStep: (input) =>
+    Effect.sync(() => {
+      supervisorCalls.skipStep.push(`${String(input.cardId)}:${input.stepIndex}:${input.skip}`);
+      return { outcome: "marked" } as const;
+    }),
   drainCi: Effect.void,
 };
 
@@ -446,6 +457,23 @@ it.layer(makeBoardRpcTestLayer("t3o-board-rpc-ci-action-test-"))("board.retryCi"
   );
 });
 
+// A step skip is human-only like Skip CI, so it needs the operate scope.
+it.layer(makeBoardRpcTestLayer("t3o-board-rpc-ci-skip-step-test-"))("board.ciSkipStep", (it) => {
+  it.effect("rejects a session with only the read scope, and passes the operate scope", () =>
+    Effect.gen(function* () {
+      yield* seedCard;
+      const input = { cardId, runId: "ci-run", stepIndex: 1, skip: true };
+      const readOnly = yield* makeHandlers([AuthOrchestrationReadScope]);
+      const failure = yield* Effect.flip(readOnly["board.ciSkipStep"](input));
+      assert.strictEqual(failure._tag, "EnvironmentAuthorizationError");
+      assert.deepStrictEqual(supervisorCalls.skipStep, []);
+      const operate = yield* makeHandlers([AuthOrchestrationOperateScope]);
+      assert.deepStrictEqual(yield* operate["board.ciSkipStep"](input), { outcome: "marked" });
+      assert.deepStrictEqual(supervisorCalls.skipStep, [`${String(cardId)}:1:true`]);
+    }),
+  );
+});
+
 // "Check again" on a kept worktree removes a durable checkout, so it needs the
 // operate scope like "Remove worktree" does.
 it.layer(makeBoardRpcTestLayer("t3o-board-rpc-check-worktree-test-"))(
@@ -631,6 +659,31 @@ it.layer(makeBoardRpcTestLayer("t3o-board-rpc-archived-test-"))(
         const handlers = yield* makeHandlers([]);
         const failure = yield* Effect.flip(handlers["board.getArchivedCards"]({}));
         assert.strictEqual(failure._tag, "EnvironmentAuthorizationError");
+      }),
+    );
+  },
+);
+
+// T3o: an import that places a schedule creates an unattended full-access agent (T3O-117).
+it.layer(makeBoardRpcTestLayer("t3o-board-rpc-import-schedules-test-"))(
+  "board.projectConfig.import",
+  (it) => {
+    it.effect("refuses schedule placements from a settings-only session", () =>
+      Effect.gen(function* () {
+        const handlers = yield* makeHandlers([AuthSettingsWriteScope]);
+        const failure = yield* Effect.flip(
+          handlers["board.projectConfig.import"]({
+            projectId,
+            blobSha: "blob-1",
+            expectedConfigVersion: "v1",
+            schedulePlacements: { nightly: EnvironmentId.make("env-board") },
+          }),
+        );
+        assert.strictEqual(failure._tag, "EnvironmentAuthorizationError");
+        assert.strictEqual(
+          failure._tag === "EnvironmentAuthorizationError" ? failure.requiredScope : null,
+          AuthOrchestrationOperateScope,
+        );
       }),
     );
   },

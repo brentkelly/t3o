@@ -15,6 +15,14 @@ Going home stays going home. Deleting a thread, discarding a draft or closing se
 to your threads, exactly as before. Only opening the app fresh takes you to the board. Finishing a
 pairing does too, so a newly connected device starts where everyone else does.
 
+## On a phone
+
+On a narrow screen the board shows one column at a time; swipe sideways for the next. Spend leaves the
+header, and the corner menu starts collapsed. A card opens full screen, and its side panel moves into
+a **Details** sheet: open it from the button at the end of the tab row, which shows **Needs you**,
+**Blocked** or **Paused** when the card is waiting on something. Cards can't be dragged on a touch
+screen; use the card's **Move to** actions instead.
+
 ## Where the tabs sit
 
 In board and list mode the tabs are in the top bar, next to the T3 Code wordmark.

@@ -93,6 +93,27 @@ function ActorName({
   return <span className="font-medium text-muted-foreground">{actor.name ?? "System"}</span>;
 }
 
+/** Where an agent's write to this card came from: its own card, and the worker it ran on
+    when that differs from this card's. A schedule run has no card, so it is named only from
+    another worker; on the card's own machine its row is a plain agent row. */
+function ActorSource({
+  actor,
+  workerName,
+}: {
+  readonly actor: BoardCardActivityEntry["actor"];
+  readonly workerName: (workerId: BoardWorkerId) => string;
+}) {
+  const { sourceCardKey, sourceWorkerId } = actor;
+  if (sourceCardKey === undefined && sourceWorkerId === undefined) return null;
+  return (
+    <span>
+      {" via "}
+      {sourceCardKey ?? "schedule"}
+      {sourceWorkerId === undefined ? null : ` on ${workerName(sourceWorkerId)}`}
+    </span>
+  );
+}
+
 function ActivityIcon({
   kind,
   payload,
@@ -189,11 +210,21 @@ function ActivityIcon({
     case "card-ci-sent-back":
       return <Undo2Icon className={cn(className, "text-warning-foreground")} />;
     case "card-ci-skipped":
+    case "card-ci-step-skip":
       return <ChevronsRightIcon className={className} />;
     case "card-ci-held":
       return <TriangleAlertIcon className={cn(className, "text-warning-foreground")} />;
+    // A flake is a warning, never a pass and never a failure.
+    case "card-ci-flakes-filed":
+    case "card-ci-flaked-again":
+      return <TriangleAlertIcon className={cn(className, "text-warning-foreground")} />;
+    // T3o (T3O-129): deferred is no verdict: neutral.
+    case "card-ci-deferred":
+      return <ChevronsRightIcon className={className} />;
     case "card-ci-stopped":
       return <PauseIcon className={cn(className, "text-attention-foreground")} />;
+    case "card-worktree-cleanup":
+      return <HardDriveIcon className={className} />;
     // Plan review rows claim nothing about the work — neutral.
     case "plan-review-started":
     case "plan-review-stopped":
@@ -237,8 +268,12 @@ const CI_ACTIVITY_KINDS: ReadonlySet<BoardCardActivityEntry["kind"]> = new Set([
   "card-ci-pass-finished",
   "card-ci-sent-back",
   "card-ci-skipped",
+  "card-ci-step-skip",
   "card-ci-held",
   "card-ci-stopped",
+  "card-ci-flakes-filed",
+  "card-ci-flaked-again",
+  "card-ci-deferred",
 ]);
 
 function roundsPhrase(rounds: number): string {
@@ -287,7 +322,17 @@ function describeCardEdit(payload: BoardCardActivityEntry["payload"]): string {
       ? null
       : dependencies("removed", payload.dependenciesRemoved),
   ].filter((part) => part !== null);
-  return parts.length === 0 ? "edited the card" : parts.join(" and ");
+  if (parts.length > 0) return parts.join(" and ");
+  switch (payload.editKind) {
+    case "regrouped":
+      return "regrouped the card";
+    case "moved":
+      return "moved the card";
+    case "automation":
+      return "changed its automation";
+    default:
+      return "edited the card";
+  }
 }
 
 /** The sentence for one row, built from its typed payload. A payload field that
@@ -452,10 +497,30 @@ function activitySentence(
     }
     case "card-ci-skipped":
       return <>skipped CI</>;
+    case "card-ci-step-skip": {
+      const step = payload.ciStepName ?? "a step";
+      return payload.ciStepSkip === false ? (
+        <>took the skip off the CI step {step}</>
+      ) : (
+        <>skipped the CI step {step} until the card leaves CI</>
+      );
+    }
     case "card-ci-held":
       return payload.detail === undefined ? <>held the card in CI</> : <>{payload.detail}</>;
+    case "card-ci-flakes-filed":
+      return payload.detail === undefined ? <>CI passed over flaky tests</> : <>{payload.detail}</>;
+    case "card-ci-flaked-again":
+      return payload.detail === undefined ? <>the test flaked again</> : <>{payload.detail}</>;
+    case "card-ci-deferred":
+      return payload.detail === undefined ? (
+        <>CI deferred load-sensitive tests to the nightly</>
+      ) : (
+        <>{payload.detail}</>
+      );
     case "card-ci-stopped":
       return <>stopped CI for a human: the card has failed CI too many times</>;
+    case "card-worktree-cleanup":
+      return payload.detail === undefined ? <>cleaned up the worktree</> : <>{payload.detail}</>;
     case "card-review-round-requested":
       return payload.detail === undefined ? (
         <>asked for another review round</>
@@ -671,7 +736,8 @@ function ActivityRow({
         <ActivityIcon kind={entry.kind} payload={entry.payload} />
       </span>
       <span className="min-w-0 flex-1 text-pretty">
-        <ActorName agents={agents} entry={entry} />{" "}
+        <ActorName agents={agents} entry={entry} />
+        <ActorSource actor={entry.actor} workerName={workerName} />{" "}
         {activitySentence(entry, stages, projectNames, workerName)}
         {onOpenCi !== undefined && CI_ACTIVITY_KINDS.has(entry.kind) ? (
           <>

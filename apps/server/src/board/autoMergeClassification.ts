@@ -60,7 +60,7 @@ export function classifyBoardAutoMergeRefusal(state: BoardMergeState): BoardAuto
     switch (state.blockedReason) {
       case "behind":
         return { classification: "behind", detail, headSha };
-      // A conflict never reaches here in practice — `mergeCardPullRequest`
+      // A conflict never reaches here in practice — `attemptCardMerge`
       // routes it to the conflict-fix step before any probe runs — but a
       // forge that reports one anyway is structural, not transient.
       case "conflict":

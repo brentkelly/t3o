@@ -11,6 +11,11 @@ import {
   type EnvironmentId,
 } from "@t3tools/contracts";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import {
   clampFileAttachmentUploadBytes,
   deletePendingAttachmentUpload,
@@ -28,6 +33,11 @@ import { attachmentEnvironment } from "../state/attachments";
 import { readPreparedConnection } from "../state/session";
 
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
+
+class BoardUploadTransferError extends Schema.TaggedError<BoardUploadTransferError>()(
+  "BoardUploadTransferError",
+  { message: Schema.String },
+) {}
 
 /** What the environment allows, read off its advertised capabilities. */
 export interface BoardAttachmentLimits {
@@ -135,9 +145,11 @@ function uploadBytes(input: {
   readonly file: File;
   readonly mimeType: string;
   readonly onProgress: (progress: number) => void;
-}): { readonly done: Promise<void>; readonly abort: () => void } {
+  readonly signal: AbortSignal;
+}): Promise<void> {
   const xhr = new XMLHttpRequest();
-  const done = new Promise<void>((resolve, reject) => {
+  input.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+  return new Promise<void>((resolve, reject) => {
     xhr.open("POST", input.url, true);
     xhr.timeout = UPLOAD_TIMEOUT_MS;
     xhr.setRequestHeader("Content-Type", input.mimeType);
@@ -155,7 +167,6 @@ function uploadBytes(input: {
     xhr.addEventListener("abort", () => reject(new Error("Upload cancelled")));
     xhr.send(input.file);
   });
-  return { done, abort: () => xhr.abort() };
 }
 
 export type BoardUploadOutcome =
@@ -188,27 +199,45 @@ export async function uploadBoardAttachment(input: {
   if (upload === null) {
     return { status: "failed", reason: `'${input.file.name}' is not a supported image type.` };
   }
-  const result = await runAttachmentUploadCycle({
-    registry: appAtomRegistry,
-    createUploadUrl: attachmentEnvironment.createUploadUrl,
-    remove: attachmentEnvironment.remove,
-    environmentId: input.environmentId,
-    upload,
-    resolveUploadUrl: (relativeUrl) => {
-      const connection = readPreparedConnection(input.environmentId);
-      return connection ? resolveAssetUrl(connection.httpBaseUrl, relativeUrl) : null;
-    },
-    transport: (url) =>
-      uploadBytes({
-        url,
-        file: input.file,
-        mimeType,
-        onProgress: (progress) => input.onProgress?.(progress),
-      }),
-    onMinted: () => (input.isCancelled?.() ? "cancel" : "continue"),
-    onTransferStart: (abort) => input.onAbortable?.(abort),
-  });
-  if (result.status === "cancelled") return { status: "cancelled" };
+  // Interrupting the cycle aborts the transfer and releases the fresh mint.
+  const fiber = Effect.runFork(
+    runAttachmentUploadCycle({
+      registry: appAtomRegistry,
+      createUploadUrl: attachmentEnvironment.createUploadUrl,
+      remove: attachmentEnvironment.remove,
+      environmentId: input.environmentId,
+      upload,
+      resolveUploadUrl: (relativeUrl) => {
+        const connection = readPreparedConnection(input.environmentId);
+        return connection ? resolveAssetUrl(connection.httpBaseUrl, relativeUrl) : null;
+      },
+      transport: (url) =>
+        Effect.tryPromise({
+          try: (signal) =>
+            uploadBytes({
+              url,
+              file: input.file,
+              mimeType,
+              signal,
+              onProgress: (progress) => input.onProgress?.(progress),
+            }),
+          catch: (cause) =>
+            new BoardUploadTransferError({
+              message: cause instanceof Error ? cause.message : "Upload failed",
+            }),
+        }),
+    }),
+  );
+  const cancel = () => void Effect.runFork(Fiber.interrupt(fiber));
+  input.onAbortable?.(cancel);
+  if (input.isCancelled?.()) cancel();
+  const exit = await Effect.runPromise(Fiber.await(fiber));
+  // The cycle returns its failures as values, so a failed exit is an interrupt or a defect.
+  if (Exit.isFailure(exit))
+    return Cause.hasInterruptsOnly(exit.cause)
+      ? { status: "cancelled" }
+      : { status: "failed", reason: "Upload failed" };
+  const result = exit.value;
   if (result.status === "uploaded") {
     return {
       status: "uploaded",

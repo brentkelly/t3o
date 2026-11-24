@@ -40,7 +40,7 @@ const cards = [
 
 describe("boardArchivedCardsInScope", () => {
   it("shows every project's archive when the board is unscoped", () => {
-    expect(boardArchivedCardsInScope(cards, null).map((card) => card.cardId)).toEqual([
+    expect(boardArchivedCardsInScope(cards, []).map((card) => card.cardId)).toEqual([
       "newest",
       "middle",
       "oldest",
@@ -48,18 +48,26 @@ describe("boardArchivedCardsInScope", () => {
   });
 
   it("shows only the scoped project's cards, so the archive matches the board it opened from", () => {
-    expect(boardArchivedCardsInScope(cards, projectOne).map((card) => card.cardId)).toEqual([
+    expect(boardArchivedCardsInScope(cards, [projectOne]).map((card) => card.cardId)).toEqual([
       "newest",
       "oldest",
     ]);
-    expect(boardArchivedCardsInScope(cards, projectTwo).map((card) => card.cardId)).toEqual([
+    expect(boardArchivedCardsInScope(cards, [projectTwo]).map((card) => card.cardId)).toEqual([
       "middle",
     ]);
   });
 
+  it("shows every selected project's cards when several are selected", () => {
+    const projectThree = ProjectId.make("project-three");
+    const withThird = [...cards, archivedCard("third", projectThree, "2025-12-12T00:00:00.000Z")];
+    expect(
+      boardArchivedCardsInScope(withThird, [projectOne, projectThree]).map((card) => card.cardId),
+    ).toEqual(["newest", "oldest", "third"]);
+  });
+
   it("preserves the server's newest-archived-first order rather than re-sorting", () => {
     // The card you just archived by mistake is the one you came to restore.
-    expect(boardArchivedCardsInScope(cards, null).map((card) => card.archivedAt)).toEqual([
+    expect(boardArchivedCardsInScope(cards, []).map((card) => card.archivedAt)).toEqual([
       "2026-03-03T00:00:00.000Z",
       "2026-02-02T00:00:00.000Z",
       "2026-01-01T00:00:00.000Z",
@@ -67,7 +75,9 @@ describe("boardArchivedCardsInScope", () => {
   });
 
   it("is empty when the scoped project has archived nothing", () => {
-    expect(boardArchivedCardsInScope([], projectOne)).toEqual([]);
-    expect(boardArchivedCardsInScope(cards, ProjectId.make("project-with-no-archive"))).toEqual([]);
+    expect(boardArchivedCardsInScope([], [projectOne])).toEqual([]);
+    expect(boardArchivedCardsInScope(cards, [ProjectId.make("project-with-no-archive")])).toEqual(
+      [],
+    );
   });
 });

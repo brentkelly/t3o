@@ -200,3 +200,70 @@ it.effect("cancel never waits on the pass's fiber", () =>
     yield* passes.awaitIdle;
   }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "T3O-130: a step's first running report calls onStepStarted once; a cancelled launch's late report is dropped",
+  () =>
+    Effect.gen(function* () {
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const dispatched: Array<unknown> = [];
+      const startedAt: Array<number> = [];
+      const step = (status: "running" | "passed") => ({
+        name: "Lint",
+        command: "vp lint",
+        timeoutMinutes: 1,
+        status,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        tail: "",
+      });
+      const passes = yield* makeBoardCiPasses({
+        runner: {
+          run: (_request, emit) =>
+            Effect.gen(function* () {
+              yield* emit({ index: 0, step: step("running") });
+              yield* emit({ index: 0, step: step("running") });
+              yield* Deferred.succeed(reached, undefined);
+              // The report lands after the cancel, as a killed process's last write does.
+              yield* Effect.uninterruptible(
+                Deferred.await(release).pipe(
+                  Effect.andThen(emit({ index: 0, step: step("passed") })),
+                ),
+              );
+              return { result: "passed" as const, failedIndex: null, ranAll: true };
+            }),
+        },
+        admit: () => Effect.succeed(true),
+        dispatch: (command) => Effect.sync(() => dispatched.push(command)),
+        commandId: (tag) => Effect.succeed(CommandId.make(tag)),
+        nowIso: Effect.succeed("2026-01-01T00:00:00.000Z"),
+        onFinished: () => Effect.void,
+        onStepStarted: (_cardId, _runId, _token, index) => Effect.sync(() => startedAt.push(index)),
+      });
+      const cardId = BoardCardId.make("card-skip");
+      yield* passes.start({
+        cardId,
+        runId: "run-1",
+        worktreePath: "/tmp/nowhere",
+        workerId: BOARD_LOCAL_WORKER_ID,
+        steps: [{ name: "Lint", command: "vp lint", timeoutMinutes: 1 }],
+        indexOffset: 3,
+      });
+      yield* Deferred.await(reached);
+      assert.deepStrictEqual(passes.entry(cardId), {
+        runId: "run-1",
+        state: "running",
+        token: 1,
+        start: 3,
+        end: 4,
+      });
+      assert.strictEqual(yield* passes.cancel(cardId), "run-1");
+      yield* Deferred.succeed(release, undefined);
+      yield* passes.awaitIdle;
+      assert.lengthOf(dispatched, 2);
+      assert.deepStrictEqual(startedAt, [3]);
+      assert.isNull(passes.entry(cardId));
+    }).pipe(Effect.scoped),
+);

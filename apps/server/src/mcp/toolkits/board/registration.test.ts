@@ -16,6 +16,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 
@@ -53,6 +54,11 @@ import { PeerLinkRequests } from "../../../peer/PeerLinkRequests.ts";
 import { PeerLinks } from "../../../peer/PeerLinks.ts";
 import { RemoteDelegation } from "../../../peer/RemoteDelegation.ts";
 import { ProjectCloneTracker } from "../../../project/ProjectCloneTracker.ts";
+import { EnvironmentThemeService } from "../../../environmentTheme.ts";
+import * as GitManager from "../../../git/GitManager.ts";
+import { IssueService } from "../../../issue/IssueService.ts";
+import { ThreadIssueService } from "../../../orchestration-v2/ThreadIssueService.ts";
+import * as PullRequestService from "../../../pullRequest/PullRequestService.ts";
 
 const layerServerEnvironment = Layer.mock(ServerEnvironment.ServerEnvironment)({
   getEnvironmentId: Effect.succeed("environment-scratch" as never),
@@ -63,7 +69,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(McpProviderSessions.McpProviderSessions)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
-  Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+  Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(null) }),
   Layer.mock(DeviceService.DeviceService)({}),
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -88,6 +94,12 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(PeerLinks)({}),
   Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(RemoteDelegation)({}),
+  Layer.mock(EnvironmentThemeService)({}),
+  Layer.mock(GitManager.GitManager)({}),
+  Layer.mock(IssueService)({}),
+  Layer.mock(ThreadIssueService)({}),
+  Layer.mock(PullRequestService.PullRequestService)({}),
+  Layer.succeed(SqlClient.SqlClient, {} as unknown as SqlClient.SqlClient), // T3o: the board merge guard (T3O-133).
   // T3o: the board toolkit registers on the same server; unused here.
   Layer.mock(BoardEngine)({}),
   Layer.mock(BoardQueries)({}),

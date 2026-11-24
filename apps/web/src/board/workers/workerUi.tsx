@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeAbbreviationInput, type WorkerNameProblems } from "./workerNames";
 
 /** A worker's abbreviation beside its name: outlined and mono, never coloured. */
@@ -22,7 +22,9 @@ export function WorkerAbbreviationBadge(props: { readonly abbreviation: string }
 
 /** A mono command with a Copy button that reads Copied for two seconds. */
 export function CopyCommand(props: { readonly command: string; readonly target: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: props.target });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget(props.target),
+  });
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-muted/40 py-1 pr-1 pl-3">
       <code className="min-w-0 flex-1 font-mono text-board-12 break-all">{props.command}</code>

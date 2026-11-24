@@ -15,7 +15,12 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FiberSet from "effect/FiberSet";
 
-import { boardCiLogDir, type BoardCiRunnerShape, type BoardCiRunResult } from "./BoardCiRunner.ts";
+import {
+  boardCiLogDir,
+  type BoardCiRunnerShape,
+  type BoardCiRunRequest,
+  type BoardCiRunResult,
+} from "./BoardCiRunner.ts";
 
 export interface BoardCiPassRequest {
   readonly cardId: BoardCardId;
@@ -28,6 +33,14 @@ export interface BoardCiPassRequest {
   readonly indexOffset?: number;
   /** False runs every step even after a failure. Absent is true. */
   readonly stopOnFailure?: boolean;
+  /** T3o (T3O-126): `BoardCiRunRequest.knownFlaky` and `notFlakyTitle`. */
+  readonly knownFlaky?: ReadonlyArray<string>;
+  readonly notFlakyTitle?: string;
+  /** T3o (T3O-127): `BoardCiRunRequest.loadThreshold` and `inconclusiveTargetAllowed`. */
+  readonly loadThreshold?: number;
+  readonly inconclusiveTargetAllowed?: boolean;
+  /** T3o (T3O-129): `BoardCiRunRequest.loadSensitive`. */
+  readonly loadSensitive?: BoardCiRunRequest["loadSensitive"];
   /** Where the steps run; this server's runner when absent. */
   readonly runner?: BoardCiRunnerShape;
 }
@@ -39,7 +52,8 @@ export interface BoardCiPassFinished {
   readonly token: number;
   /** `failedIndex` is a pass index (the segment's offset applied). */
   readonly outcome: BoardCiRunResult;
-  /** The pass index after the segment's last step. */
+  /** The pass index of the segment's first step, and the one after its last. */
+  readonly segmentStart: number;
   readonly segmentEnd: number;
 }
 
@@ -52,6 +66,24 @@ export interface BoardCiPassesDeps {
   readonly nowIso: Effect.Effect<string>;
   /** Called on the pass's fiber when every step has run or one has failed. */
   readonly onFinished: (finished: BoardCiPassFinished) => Effect.Effect<void>;
+  /** T3o (T3O-130): a step's first `running` report from launch `token`, at its pass
+      index. Called on the pass's fiber, so it must only enqueue. */
+  readonly onStepStarted?: (
+    cardId: BoardCardId,
+    runId: string,
+    token: number,
+    index: number,
+  ) => Effect.Effect<void>;
+}
+
+/** T3o (T3O-130): where a card's pass entry stands, and the pass indices its launch runs. */
+export interface BoardCiPassEntry {
+  readonly runId: string;
+  readonly state: "queued" | "running" | "finishing" | "claimed";
+  /** Null while queued: nothing has launched. */
+  readonly token: number | null;
+  readonly start: number;
+  readonly end: number;
 }
 
 export interface BoardCiPasses {
@@ -65,6 +97,8 @@ export interface BoardCiPasses {
   readonly cancel: (cardId: BoardCardId) => Effect.Effect<string | null>;
   /** The card's pass in flight, finishing or queued. */
   readonly current: (cardId: BoardCardId) => string | null;
+  /** T3o (T3O-130): the card's entry, with its state and launched range. */
+  readonly entry: (cardId: BoardCardId) => BoardCiPassEntry | null;
   /** Take the result of launch `token` for handling: true only once, and
       only while that launch's entry is finishing. */
   readonly claim: (cardId: BoardCardId, token: number) => boolean;
@@ -80,6 +114,8 @@ interface RunningPass {
   readonly runId: string;
   readonly token: number;
   readonly fiber: Fiber.Fiber<void>;
+  readonly start: number;
+  readonly end: number;
   state: "running" | "finishing" | "claimed";
 }
 
@@ -96,9 +132,15 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
 
   const record = Effect.fn("BoardCiPasses.record")(function* (
     request: BoardCiPassRequest,
+    token: number,
+    started: Set<number>,
     index: number,
     step: unknown,
   ) {
+    // T3o (T3O-130): a cancelled launch's in-flight report must not overwrite the rows of
+    // the segment restarted in its place.
+    if (!owns(request.cardId, token)) return;
+    const passIndex = index + (request.indexOffset ?? 0);
     yield* deps.dispatch({
       type: "board.card.record-ci",
       commandId: yield* deps.commandId("ci-step"),
@@ -106,7 +148,7 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
       action: {
         kind: "step",
         runId: request.runId,
-        index: index + (request.indexOffset ?? 0),
+        index: passIndex,
         step: step as Extract<
           Extract<BoardCommand, { type: "board.card.record-ci" }>["action"],
           { kind: "step" }
@@ -114,11 +156,20 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
       },
       createdAt: yield* deps.nowIso,
     });
+    if (
+      deps.onStepStarted !== undefined &&
+      (step as { readonly status?: unknown }).status === "running" &&
+      !started.has(passIndex)
+    ) {
+      started.add(passIndex);
+      yield* deps.onStepStarted(request.cardId, request.runId, token, passIndex);
+    }
   });
 
   const launch = Effect.fn("BoardCiPasses.launch")(function* (request: BoardCiPassRequest) {
     nextToken += 1;
     const token = nextToken;
+    const started = new Set<number>();
     const pass = (request.runner ?? deps.runner)
       .run(
         {
@@ -128,8 +179,17 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
           logDir: boardCiLogDir(request.worktreePath, request.runId),
           ...(request.indexOffset === undefined ? {} : { indexOffset: request.indexOffset }),
           ...(request.stopOnFailure === false ? { stopOnFailure: false } : {}),
+          ...(request.knownFlaky === undefined || request.knownFlaky.length === 0
+            ? {}
+            : { knownFlaky: request.knownFlaky }),
+          ...(request.notFlakyTitle === undefined ? {} : { notFlakyTitle: request.notFlakyTitle }),
+          ...(request.loadThreshold === undefined ? {} : { loadThreshold: request.loadThreshold }),
+          ...(request.inconclusiveTargetAllowed === true
+            ? { inconclusiveTargetAllowed: true }
+            : {}),
+          ...(request.loadSensitive === undefined ? {} : { loadSensitive: request.loadSensitive }),
         },
-        (progress) => record(request, progress.index, progress.step),
+        (progress) => record(request, token, started, progress.index, progress.step),
       )
       .pipe(
         // The entry stays, finishing, until the reactor has handled the result.
@@ -171,6 +231,7 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
               outcome.failedIndex === null
                 ? outcome
                 : { ...outcome, failedIndex: outcome.failedIndex + (request.indexOffset ?? 0) },
+            segmentStart: request.indexOffset ?? 0,
             segmentEnd: (request.indexOffset ?? 0) + request.steps.length,
           }),
         ),
@@ -184,12 +245,20 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
         ),
       );
     const fiber = yield* FiberSet.run(fibers, pass, { startImmediately: false });
+    // T3o (T3O-130): a restarted segment replaces its cancelled one; never leave two running.
+    const replaced = running.get(String(request.cardId));
+    const start = request.indexOffset ?? 0;
     running.set(String(request.cardId), {
       runId: request.runId,
       token,
       fiber,
+      start,
+      end: start + request.steps.length,
       state: "running",
     });
+    if (replaced?.state === "running") {
+      yield* FiberSet.run(fibers, Fiber.interrupt(replaced.fiber).pipe(Effect.asVoid));
+    }
   });
 
   const tryStart = Effect.fn("BoardCiPasses.tryStart")(function* (request: BoardCiPassRequest) {
@@ -246,6 +315,28 @@ export const makeBoardCiPasses = Effect.fn("makeBoardCiPasses")(function* (
     cancel,
     current: (cardId) =>
       running.get(String(cardId))?.runId ?? queued.get(String(cardId))?.runId ?? null,
+    entry: (cardId) => {
+      const entry = running.get(String(cardId));
+      if (entry !== undefined) {
+        return {
+          runId: entry.runId,
+          state: entry.state,
+          token: entry.token,
+          start: entry.start,
+          end: entry.end,
+        };
+      }
+      const waiting = queued.get(String(cardId));
+      if (waiting === undefined) return null;
+      const start = waiting.indexOffset ?? 0;
+      return {
+        runId: waiting.runId,
+        state: "queued",
+        token: null,
+        start,
+        end: start + waiting.steps.length,
+      };
+    },
     claim,
     settle,
     awaitIdle: FiberSet.awaitEmpty(fibers),

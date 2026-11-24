@@ -5,6 +5,7 @@
 import { Link } from "@tanstack/react-router";
 import {
   BOARD_CI_STOPPED_BY_YOU_REASON,
+  boardCiFlakeKey,
   isBoardCiStepFailure,
   type BoardCardId,
   type EnvironmentId,
@@ -26,11 +27,12 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowSecond } from "../hooks/useNowSecond";
 import { cn } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import {
+  boardCiDeferredLabel,
   boardCiPaneHeadline,
   boardCiPaneStatus,
   boardCiPassOutcomeChip,
@@ -49,6 +51,7 @@ import {
 } from "./boardCi";
 import { BOARD_CI_CHIP_CLASS } from "./BoardCardCiFace";
 import { BoardSectionHeading as SectionHeading } from "./BoardCardFields";
+import { BoardHint } from "./BoardHint";
 import { BoardShimmerText, BoardStepBadge } from "./BoardStepBadge";
 import type { BoardCiLogTarget } from "./BoardCiLogDialog";
 
@@ -171,7 +174,9 @@ function StepProgress({
 
 /** The pass's log folder, copyable for a terminal. */
 function LogDirRow({ logDir }: { readonly logDir: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "log folder" });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("log folder"),
+  });
   return (
     <div className="flex min-w-0 items-center gap-2 border-t border-border px-3 py-2 text-board-11 text-muted-foreground">
       <span className="shrink-0">Logs</span>
@@ -196,7 +201,19 @@ const STATUS_WORD: Record<BoardCiPassStep["status"], string> = {
   failed: "Failed",
   "timed-out": "Timed out",
   cancelled: "Cancelled",
+  skipped: "Skipped",
 };
+
+/** T3o (T3O-130): skip step `stepIndex` of pass `runId`, or (`skip: false`) unmark it. */
+export type BoardCiSkipStepHandler = (input: {
+  readonly runId: string;
+  readonly stepIndex: number;
+  readonly skip: boolean;
+  readonly stepName: string;
+}) => void;
+
+/** What a live pass's step offers: Skip while it runs or waits, Unskip once marked. */
+type StepSkipControl = "skip" | "unskip" | null;
 
 function statusClass(status: BoardCiPassStep["status"], fixing: boolean): string {
   if (status === "passed") return "text-success-foreground";
@@ -215,8 +232,12 @@ function StepRow({
   onToggleTail,
   onOpenThread,
   onOpenLog,
+  skipControl = null,
+  onSkip,
 }: {
   readonly step: BoardCiPassStep;
+  readonly skipControl?: StepSkipControl | undefined;
+  readonly onSkip?: ((skip: boolean) => void) | undefined;
   /** Opens the step's log; absent when it has none to show. */
   readonly onOpenLog?: (() => void) | undefined;
   readonly onOpenThread?: ((threadId: ThreadId) => void) | undefined;
@@ -229,6 +250,8 @@ function StepRow({
 }) {
   const failed = isBoardCiStepFailure(step.status);
   const stepFixing = failed && fixing;
+  // T3o (T3O-126): passed over flakes, a warning: amber, never green and never red.
+  const flakes = step.status === "passed" ? (step.flaky ?? []) : [];
   const running = step.status === "running" && live;
   const hasTail = failed && step.tail.length > 0;
   const duration =
@@ -243,7 +266,10 @@ function StepRow({
           (running || stepFixing) && "bg-info/5",
         )}
       >
-        <BoardStepBadge index={index + 1} state={boardCiStepBadgeState(step.status, fixing)} />
+        <BoardStepBadge
+          index={index + 1}
+          state={boardCiStepBadgeState(step.status, fixing, flakes.length > 0)}
+        />
         <div className="flex min-w-0 flex-1 flex-col gap-px">
           <BoardShimmerText
             active={running}
@@ -268,6 +294,52 @@ function StepRow({
           {step.note === undefined ? null : (
             <span className="text-board-11 text-muted-foreground">{step.note}</span>
           )}
+          {/* T3o (T3O-127): the host's load when the step started; amber under load. */}
+          {step.cpuPressure === undefined ? null : (
+            <span
+              className={cn(
+                "text-board-11",
+                step.underLoad === true ? "text-warning-foreground" : "text-muted-foreground",
+              )}
+            >
+              {step.underLoad === true ? "Ran under load · " : ""}CPU pressure{" "}
+              {Math.round(step.cpuPressure)} %
+              {/* An old T3O-127 count, only where the step reported no deferred list. */}
+              {step.skippedUnderLoad === undefined ||
+              step.skippedUnderLoad === 0 ||
+              step.deferred !== undefined
+                ? ""
+                : ` · ${step.skippedUnderLoad} ${step.skippedUnderLoad === 1 ? "test" : "tests"} skipped under load`}
+            </span>
+          )}
+          {/* T3o (T3O-129): neutral, never green, amber or violet: deferred is not a verdict. */}
+          {step.status === "skipped" || (step.deferred ?? []).length === 0 ? null : (
+            <details className="text-board-11 text-muted-foreground">
+              <summary className="cursor-pointer select-none">
+                {boardCiDeferredLabel((step.deferred ?? []).length)}
+              </summary>
+              <ul className="mt-0.5 flex flex-col gap-px pl-3">
+                {(step.deferred ?? []).map((test) => {
+                  const key = boardCiFlakeKey(test.file, test.title);
+                  return (
+                    <li key={key} className="break-all">
+                      {key}
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          )}
+          {flakes.length === 0 ? null : (
+            <span className="text-board-11 text-warning-foreground">
+              Flaky, passed alone:{" "}
+              {flakes
+                .map((flake) =>
+                  flake.file === undefined ? flake.title : `${flake.file} › ${flake.title}`,
+                )
+                .join(", ")}
+            </span>
+          )}
           {running ? <RunningMeta step={step} /> : null}
           {step.progress === undefined || step.status === "passed" ? null : (
             <StepProgress progress={step.progress} />
@@ -291,6 +363,24 @@ function StepRow({
             </button>
           )}
         </div>
+        {skipControl === null || onSkip === undefined ? null : (
+          <BoardHint
+            label={
+              skipControl === "skip"
+                ? "Skip until the card leaves CI"
+                : "Run this step when the pass reaches it"
+            }
+          >
+            <button
+              aria-label={`${skipControl === "skip" ? "Skip" : "Unskip"} ${step.name}`}
+              className="h-[22px] shrink-0 rounded-md border border-border bg-popover px-1.75 text-board-11 font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => onSkip(skipControl === "skip")}
+              type="button"
+            >
+              {skipControl === "skip" ? "Skip" : "Unskip"}
+            </button>
+          </BoardHint>
+        )}
         {hasTail ? (
           <button
             aria-expanded={tailOpen}
@@ -316,10 +406,16 @@ function StepRow({
         <span
           className={cn(
             "w-[92px] shrink-0 text-right text-board-11-5 font-medium",
-            statusClass(step.status, fixing),
+            flakes.length > 0 ? "text-warning-foreground" : statusClass(step.status, fixing),
           )}
         >
-          {stepFixing ? "Failed · fixing" : STATUS_WORD[step.status]}
+          {stepFixing
+            ? "Failed · fixing"
+            : flakes.length > 0
+              ? "Passed · flaky"
+              : skipControl === "unskip"
+                ? "Will be skipped"
+                : STATUS_WORD[step.status]}
           {step.exitCode !== null && failed && !stepFixing ? (
             <span className="sr-only">{` (exit ${step.exitCode})`}</span>
           ) : null}
@@ -337,7 +433,12 @@ function StepRow({
               // oxlint-disable-next-line react/no-array-index-key -- one result's failures never reorder and titles can repeat
               key={`${failure.title}:${index}`}
             >
-              <span className="text-foreground">{failure.title}</span>
+              <span className="text-foreground">
+                {failure.title}
+                {failure.flaky === true ? (
+                  <span className="text-warning-foreground"> · flaky</span>
+                ) : null}
+              </span>
               {failure.file === undefined ? null : (
                 <span className="font-mono text-board-10-5 text-muted-foreground">
                   {failure.file}
@@ -372,12 +473,14 @@ const ISSUE_STATUS: Record<BoardCiFixRow["issues"][number]["status"], string> = 
   open: "Open",
   resolved: "Resolved",
   "cannot-fix": "Can't fix",
+  flaky: "Flaky",
 };
 
 const ISSUE_STATUS_CLASS: Record<BoardCiFixRow["issues"][number]["status"], string> = {
   open: "text-muted-foreground",
   resolved: "text-success-foreground",
   "cannot-fix": "text-attention-foreground",
+  flaky: "text-warning-foreground",
 };
 
 /** A failed pass's fix, shown as the pass's last step. */
@@ -473,8 +576,14 @@ function PassSteps({
   fixRow,
   fixThreadId,
   onOpenLog,
+  ci,
+  onSkipStep,
 }: {
   readonly pass: BoardCiPass;
+  /** The card's CI, for the steps marked to skip; only with `onSkipStep`. */
+  readonly ci?: BoardCardCi | null | undefined;
+  /** Offered on the live pass while it is queued or running. */
+  readonly onSkipStep?: BoardCiSkipStepHandler | undefined;
   readonly live: boolean;
   readonly fixing: boolean;
   readonly defaultTailOpen: boolean;
@@ -489,10 +598,28 @@ function PassSteps({
     <>
       {pass.steps.map((step, index) => {
         const open = tailOpen[index] ?? defaultTailOpen;
+        const marked =
+          ci != null && step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id);
+        const skipControl: StepSkipControl =
+          onSkipStep === undefined ||
+          ci == null ||
+          (ci.phase !== "queued" && ci.phase !== "running")
+            ? null
+            : step.status === "running"
+              ? "skip"
+              : step.status === "pending"
+                ? marked
+                  ? "unskip"
+                  : "skip"
+                : null;
         return (
           <StepRow
             fixing={fixing}
             index={index}
+            skipControl={skipControl}
+            onSkip={(skip) =>
+              onSkipStep?.({ runId: pass.runId, stepIndex: index, skip, stepName: step.name })
+            }
             // oxlint-disable-next-line react/no-array-index-key -- a step is its position in the pipeline; step names can repeat
             key={`${index}:${step.name}`}
             live={live}
@@ -607,9 +734,12 @@ export function BoardCardCiPane({
   projectId,
   onRetryCi,
   onStopCi,
+  onSkipStep,
   onSendBack,
   completions = [],
 }: {
+  /** T3o (T3O-130): skip, mark or unmark a step of the queued or running pass. Human-only. */
+  readonly onSkipStep?: BoardCiSkipStepHandler | undefined;
   /** Where the card lives, for its step logs. */
   readonly environmentId: EnvironmentId;
   readonly cardId: BoardCardId;
@@ -866,6 +996,7 @@ export function BoardCardCiPane({
               onOpenLog={setLogTarget}
               onOpenThread={onOpenThread}
               pass={current}
+              {...(live && inCi ? { ci, onSkipStep } : {})}
             />
             <div className="border-t border-border px-3 py-2 text-board-11 text-muted-foreground">
               {current.steps.length} {current.steps.length === 1 ? "step" : "steps"} from the

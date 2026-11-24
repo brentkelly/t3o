@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import "~/index.css";
-import { applyAppearanceFontVariables } from "./appearanceFonts";
+import { applyAppearanceFontVariables, DEFAULT_SANS_FONT_STACK } from "./appearanceFonts";
 
 function renderedFontSize(style: (probe: HTMLElement) => void): string {
   const probe = document.createElement("div");
@@ -47,6 +47,46 @@ describe("applyAppearanceFontVariables", () => {
       expect(composerFontSize()).toBe("14px");
       // iOS zooms into inputs under 16px.
       expect(touchComposerFontSize()).toBe("16px");
+    } finally {
+      if (style === null) root.removeAttribute("style");
+      else root.setAttribute("style", style);
+    }
+  });
+
+  it("widens the numbered-list gutter only when the interface font's marker would clip", () => {
+    const root = document.documentElement;
+    const style = root.getAttribute("style");
+    const gutter = (sans: string) => {
+      applyAppearanceFontVariables(root, {
+        sans,
+        code: "",
+        composer: "",
+        sizeInterface: 16,
+        sizePrompt: 14,
+        sizeCode: 13,
+        smoothing: true,
+        separate: false,
+      });
+      const markdown = document.createElement("div");
+      markdown.className = "chat-markdown";
+      markdown.style.fontSize = "14px";
+      const list = document.createElement("ol");
+      markdown.append(list);
+      document.body.append(markdown);
+      try {
+        return Number.parseFloat(getComputedStyle(list).paddingInlineStart);
+      } finally {
+        markdown.remove();
+      }
+    };
+    try {
+      // T3o: measure the marker; a CJK host's `monospace` draws `0. ` at 21px, not ~25px.
+      const context = document.createElement("canvas").getContext("2d")!;
+      context.font = `14px monospace, ${DEFAULT_SANS_FONT_STACK}`;
+      const marker = context.measureText("0. ").width;
+      expect(marker).toBeGreaterThan(20);
+      expect(gutter("monospace")).toBeCloseTo(marker, 1);
+      expect(gutter("sans-serif")).toBe(20);
     } finally {
       if (style === null) root.removeAttribute("style");
       else root.setAttribute("style", style);

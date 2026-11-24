@@ -11,7 +11,9 @@ import {
   type BoardDetachCardFileInput,
   type BoardClientCommand,
   type BoardCardWorkerMoveRequest,
+  type BoardCiSkipStepInput,
   type BoardProjectImportCandidatesInput,
+  type BoardProjectExportInput,
   type BoardProjectImportInput,
   type BoardSettingsClientCommand,
   type ProjectId,
@@ -87,6 +89,8 @@ export type SetBoardProjectCiStopOnFailureInput =
 export type ResetBoardProjectInput = SettingsCommandInput<"board.project.reset">;
 export type SetBoardProjectResourcesInput = SettingsCommandInput<"board.project.set-resources">;
 export type DismissBoardProjectImportInput = SettingsCommandInput<"board.project.dismiss-import">;
+export type RemoveBoardProjectLoadSensitiveInput =
+  SettingsCommandInput<"board.project.remove-load-sensitive">;
 export type StartBoardStageThreadInput = CommandInput<"board.card.start-stage-thread">;
 export type ApproveBoardPlansInput = CommandInput<"board.plans.approve">;
 export type StartBoardPlanReviewInput = CommandInput<"board.plan-review.start">;
@@ -138,6 +142,10 @@ export const linkBoardCardPullRequest = (input: {
 export const mergeBoardCardPullRequest = (input: { readonly cardId: BoardCardId }) =>
   request(BOARD_WS_METHODS.mergeCardPullRequest, input);
 
+/** T3o: a queued card's Start now (T3O-128). */
+export const startBoardMergeQueueCardNow = (input: { readonly cardId: BoardCardId }) =>
+  request(BOARD_WS_METHODS.mergeQueueStartNow, input);
+
 /** Open the card's pull request from Building and route it past Code review.
     Same input shape as the merge action, and the same reason for
     being an RPC: the caller renders the outcome. */
@@ -165,6 +173,10 @@ export const retryBoardCardCi = (input: {
 
 export const sendBackBoardCardCi = (input: { readonly cardId: BoardCardId }) =>
   request(BOARD_WS_METHODS.ciSendBack, input);
+
+/** T3o (T3O-130): skip one step of a running CI pass, mark it, or unmark it. */
+export const skipBoardCardCiStep = (input: BoardCiSkipStepInput) =>
+  request(BOARD_WS_METHODS.ciSkipStep, input);
 
 /** "Remove worktree" on a finished card that kept one: removes it
     past the safety rule. The branch is kept. */
@@ -588,6 +600,11 @@ export const dismissBoardProjectImport = dispatchSettings(
   "board.project.dismiss-import",
   "dismissBoardProjectImport",
 );
+/** T3o (T3O-129): take tests off the project's load-sensitive list, or clear it. */
+export const removeBoardProjectLoadSensitive = dispatchSettings(
+  "board.project.remove-load-sensitive",
+  "removeBoardProjectLoadSensitive",
+);
 
 /** A project's full delta, with the prompts the shell leaves out. */
 export const getBoardProjectConfig = (input: { readonly projectId: ProjectId }) =>
@@ -602,7 +619,7 @@ export const getBoardProjectImportCandidates = (input: BoardProjectImportCandida
 export const importBoardProjectFile = (input: BoardProjectImportInput) =>
   request(BOARD_WS_METHODS.importProjectFile, input);
 
-export const exportBoardProjectFile = (input: { readonly projectId: ProjectId }) =>
+export const exportBoardProjectFile = (input: BoardProjectExportInput) =>
   request(BOARD_WS_METHODS.exportProjectFile, input);
 
 export const startBoardStageThread: (input: StartBoardStageThreadInput) => CommandEffect =

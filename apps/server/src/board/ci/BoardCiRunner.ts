@@ -13,8 +13,12 @@ import * as NodePath from "node:path";
 
 import {
   BOARD_CI_TAIL_LINES,
+  boardCiFlakeKey,
   boardCiStepGroups,
+  DEFAULT_BOARD_CI_LOAD_THRESHOLD,
+  isBoardCiFailureFlaky,
   parseBoardCiResultFile,
+  type BoardCiFailureDetail,
   type BoardCiHeadline,
   type BoardCiPassStep,
   type BoardCiStepDefinition,
@@ -42,6 +46,7 @@ import {
 } from "./ciFailureHeadline.ts";
 import { BoardDiskSpace, boardCiLowDiskReason } from "./diskSpace.ts";
 import { BoardActualsTap } from "../actuals/BoardActualsMeter.ts";
+import { BoardMachine } from "../capacity/machine.ts";
 
 export interface BoardCiRunRequest {
   readonly runId: string;
@@ -54,6 +59,21 @@ export interface BoardCiRunRequest {
   readonly indexOffset?: number;
   /** False runs every group even after a failure. Absent is true. */
   readonly stopOnFailure?: boolean;
+  /** T3o (T3O-126): `boardCiFlakeKey`s already ruled flaky this CI entry: a reported
+      failure matching one counts as flaky without a script flag. */
+  readonly knownFlaky?: ReadonlyArray<string>;
+  /** A flake card's own test, which never counts as flaky on that card. */
+  readonly notFlakyTitle?: string;
+  /** T3o (T3O-127): host CPU pressure (percent) at or above which a step runs under load;
+      absent is `DEFAULT_BOARD_CI_LOAD_THRESHOLD`. */
+  readonly loadThreshold?: number;
+  /** Under load, a flake card's own test that the script reported flaky is recorded as
+      inconclusive rather than failing the step. The board allows it only when the card
+      won't auto-merge, so a human still judges the change. */
+  readonly inconclusiveTargetAllowed?: boolean;
+  /** T3o (T3O-129): the project's live load-sensitive list, written once per run to the
+      file `T3O_CI_LOAD_SENSITIVE` names. Absent writes an empty list. */
+  readonly loadSensitive?: ReadonlyArray<{ readonly title: string; readonly file: string }>;
   /** Each complete output line of a step, by its pass index, in
       order, delivered before the step settles. */
   readonly onLine?: (index: number, line: BoardCiLine) => Effect.Effect<void>;
@@ -336,10 +356,17 @@ interface BoardCiStepInput {
 
 const runStepWithEnv = (
   input: BoardCiStepInput,
-  hostEnv: NodeJS.ProcessEnv,
+  inheritedEnv: NodeJS.ProcessEnv,
   launch: { readonly command: string; readonly args: ReadonlyArray<string> } | null,
 ): Effect.Effect<StepExit> =>
   Effect.callback<StepExit>((resume) => {
+    // The board sets these per step: a reading inherited from the server's own CI must not leak in.
+    const {
+      T3O_CPU_PRESSURE: _pressure,
+      T3O_UNDER_LOAD: _underLoad,
+      T3O_CI_LOAD_SENSITIVE: _loadSensitive,
+      ...hostEnv
+    } = inheritedEnv;
     const timing = input.timing ?? DEFAULT_STEP_TIMING;
     const log = NodeFS.createWriteStream(input.logPath, { flags: "w" });
     let logBroken = false;
@@ -511,18 +538,181 @@ const withStepLines = <A>(
 const readStepResult = (
   resultPath: string,
   tail: BoardCiTail,
-): { readonly result: BoardCiStepResult | null; readonly empty: boolean } => {
+): {
+  readonly result: BoardCiStepResult | null;
+  readonly empty: boolean;
+  /** False when the file reported a failure the parser couldn't keep. */
+  readonly complete: boolean;
+} => {
   let text: string;
   try {
     text = NodeFS.readFileSync(resultPath, "utf8");
   } catch {
-    return { result: null, empty: false };
+    return { result: null, empty: false, complete: true };
   }
-  if (text.trim().length === 0) return { result: null, empty: true };
+  if (text.trim().length === 0) return { result: null, empty: true, complete: true };
   const parsed = parseBoardCiResultFile(text);
   if (parsed.warning !== null) tail.push(`\n[board] ${parsed.warning}\n`);
-  return { result: parsed.result, empty: false };
+  return { result: parsed.result, empty: false, complete: parsed.complete };
 };
+
+/**
+ * T3o (T3O-126): the step's failures with each flake marked by the request's rules, and
+ * whether the step failed only on flakes. A step with no reported failures is all-flaky
+ * only when its `::t3o-failure::` line says so; a timeout never is, nor is a step whose
+ * result file reported a failure the parser dropped or capped.
+ */
+function boardCiStepFlakes(
+  read: { readonly result: BoardCiStepResult | null; readonly complete: boolean },
+  failureLine: { readonly step: string | null; readonly flaky: boolean | null } | null,
+  stepName: string,
+  options: Pick<BoardCiRunRequest, "knownFlaky" | "notFlakyTitle" | "inconclusiveTargetAllowed"> & {
+    readonly underLoad?: boolean;
+  },
+): {
+  readonly result: BoardCiStepResult | null;
+  readonly flaky: ReadonlyArray<NonNullable<BoardCiPassStep["flaky"]>[number]>;
+  readonly allFlaky: boolean;
+  /** T3o (T3O-127): the flake card's own test, reported flaky under load where that is
+      allowed: it neither fails the step nor joins `flaky` (so a calm run still tests it). */
+  readonly inconclusive: ReadonlyArray<string>;
+} {
+  const rules = {
+    ...(options.knownFlaky === undefined ? {} : { knownFlaky: options.knownFlaky }),
+    ...(options.notFlakyTitle === undefined ? {} : { notFlakyTitle: options.notFlakyTitle }),
+  };
+  const mayBeInconclusive =
+    options.underLoad === true &&
+    options.inconclusiveTargetAllowed === true &&
+    options.notFlakyTitle !== undefined;
+  const isInconclusive = (failure: Pick<BoardCiFailureDetail, "title" | "file" | "flaky">) =>
+    mayBeInconclusive &&
+    failure.flaky === true &&
+    boardCiFlakeKey(failure.file, failure.title) === options.notFlakyTitle;
+  const result = read.result;
+  const inconclusive: string[] = [];
+  const failures = (result?.failures ?? []).map((failure): BoardCiFailureDetail => {
+    if (isInconclusive(failure)) inconclusive.push(failure.title);
+    const flaky = isBoardCiFailureFlaky(failure, rules);
+    if (flaky === (failure.flaky === true)) return failure;
+    const { flaky: _dropped, ...rest } = failure;
+    return flaky ? { ...rest, flaky: true } : rest;
+  });
+  const flaky = failures.flatMap((failure) =>
+    failure.flaky === true
+      ? [
+          {
+            title: failure.title,
+            ...(failure.file === undefined ? {} : { file: failure.file }),
+            ...(failure.repro === undefined ? {} : { repro: failure.repro }),
+            ...(options.underLoad === true ? { underLoad: true as const } : {}),
+          },
+        ]
+      : [],
+  );
+  const marked = result === null ? null : { ...result, failures };
+  if (failures.length > 0) {
+    return {
+      result: marked,
+      flaky,
+      allFlaky: read.complete && flaky.length + inconclusive.length === failures.length,
+      inconclusive,
+    };
+  }
+  const title = failureLine?.step ?? stepName;
+  const isTarget = options.notFlakyTitle !== undefined && options.notFlakyTitle === title;
+  const lineFlaky = read.complete && failureLine?.flaky === true && !isTarget;
+  const lineInconclusive =
+    read.complete && failureLine?.flaky === true && isTarget && mayBeInconclusive;
+  return {
+    result: marked,
+    flaky: lineFlaky
+      ? [{ title, ...(options.underLoad === true ? { underLoad: true as const } : {}) }]
+      : [],
+    allFlaky: lineFlaky || lineInconclusive,
+    inconclusive: lineInconclusive ? [title] : [],
+  };
+}
+
+/** T3o (T3O-127): how a step group reads the host's load before it starts. */
+interface BoardCiLoad {
+  readonly cpuPressure: number;
+  readonly underLoad: boolean;
+}
+
+function boardCiLoadOf(pressure: number | null, threshold: number): BoardCiLoad | null {
+  if (pressure === null) return null;
+  // Whole percent, as the step and the CI pane see it, so all three agree on "under load".
+  const cpuPressure = Math.round(pressure);
+  // T3o (T3O-129): strictly above, so a threshold of 100 never reads busy, even at 100 %.
+  return { cpuPressure, underLoad: cpuPressure > threshold };
+}
+
+/** T3o (T3O-129): write the run's load-sensitive list once, so every segment of the run (a
+    T3O-130 restart included) reads the same snapshot. Created only if absent (`wx`), so a
+    second writer never overwrites the first. A failed write sets no variable. */
+function writeLoadSensitiveList(
+  logDir: string,
+  entries: ReadonlyArray<{ readonly title: string; readonly file: string }>,
+): { readonly path: string | null; readonly error: string | null } {
+  const path = NodePath.resolve(logDir, "load-sensitive.json");
+  try {
+    NodeFS.writeFileSync(
+      path,
+      JSON.stringify(entries.map((entry) => ({ file: entry.file, title: entry.title }))),
+      { flag: "wx" },
+    );
+    return { path, error: null };
+  } catch (error) {
+    // Another segment wrote it first: that snapshot stands.
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return { path, error: null };
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      path: null,
+      error: `\n[board] Could not write the load-sensitive list, so T3O_CI_LOAD_SENSITIVE is unset: ${message}\n`,
+    };
+  }
+}
+
+/** T3o (T3O-129): the `[board]` lines a result file earns: an ignored T3O-127 mark, and tests
+    deferred on a calm machine. */
+function boardCiDeferredTailLines(
+  result: BoardCiStepResult | null,
+  underLoad: boolean,
+): string | null {
+  if (result === null) return null;
+  const lines: string[] = [];
+  if (result.failures.some((failure) => failure.loadSensitive !== undefined)) {
+    lines.push("[board] loadSensitive is ignored; the board keeps the list.");
+  }
+  if (!underLoad && (result.deferred?.length ?? 0) > 0) {
+    lines.push(
+      "[board] The step deferred tests on a calm machine: T3O_UNDER_LOAD wasn't set, so it should have run them.",
+    );
+  }
+  return lines.length === 0 ? null : `\n${lines.join("\n")}\n`;
+}
+
+/** A settled step's result, with its deferred tests moved onto the step (T3O-129). */
+function stepResultFields(
+  result: BoardCiStepResult | null,
+): Pick<BoardCiPassStep, "result" | "deferred"> {
+  if (result === null) return {};
+  const { deferred, ...rest } = result;
+  return {
+    result: rest,
+    ...(deferred === undefined || deferred.length === 0 ? {} : { deferred }),
+  };
+}
+
+/** The environment a step is told the load through. Unknown pressure sets neither. */
+function boardCiLoadEnv(load: BoardCiLoad | null): Readonly<Record<string, string>> {
+  if (load === null) return {};
+  return {
+    T3O_CPU_PRESSURE: String(load.cpuPressure),
+    ...(load.underLoad ? { T3O_UNDER_LOAD: "1" } : {}),
+  };
+}
 
 const changedLines = (status: string | null): ReadonlyArray<string> =>
   status === null ? [] : status.split("\n").filter((line) => line.trim().length > 0);
@@ -589,6 +779,13 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
         detail: `CI could not create its log directory: ${logDirError}.`,
       } as const;
     }
+    const loadSensitive = yield* Effect.sync(() =>
+      writeLoadSensitiveList(request.logDir, request.loadSensitive ?? []),
+    );
+    const stepEnv = (load: BoardCiLoad | null) => ({
+      ...boardCiLoadEnv(load),
+      ...(loadSensitive.path === null ? {} : { T3O_CI_LOAD_SENSITIVE: loadSensitive.path }),
+    });
     const indexed = request.steps.map((definition, index) => ({
       definition,
       index,
@@ -601,9 +798,13 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
       readonly exitCode: number | null;
       readonly headline?: BoardCiHeadline;
     } | null = null;
+    const machine = yield* BoardMachine;
+    const threshold = request.loadThreshold ?? DEFAULT_BOARD_CI_LOAD_THRESHOLD;
     for (const [groupIndex, group] of groups.entries()) {
       // What was already changed is not this group's doing.
       const before = changedSnapshot(request.cwd, yield* trackedChanges(request.cwd));
+      // T3o (T3O-127): read once per group, before its parallel siblings add their own load.
+      const load = boardCiLoadOf(yield* machine.cpuPressure, threshold);
       const settled = yield* Effect.forEach(
         group,
         ({ definition, index }) =>
@@ -615,6 +816,8 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
               command: definition.command,
               timeoutMinutes: definition.timeoutMinutes,
               ...(definition.parallel === true ? { parallel: true } : {}),
+              ...(load === null ? {} : { cpuPressure: load.cpuPressure }),
+              ...(load?.underLoad === true ? { underLoad: true as const } : {}),
             };
             // Every running report has an empty tail; the output
             // itself is read from the step's log.
@@ -634,6 +837,14 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
             yield* running({});
             const fileIndex = index + (request.indexOffset ?? 0);
             const resultPath = NodePath.join(request.logDir, `${fileIndex}.result.json`);
+            // T3o (T3O-130): a step re-run under the same run id never reads a killed run's result.
+            yield* Effect.sync(() => {
+              try {
+                NodeFS.rmSync(resultPath, { force: true });
+              } catch {
+                // An unremovable file is read and rejected like any stale result.
+              }
+            });
             // The reporter's scope ends with the step, before its settled row.
             const facts = new BoardCiFailureFacts();
             const { exit, progress } = yield* Effect.scoped(
@@ -653,16 +864,27 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
                       logPath: NodePath.join(request.logDir, `${fileIndex}.log`),
                       resultPath,
                       onOutput,
+                      env: stepEnv(load),
                     }),
                 );
                 return { exit, progress: reporter.progress() };
               }),
             );
-            const { result, empty } = readStepResult(resultPath, tail);
+            const read = readStepResult(resultPath, tail);
+            if (loadSensitive.error !== null) tail.push(loadSensitive.error);
+            const deferredNote = boardCiDeferredTailLines(read.result, load?.underLoad === true);
+            if (deferredNote !== null) tail.push(deferredNote);
+            const flakes = boardCiStepFlakes(read, facts.failureLine, definition.name, {
+              ...request,
+              underLoad: load?.underLoad === true,
+            });
+            const result = flakes.result;
+            // T3o (T3O-126): a step that failed only on flakes passes; a timeout never does.
+            const allFlaky = exit.status !== "timed-out" && flakes.allFlaky;
             // A failed step says what failed and why, read here, on
-            // the machine it ran on.
+            // the machine it ran on. Flakes beside a real failure don't head it.
             const headline =
-              exit.status === "passed"
+              exit.status === "passed" || allFlaky
                 ? null
                 : boardCiFailureHeadline(facts, {
                     stepName: definition.name,
@@ -670,12 +892,33 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
                     exitCode: exit.exitCode,
                     signal: exit.signal ?? null,
                     timeoutMinutes: definition.timeoutMinutes,
-                    result,
-                    resultEmpty: empty,
+                    result:
+                      result === null
+                        ? null
+                        : {
+                            ...result,
+                            failures: result.failures.filter((failure) => failure.flaky !== true),
+                          },
+                    resultEmpty: read.empty,
                     host: NodeOS.hostname(),
                     freeBytes: yield* freeBytesNow(request.cwd),
                   });
-            return { index, base, startedAt, exit, tail, result, progress, headline };
+            const settledAs: StepExit = allFlaky ? { ...exit, status: "passed" } : exit;
+            return {
+              index,
+              base,
+              startedAt,
+              exit: settledAs,
+              tail,
+              result,
+              progress,
+              headline,
+              flaky: settledAs.status === "passed" ? flakes.flaky : [],
+              note:
+                settledAs.status === "passed" && flakes.inconclusive.length > 0 && load !== null
+                  ? `Target test inconclusive under load (CPU pressure ${load.cpuPressure} %): ${flakes.inconclusive.join(", ")}. It failed in the run and passed alone; a human judges the change.`
+                  : null,
+            };
           }),
         { concurrency: "unbounded" },
       );
@@ -709,10 +952,15 @@ export const runBoardCiPass: BoardCiRunnerShape["run"] = Effect.fn("BoardCiRunne
             finishedAt,
             exitCode: step.exit.exitCode,
             tail: step.tail.text(),
-            ...(step.result === null ? {} : { result: step.result }),
+            ...stepResultFields(step.result),
             // A settled step keeps where its progress got to.
             ...(step.progress === undefined ? {} : { progress: step.progress }),
             ...(headline === null ? {} : { headline }),
+            ...(status === "passed" && step.flaky.length > 0 ? { flaky: step.flaky } : {}),
+            ...(step.result?.skippedUnderLoad === undefined
+              ? {}
+              : { skippedUnderLoad: step.result.skippedUnderLoad }),
+            ...(status === "passed" && step.note !== null ? { note: step.note } : {}),
           },
         });
         // A machine problem in the group outranks a code failure beside it,

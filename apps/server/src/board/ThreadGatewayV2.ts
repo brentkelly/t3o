@@ -20,8 +20,9 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   ThreadId,
+  type EnvironmentAuthorizationError,
 } from "@t3tools/contracts";
-import { subagentAwaitsApproval } from "@t3tools/shared/agentAwareness";
+import { subagentAwaitsUser } from "@t3tools/shared/agentAwareness";
 import { boardThreadSessionStatus, boardThreadStateSource } from "@t3tools/shared/boardThreadState";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -46,6 +47,8 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { isAutoSettlementCandidate } from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ThreadMessageIntake from "../orchestration-v2/ThreadMessageIntake.ts";
+import { ThreadLaunchService } from "../orchestration-v2/ThreadLaunchService.ts";
+import { BoardScheduleLauncher } from "./schedules/BoardScheduleLauncher.ts";
 import { limitRecoveryCommand } from "../orchestration-v2/UsageLimitRecoveryWorker.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -73,7 +76,8 @@ type ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
 type DispatchError =
   | Orchestrator.OrchestratorV2Error
   | ThreadManagement.ThreadManagementProviderInstanceDisabledError
-  | AttachmentClaims.AttachmentClaimError;
+  | AttachmentClaims.AttachmentClaimError
+  | EnvironmentAuthorizationError;
 
 /** The message the board's own turns carry as their author. The board stands
     in for the human who set the card up, exactly as v2's own usage-limit
@@ -750,6 +754,7 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
           readonly deleted: number;
           readonly archived: number;
           readonly settlementDecided: number;
+          readonly title: string | null;
         }>`
           SELECT
             t.thread_id AS "threadId",
@@ -758,7 +763,8 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
               AND json_extract(t.payload_json, '$.archivedAt') IS NOT NULL) AS "archived",
             (t.deleted_at IS NULL
               AND json_extract(t.payload_json, '$.settledOverride') IS NOT NULL)
-              AS "settlementDecided"
+              AS "settlementDecided",
+            t.title AS "title"
           FROM orchestration_v2_projection_threads t
           WHERE t.thread_id IN (SELECT value FROM json_each(${JSON.stringify(threadIds)}))${
             openOrDeleted
@@ -814,18 +820,22 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
       attachments: ReadonlyArray<ChatAttachment>,
     ) =>
       Effect.flatMap(freshMessageId, (messageId) =>
-        ThreadMessageIntake.dispatchCommand({
-          type: "message.dispatch",
-          commandId,
-          threadId: input.threadId,
-          messageId,
-          text: input.text,
-          attachments,
-          dispatchMode: { type: "start_immediately" },
-          // Only where the provider steers in place; `auto` may resolve to an interrupt-restart.
-          ...(steer ? { deliveryIntent: "steer" as const } : {}),
-          ...BOARD_AUTHOR,
-        }),
+        ThreadMessageIntake.dispatchCommand(
+          {
+            type: "message.dispatch",
+            commandId,
+            threadId: input.threadId,
+            messageId,
+            text: input.text,
+            attachments,
+            dispatchMode: { type: "start_immediately" },
+            // Only where the provider steers in place; `auto` may resolve to an interrupt-restart.
+            ...(steer ? { deliveryIntent: "steer" as const } : {}),
+            ...BOARD_AUTHOR,
+          },
+          // The board acts for the server itself, which holds every scope.
+          { managesProviders: true },
+        ),
       ).pipe(Effect.provideContext(intakeServices));
     // The claim is all-or-nothing and runs before the dispatch, so nothing
     // was committed: the turn goes again without its attachments, which
@@ -1084,6 +1094,7 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
                 deleted: row.deleted === 1,
                 archived: row.archived === 1,
                 settlementDecided: row.settlementDecided === 1,
+                ...(row.deleted !== 1 && row.title ? { title: row.title } : {}),
               },
             ];
           }),
@@ -1242,7 +1253,7 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
           }
           for (const childId of children) {
             const child = yield* projections.getThreadShell(childId);
-            if (child !== null && child.deletedAt === null && subagentAwaitsApproval(child)) {
+            if (child !== null && child.deletedAt === null && subagentAwaitsUser(child)) {
               return true;
             }
           }
@@ -1357,3 +1368,39 @@ export const ThreadGatewayV2Live = Layer.effect(
   ThreadGateway,
   Effect.map(LocalThreadGateway, (local): ThreadGatewayShape => local),
 ).pipe(Layer.provideMerge(LocalThreadGatewayV2Live));
+
+/** T3o: a t3o.json schedule's run, launched as upstream launches a worktree run (T3O-117). */
+export const BoardScheduleLauncherLive = Layer.effect(
+  BoardScheduleLauncher,
+  Effect.gen(function* () {
+    const launcher = yield* ThreadLaunchService;
+    return {
+      launch: Effect.fn("BoardScheduleLauncher.launch")((input) =>
+        launcher
+          .launch({
+            commandId: input.commandId,
+            threadId: input.threadId,
+            projectId: input.projectId,
+            title: input.title,
+            modelSelection: input.modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            workspaceStrategy: {
+              type: "worktree",
+              baseRef: input.baseRef,
+              branch: input.branch,
+              startFromOrigin: true,
+            },
+            initialMessage: {
+              ...(input.taskId === undefined ? {} : { scheduledTaskId: input.taskId }),
+              text: input.prompt,
+              attachments: [],
+            },
+            createdBy: "system",
+            creationSource: "server",
+          })
+          .pipe(Effect.map((launched) => launched.threadId)),
+      ),
+    };
+  }),
+);

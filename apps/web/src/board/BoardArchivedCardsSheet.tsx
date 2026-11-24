@@ -6,7 +6,6 @@ import {
   boardCardWorktreeKeptReason,
   type BoardCardId,
   type EnvironmentId,
-  type ProjectId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { ArchiveRestoreIcon, HardDriveIcon, LayersIcon, Trash2Icon } from "lucide-react";
@@ -27,6 +26,7 @@ import { boardEnvironment } from "../state/board";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { boardArchivedCardsInScope } from "./boardArchivedCards";
+import type { BoardProjectSelection } from "./boardProjectScope";
 import { BoardDeleteConfirmDialog } from "./BoardDeleteConfirmDialog";
 import { boardStageLabel } from "./boardStages";
 import { BoardHint } from "./BoardHint";
@@ -52,14 +52,14 @@ function ArchivedCardList({
   onDelete,
   onRestore,
   onSelectCard,
-  scopeProjectId,
+  projectSelection,
 }: {
   readonly environmentId: EnvironmentId;
   readonly liveCardKeyById: ReadonlyMap<string, string>;
   readonly onDelete: (cardId: BoardCardId) => void;
   readonly onRestore: (cardId: BoardCardId) => void;
   readonly onSelectCard: (cardId: BoardCardId) => void;
-  readonly scopeProjectId: ProjectId | null;
+  readonly projectSelection: BoardProjectSelection;
 }) {
   /** The card the confirmation is currently about; null when closed. Held as
       the card rather than a boolean so the dialog can name it, and cleared on
@@ -77,7 +77,7 @@ function ArchivedCardList({
   const snapshot = Option.getOrNull(AsyncResult.value(result));
   const stages = useAtomValue(boardEnvironment.stageListAtom(environmentId));
 
-  const cards = boardArchivedCardsInScope(snapshot?.cards ?? [], scopeProjectId);
+  const cards = boardArchivedCardsInScope(snapshot?.cards ?? [], projectSelection);
 
   // Resolves a card id to a key for the parent badge: live
   // parents come from the board's own key map, an archived parent from the
@@ -204,7 +204,7 @@ export function BoardArchivedCardsSheet({
   onRestore,
   onSelectCard,
   open,
-  scopeProjectId,
+  projectSelection,
 }: {
   readonly environmentId: EnvironmentId;
   /** Live card ids → keys, from the board: resolves an archived
@@ -216,13 +216,14 @@ export function BoardArchivedCardsSheet({
   readonly onRestore: (cardId: BoardCardId) => void;
   readonly onSelectCard: (cardId: BoardCardId) => void;
   readonly open: boolean;
-  /** Null means every project — the archive follows the board's own scope, so
+  /** Empty means every project — the archive follows the board's own filter, so
       what you see here matches the board you opened it from. */
-  readonly scopeProjectId: ProjectId | null;
+  readonly projectSelection: BoardProjectSelection;
 }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetPopup>
+      {/* T3o (T3O-134): the whole width on a phone. */}
+      <SheetPopup className="max-sm:w-full">
         <SheetHeader>
           <SheetTitle>Archived cards</SheetTitle>
           <SheetDescription>
@@ -242,7 +243,7 @@ export function BoardArchivedCardsSheet({
             onDelete={onDelete}
             onRestore={onRestore}
             onSelectCard={onSelectCard}
-            scopeProjectId={scopeProjectId}
+            projectSelection={projectSelection}
           />
         </SheetBody>
       </SheetPopup>

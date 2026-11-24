@@ -67,6 +67,52 @@ export function boardCardGroupOf(board: BoardState, card: BoardCard): BoardCardG
   });
 }
 
+/** A partial write of a group's settings, as `board.card.set-group-settings` carries it. */
+export type BoardGroupSettingsChange = {
+  readonly [K in "target" | "autoBuild" | "autoMerge" | "autoPlan" | "autoSignOff"]?:
+    | BoardCardGroup[K]
+    | undefined;
+};
+
+/**
+ * The group a settings change produces. A real target change with auto-merge omitted sets
+ * auto-merge to `target === "own"`, so a full-settings save keeps an explicit choice.
+ */
+export function boardNextGroupSettings(
+  group: BoardCardGroup,
+  change: BoardGroupSettingsChange,
+): BoardCardGroup {
+  const transitionMerge =
+    change.autoMerge === undefined && change.target !== undefined && change.target !== group.target
+      ? { autoMerge: change.target === "own" }
+      : {};
+  return {
+    ...group,
+    ...(change.target === undefined ? {} : { target: change.target }),
+    ...(change.autoBuild === undefined ? {} : { autoBuild: change.autoBuild }),
+    ...(change.autoMerge === undefined ? {} : { autoMerge: change.autoMerge }),
+    ...(change.autoPlan === undefined ? {} : { autoPlan: change.autoPlan }),
+    ...(change.autoSignOff === undefined ? {} : { autoSignOff: change.autoSignOff }),
+    ...transitionMerge,
+  };
+}
+
+const BOARD_GROUP_AUTOMATION_FLAGS = ["autoPlan", "autoSignOff", "autoBuild", "autoMerge"] as const;
+
+/** The group Automation flags a settings change turns from off to on. Auto-merge never counts
+    while board-wide Auto-merge is on, since the group's flag then changes nothing. */
+export function boardGroupFlagsTurnedOn(input: {
+  readonly group: BoardCardGroup;
+  readonly change: BoardGroupSettingsChange;
+  readonly boardWideAutoMerge: boolean;
+}): ReadonlyArray<(typeof BOARD_GROUP_AUTOMATION_FLAGS)[number]> {
+  const next = boardNextGroupSettings(input.group, input.change);
+  return BOARD_GROUP_AUTOMATION_FLAGS.filter(
+    (flag) =>
+      !input.group[flag] && next[flag] && !(flag === "autoMerge" && input.boardWideAutoMerge),
+  );
+}
+
 function isBoardCardGroup(board: BoardState, card: BoardCard): boolean {
   return boardCardGroupOf(board, card) !== null;
 }

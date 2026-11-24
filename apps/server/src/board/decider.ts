@@ -65,6 +65,7 @@ import {
   boardCardActiveChildren,
   boardCardAncestors,
   boardCardGroupOf,
+  boardNextGroupSettings,
   boardCardInheritedDependsOn,
   boardCreateDefaultStage,
   boardProjectFirstStageId,
@@ -2421,7 +2422,11 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
               doneStageId,
             })
           : card.orderKey);
-      const disarmed = backwardMoveDisarms(board, card, command.toStage);
+      // T3o: a person's or an agent's backward move disarms; the board's never does (T3O-115).
+      const disarmed =
+        command.cause === "human" || command.cause === "agent"
+          ? backwardMoveDisarms(board, card, command.toStage)
+          : { settings: {}, changed: null };
       const nextCard: BoardCard = {
         ...card,
         stage: command.toStage,
@@ -2778,24 +2783,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
           );
         }
       }
-      // Own branch turns children's auto-merge on and Inherit turns it off —
-      // only on a real target change, and only when this command
-      // does not set auto-merge itself, so a full-settings save keeps a choice.
-      const transitionMerge =
-        command.autoMerge === undefined &&
-        command.target !== undefined &&
-        command.target !== group.target
-          ? { autoMerge: command.target === "own" }
-          : {};
-      const nextGroup: BoardCardGroup = {
-        ...group,
-        ...(command.target === undefined ? {} : { target: command.target }),
-        ...(command.autoBuild === undefined ? {} : { autoBuild: command.autoBuild }),
-        ...(command.autoMerge === undefined ? {} : { autoMerge: command.autoMerge }),
-        ...(command.autoPlan === undefined ? {} : { autoPlan: command.autoPlan }),
-        ...(command.autoSignOff === undefined ? {} : { autoSignOff: command.autoSignOff }),
-        ...transitionMerge,
-      };
+      const nextGroup = boardNextGroupSettings(group, command);
       if (boardCardGroupsEqual(nextGroup, card.group)) {
         return yield* invariant(command, `Group settings for '${card.key}' are unchanged.`);
       }
@@ -2905,7 +2893,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
 
     case "board.card.update": {
       const card = yield* requireActiveBoardCard({ board, command });
-      if (
+      const gateStateOnly =
         command.title === undefined &&
         command.brief === undefined &&
         command.labels === undefined &&
@@ -2925,8 +2913,8 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
         command.removeDependsOn === undefined &&
         command.addLabels === undefined &&
         command.removeLabels === undefined &&
-        command.size === undefined
-      ) {
+        command.size === undefined;
+      if (gateStateOnly && command.gateBlock === undefined && command.mergeStay === undefined) {
         return yield* invariant(command, `Update for card '${command.cardId}' carries no changes.`);
       }
 
@@ -3047,7 +3035,16 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
         const state = boardCardStepState(board, card.id);
         return state === null || state.planReviewAwaitingStart === undefined ? null : state;
       })();
-      const { planReview: _priorPlanReview, ...cardWithoutPlanReview } = card;
+      const {
+        planReview: _priorPlanReview,
+        gateBlock: priorGateBlock,
+        mergeStay: priorMergeStay,
+        ...cardWithoutPlanReview
+      } = card;
+      // T3o: the supervisor's per-stay merge fix counts (T3O-116); null clears them.
+      const mergeStay = command.mergeStay === undefined ? priorMergeStay : command.mergeStay;
+      // T3o: the supervisor's gate-attempt record (T3O-115); null clears it.
+      const gateBlock = command.gateBlock === undefined ? priorGateBlock : command.gateBlock;
 
       const mergeStrategy =
         command.mergeStrategy === undefined ? card.mergeStrategy : command.mergeStrategy;
@@ -3100,6 +3097,8 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
                   : { size: command.size, by: command.sizeEditor ?? "human" },
               ),
         priority: command.priority ?? card.priority,
+        ...(gateBlock == null ? {} : { gateBlock }),
+        ...(mergeStay == null ? {} : { mergeStay }),
         updatedAt: command.createdAt,
       };
       const updated: PlannedBoardEvent = {
@@ -3143,6 +3142,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
                 return summary === null ? {} : { reviewSummary: summary };
               })()),
           ...(edits.edit === undefined ? {} : { edit: edits.edit }),
+          ...(gateStateOnly ? { gateStateOnly: true as const } : {}),
         },
       };
       const stopped: ReadonlyArray<PlannedBoardEvent> =
@@ -4621,7 +4621,15 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
     case "board.plan-review.start": {
       const card = yield* requireActiveBoardCard({ board, command });
       const state = boardCardStepState(board, card.id);
-      if (state === null || state.planReviewAwaitingStart === undefined) {
+      // T3o: an armed review, or one enabled all along whose planning finished without it: the
+      // review-start gate starts either (T3O-115). A plan still being written is never cut into.
+      const startable =
+        state !== null &&
+        (state.planReviewAwaitingStart !== undefined ||
+          (state.status === "succeeded" &&
+            state.planReviewStartedAt === undefined &&
+            boardCardPlans(board, card.id).length > 0));
+      if (!startable) {
         return yield* invariant(
           command,
           `Card '${card.key}' has no plan review waiting to start. Turn plan review on after the plan is posted, then start it.`,
@@ -4831,6 +4839,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
       // A child whose plan is only a brief lands in the first stage to be
       // planned on its own; a planned one lands on the floor.
       const backlog = boardProjectFirstStageId(board, card.projectId);
+      const planStageId = boardStageWithRole(board, "plan")?.stageId;
       const recommendation = boardSplitRecommendationOf(board, card);
       const cardAutomation = resolveBoardCardAutomationIn({
         board,
@@ -4893,7 +4902,13 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
         const childId = childIdByPlan.get(plan.planId)!;
         childCardIds.push(childId);
         const planned = isBoardPlanPlanned(plan);
-        const stage = planned ? floor.stageId : backlog;
+        // T3o: an unplanned child is planned unattended straight away when the group's Auto-plan
+        // is on, which the child inherits (T3O-115). The tick never sweeps Backlog.
+        const stage = planned
+          ? floor.stageId
+          : settings.autoPlan && planStageId !== undefined
+            ? planStageId
+            : backlog;
         const orderKey = nextOrderKey(stage);
         const cardNumber = nextNumber;
         nextNumber += 1;
@@ -4942,15 +4957,19 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
           },
         });
       }
-      // The parent becomes a group with the settings confirmed at the split gate, and
-      // only its timestamp otherwise changes: no stage move, `blocked` untouched. Its
+      // The parent becomes a group with the settings confirmed at the split gate; the group
+      // derivation then moves it to `placed`, and `blocked` is untouched. Its
       // Auto-plan/Auto-build move into group settings; its own Auto-merge stays.
       const parentAfterApproval: BoardCard = {
         ...card,
         ...endBoardCardAutoPlan(card, command.createdAt),
         group: defaultBoardCardGroup(board, card, {
           ...settings,
-          started: card.stage === buildStage.stageId,
+          // Auto sign-off with Auto-build is the human's go-ahead to build once signed off.
+          started:
+            card.stage === buildStage.stageId || (settings.autoSignOff && settings.autoBuild),
+          // T3o: its planning is finished, so the group waits in Ready, not Planning (T3O-115).
+          ...(card.stage === planStageId ? { placed: floor.stageId } : {}),
         }),
         // Its children copied its priority above; a group has none.
         priority: "normal",
@@ -5944,6 +5963,10 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
         forceStart: false,
         startedAt: null,
         updatedAt: command.createdAt,
+        // T3o: the row belongs to the selecting card's current stay (T3O-115).
+        ...(selecting.stageEnteredAt === undefined
+          ? {}
+          : { stageEnteredAt: selecting.stageEnteredAt }),
       };
       const selected = {
         ...(yield* makeBoardEventBase({
@@ -6118,9 +6141,10 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
       }
       // `question` when there is something to answer, `stopped` when a human-in-the-loop
       // turn ended. Either way the slot is RELEASED: no thread runs, so a parked card must
-      // not hold capacity; on resume the step re-takes one.
+      // not hold capacity; on resume the step re-takes one. A new wait has not been auto-answered.
+      const { autoAnsweredAt: _answered, ...unanswered } = current;
       const state: BoardCardStepState = {
-        ...current,
+        ...unanswered,
         status: "awaiting-input",
         awaitingReason: command.reason,
         slotHeld: false,
@@ -6459,7 +6483,9 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
     case "board.card.check-in-step": {
       yield* requireActiveBoardCard({ board, command });
       const current = yield* requireLiveStepState({ board, command, stepId: command.stepId });
-      if (current.status !== "running") {
+      // T3o: an auto-answer goes to a step parked on a question (T3O-115).
+      const answering = command.autoAnswered === true && current.status === "awaiting-input";
+      if (current.status !== "running" && !answering) {
         return yield* invariant(
           command,
           `Card '${command.cardId}' step '${command.stepId}' is '${current.status}', not running; nothing to check in on.`,
@@ -6476,6 +6502,9 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
           : current.stageEntryRecoveries,
         lastNudgeAt: command.createdAt,
         ...(command.reopenedPrompt === true ? { reopenedPromptAt: command.createdAt } : {}),
+        ...(command.autoAnswered === true
+          ? { autoAnswers: (current.autoAnswers ?? 0) + 1, autoAnsweredAt: command.createdAt }
+          : {}),
         updatedAt: command.createdAt,
       };
       return {
@@ -6501,6 +6530,9 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
     case "board.project.set-resources":
     // T3o: the board's learned baseline (T3O-87).
     case "board.project.record-learned":
+    // T3o: the load-sensitive list (T3O-129).
+    case "board.project.record-load-sensitive":
+    case "board.project.remove-load-sensitive":
     case "board.project.reset":
     case "board.project.import-file":
     case "board.project.dismiss-import":
@@ -7163,19 +7195,66 @@ const decideOneBoardCommand = Effect.fn("decideOneBoardCommand")(function* (inpu
   BoardCommandInvariantError | PlatformError.PlatformError,
   SecureRandom.SecureRandom
 > {
+  const before = input.readModel.board ?? EMPTY_BOARD_STATE;
   // T3o: a deferred split approval never outlives Planning, an archive or the approval (T3O-105).
-  const decided = withSettledSplitApproval(
-    yield* decideBoardCommandCore(input),
-    input.readModel.board ?? EMPTY_BOARD_STATE,
-  );
+  const decided = withSettledSplitApproval(yield* decideBoardCommandCore(input), before);
   const command = input.command;
-  if (!GROUP_DERIVING_COMMANDS.has(command.type)) return decided;
+  if (!GROUP_DERIVING_COMMANDS.has(command.type)) return withStageEntryStamps(decided, before);
   const planned = boardDecidedEvents(decided);
   const derived = yield* deriveGroupEvents({
-    before: input.readModel.board ?? EMPTY_BOARD_STATE,
+    before,
     command: command as BoardCardCommand,
     planned,
   });
-  if (derived.length === 0) return decided;
-  return [...planned, ...derived];
+  // T3o: every stage change stamps the stay marker and clears a gate block (T3O-115).
+  return withStageEntryStamps(derived.length === 0 ? decided : [...planned, ...derived], before);
 });
+
+/**
+ * T3o: the one place a stage change stamps `stageEnteredAt` (T3O-115); every other card payload
+ * carries the prior stamp. A stage change also strips the card's `gateBlock` from that event and
+ * every later one in the decision: the gate it recorded is behind it.
+ */
+function withStageEntryStamps(decided: BoardDecision, board: BoardState): BoardDecision {
+  const events = boardDecidedEvents(decided);
+  const known = new Map<
+    string,
+    {
+      readonly stage: BoardCard["stage"];
+      readonly stageEnteredAt: string | undefined;
+      readonly leftStage?: boolean;
+    }
+  >();
+  let changed = false;
+  const stamped = events.map((event) => {
+    if (event.type === "board.card-created") {
+      known.set(String(event.payload.cardId), {
+        stage: event.payload.stage,
+        stageEnteredAt: event.payload.createdAt,
+      });
+      return event;
+    }
+    const payload = event.payload as { readonly card?: BoardCard };
+    const card = payload.card;
+    if (card === undefined || card === null || typeof card !== "object" || !("stage" in card)) {
+      return event;
+    }
+    const prior = known.get(String(card.id));
+    const before = prior ?? board.cards.find((candidate) => String(candidate.id) === card.id);
+    const entered = before === undefined || before.stage !== card.stage;
+    const at = entered ? event.occurredAt : before.stageEnteredAt;
+    const leftStage = entered || prior?.leftStage === true;
+    known.set(String(card.id), { stage: card.stage, stageEnteredAt: at, leftStage });
+    const clearBlock = leftStage && card.gateBlock !== undefined;
+    if (at === card.stageEnteredAt && !clearBlock) return event;
+    changed = true;
+    const { stageEnteredAt: _stale, gateBlock, ...rest } = card;
+    const next: BoardCard = {
+      ...rest,
+      ...(at === undefined ? {} : { stageEnteredAt: at }),
+      ...(clearBlock || gateBlock === undefined ? {} : { gateBlock }),
+    };
+    return { ...event, payload: { ...payload, card: next } } as PlannedBoardEvent;
+  });
+  return changed ? stamped : decided;
+}

@@ -4,12 +4,16 @@
  * `board.card-ci-recorded` event.
  */
 import {
+  BOARD_CI_LAST_STEP_SKIP_REFUSAL,
+  BOARD_CI_MAX_STEPS,
   BOARD_SEED_STAGE_IDS,
   boardCardCiSteps,
+  boardCiMergeFlakyTitles,
   boardCiPassStepsFromSnapshot,
   boardCiShellFinding,
   isBoardCiStepFailure,
   isBoardCiPassSettledPhase,
+  isBoardCiStepSkipped,
   type BoardCard,
   type BoardCardCi,
   type BoardCardCiRecordedPayload,
@@ -42,6 +46,7 @@ export function decideBoardCiRecord(
       card: { ...card, ...next, updatedAt: at },
       started: rest.started ?? null,
       settled: rest.settled ?? [],
+      ...(rest.stepRow === undefined ? {} : { stepRow: rest.stepRow }),
       activity: rest.activity ?? null,
     },
   });
@@ -81,6 +86,19 @@ export function decideBoardCiRecord(
       // Round trips survive a send-back on the last outcome, and a human's
       // Retry CI starts them again.
       const roundTrips = action.fresh === true ? 0 : card.ciRoundTrips;
+      // T3o (T3O-126): an entry's flaky checks and flaky tests carry across its passes.
+      const carry = sameEntry && action.fresh !== true;
+      const flakyChecks = carry ? (current.flakyChecks ?? 0) : 0;
+      // T3o (T3O-130): a human's step skips last the whole entry.
+      const skippedSteps = carry ? (current.skippedSteps ?? []) : [];
+      // A ruling holds only while the code it was ruled on is unchanged.
+      const flakyTitles =
+        action.flakyRulingsStale === true
+          ? []
+          : boardCiMergeFlakyTitles(
+              carry ? current.flakyTitles : undefined,
+              action.flakyTitles ?? [],
+            );
       const ci: BoardCardCi = {
         runId: action.runId,
         entry: action.entry,
@@ -90,6 +108,9 @@ export function decideBoardCiRecord(
         steps: boardCardCiSteps(steps),
         ...(roundTrips === 0 ? {} : { roundTrips }),
         ...(action.continueOnFailure === true ? { continueOnFailure: true } : {}),
+        ...(flakyChecks === 0 ? {} : { flakyChecks }),
+        ...(flakyTitles.length === 0 ? {} : { flakyTitles }),
+        ...(skippedSteps.length === 0 ? {} : { skippedSteps }),
       };
       return done(
         { ci, ciLastOutcome: null, ciRoundTrips: roundTrips },
@@ -122,25 +143,132 @@ export function decideBoardCiRecord(
       ) {
         // A late report from a pass already superseded, held or stopped:
         // its row still takes the step, the card does not.
-        return done({ ci: current, ciLastOutcome: card.ciLastOutcome });
+        return done(
+          { ci: current, ciLastOutcome: card.ciLastOutcome },
+          { stepRow: { runId: action.runId, index: action.index, step: action.step } },
+        );
       }
-      if (action.index >= current.steps.length) {
+      const live = current.steps[action.index];
+      if (live === undefined) {
         return refuse(`CI step ${action.index} does not exist on pass ${action.runId}.`);
       }
+      // T3o (T3O-130): a skipped row is final. A late report from a cancelled runner, an
+      // agent that lost the race, or a stale forge reading never brings it back.
+      if (live.status === "skipped") {
+        if (action.step.status !== "skipped") {
+          return refuse(`CI step '${live.name}' was skipped, so it takes no more reports.`);
+        }
+        return done(
+          { ci: current, ciLastOutcome: card.ciLastOutcome },
+          {
+            stepRow: {
+              runId: action.runId,
+              index: action.index,
+              patch: { status: "skipped", finishedAt: live.finishedAt },
+            },
+          },
+        );
+      }
+      const settledAlready = live.status !== "pending" && live.status !== "running";
+      if (action.step.status === "skipped" && settledAlready) {
+        return refuse(`CI step '${live.name}' has already finished, so it can't be skipped.`);
+      }
+      const terminal = action.step.status !== "pending" && action.step.status !== "running";
+      // A marked step that started before its restart landed still ends skipped.
+      const asSkipped =
+        action.step.status === "skipped" || (terminal && isBoardCiStepSkipped(current, live));
+      const { headline: _dropped, ...unheaded } = action.step;
+      const row = {
+        ...(asSkipped ? unheaded : action.step),
+        ...(live.id === undefined ? {} : { id: live.id }),
+        ...(asSkipped
+          ? {
+              status: "skipped" as const,
+              finishedAt: action.step.finishedAt ?? at,
+              note: action.step.note ?? "Skipped",
+            }
+          : {}),
+      };
       const steps = current.steps.map((step, index) =>
-        index === action.index ? boardCardCiSteps([action.step])[0]! : step,
+        index === action.index ? boardCardCiSteps([row])[0]! : step,
       );
       // The card heads with its pass's first failing step.
-      const headline = current.headline ?? action.step.headline;
-      return done({
-        ci: {
-          ...current,
-          steps,
-          phase: current.phase === "queued" ? "running" : current.phase,
-          ...(headline === undefined ? {} : { headline }),
+      const headline = current.headline ?? (asSkipped ? undefined : action.step.headline);
+      return done(
+        {
+          ci: {
+            ...current,
+            steps,
+            phase: current.phase === "queued" && !asSkipped ? "running" : current.phase,
+            ...(headline === undefined ? {} : { headline }),
+          },
+          ciLastOutcome: card.ciLastOutcome,
         },
-        ciLastOutcome: card.ciLastOutcome,
-      });
+        { stepRow: { runId: action.runId, index: action.index, step: row } },
+      );
+    }
+
+    case "set-step-skip": {
+      if (
+        current === null ||
+        current.runId !== action.runId ||
+        (current.phase !== "queued" && current.phase !== "running")
+      ) {
+        return refuse(`Pass ${action.runId} is not running, so its steps can't be skipped.`);
+      }
+      const live = current.steps[action.index];
+      if (live === undefined || live.id !== action.stepId) {
+        return refuse(`CI step ${action.index} of pass ${action.runId} is not '${action.stepId}'.`);
+      }
+      const marks = current.skippedSteps ?? [];
+      const marked = marks.includes(action.stepId);
+      if (!action.skip) {
+        if (live.status !== "pending" || !marked) {
+          return refuse(`CI step '${live.name}' is not marked to skip.`);
+        }
+        const skippedSteps = marks.filter((id) => id !== action.stepId);
+        const { skippedSteps: _marks, ...rest } = current;
+        return done(
+          {
+            ci: skippedSteps.length === 0 ? rest : { ...current, skippedSteps },
+            ciLastOutcome: card.ciLastOutcome,
+          },
+          {
+            activity: { kind: "card-ci-step-skip", ciStepName: live.name, ciStepSkip: false },
+          },
+        );
+      }
+      if (live.status !== "running" && live.status !== "pending") {
+        return refuse(`CI step '${live.name}' has already finished, so it can't be skipped.`);
+      }
+      const skippedSteps = marked ? marks : [...marks, action.stepId].slice(-BOARD_CI_MAX_STEPS);
+      const running = live.status === "running";
+      const steps = running
+        ? current.steps.map((step, index) => {
+            if (index !== action.index) return step;
+            const { progress: _progress, silentSince: _silent, ...rest } = step;
+            return { ...rest, status: "skipped" as const, finishedAt: at };
+          })
+        : current.steps;
+      const next = { ...current, steps, skippedSteps };
+      if (next.steps.every((step) => isBoardCiStepSkipped(next, step))) {
+        return refuse(BOARD_CI_LAST_STEP_SKIP_REFUSAL);
+      }
+      return done(
+        { ci: next, ciLastOutcome: card.ciLastOutcome },
+        {
+          ...(running
+            ? {
+                stepRow: {
+                  runId: action.runId,
+                  index: action.index,
+                  patch: { status: "skipped", finishedAt: at, note: "Skipped" },
+                },
+              }
+            : {}),
+          activity: { kind: "card-ci-step-skip", ciStepName: live.name, ciStepSkip: true },
+        },
+      );
     }
 
     case "finish-pass": {
@@ -215,18 +343,61 @@ export function decideBoardCiRecord(
       if (current.phase !== "running") {
         return refuse(`Pass ${action.runId} is ${current.phase}, so no fix can start on it.`);
       }
+      // T3o (T3O-126): a flaky-only check is uncounted, so it may run past the limit.
+      if (action.triage === true) {
+        return done({
+          ci: {
+            ...current,
+            phase: "fixing",
+            fixTriage: true,
+            ...(action.fixIssues === undefined ? {} : { fixIssues: action.fixIssues }),
+          },
+          ciLastOutcome: card.ciLastOutcome,
+        });
+      }
       if (current.fixAttempts >= current.maxFixAttempts) {
         return refuse(`Card '${card.key}' has used all ${current.maxFixAttempts} CI fixes.`);
       }
+      const { fixTriage: _counted, ...rest } = current;
       return done({
         ci: {
-          ...current,
+          ...rest,
           phase: "fixing",
           fixAttempts: current.fixAttempts + 1,
           ...(action.fixIssues === undefined ? {} : { fixIssues: action.fixIssues }),
         },
         ciLastOutcome: card.ciLastOutcome,
       });
+    }
+
+    case "flaky-resume": {
+      // A human's Stop or Retry that landed first wins.
+      if (current === null || current.runId !== action.runId || current.phase !== "fixing") {
+        return refuse(`Pass ${action.runId} is not being fixed, so it can't carry on.`);
+      }
+      const {
+        fixTriage,
+        headline: _headline,
+        fixIssues: _fixIssues,
+        stopReason: _stopReason,
+        ...rest
+      } = current;
+      return done(
+        {
+          ci: {
+            ...rest,
+            phase: "running",
+            fixAttempts:
+              fixTriage === true ? current.fixAttempts : Math.max(0, current.fixAttempts - 1),
+            // Counts the fix agent's own rulings only; runner-reported flakes, under load or
+            // not, never feed the storm guard.
+            flakyChecks: (current.flakyChecks ?? 0) + 1,
+            flakyTitles: boardCiMergeFlakyTitles(current.flakyTitles, action.titles),
+          },
+          ciLastOutcome: card.ciLastOutcome,
+        },
+        { settled: [{ runId: action.runId, reopen: true }] },
+      );
     }
 
     case "send-back": {
@@ -273,9 +444,10 @@ export function decideBoardCiRecord(
       if (current === null || card.stage !== BOARD_SEED_STAGE_IDS.ci) {
         return refuse(`Card '${card.key}' has no CI pass to stop.`);
       }
+      const { fixTriage: _triage, ...stopped } = current;
       return done(
         {
-          ci: { ...current, phase: "stopped", stopReason: boardCiShellFinding(action.reason) },
+          ci: { ...stopped, phase: "stopped", stopReason: boardCiShellFinding(action.reason) },
           ciLastOutcome: card.ciLastOutcome,
         },
         {

@@ -8,6 +8,8 @@ import {
   boardResourceProfileValue,
   boardStepWaitsForRoom,
   boardCardEffectiveWorkerId,
+  boardCardFinishedWithWorktree,
+  boardCardWorktreeIsCancelledWork,
   boardCardRequestedProfile,
   boardProjectStageConfig,
   boardStageWithRole,
@@ -107,6 +109,24 @@ export const requestedProfileOf = (board: BoardState, card: BoardCard) =>
 
 const isGroup = (card: BoardCard) => card.group !== null;
 
+/** T3o (T3O-127): the project's CI CPU reservation, when it sets one. */
+const ciCpuCoresOf = (board: BoardState, card: BoardCard): number | undefined =>
+  boardProjectStageConfig(board, card.projectId)?.resources?.ciCpuCores;
+
+/** T3o (T3O-127): what a CI pass reserves: the card's profile with its CPU raised to the
+    project's `ciCpuCores`, never above the worker's declared CPU. RAM and disk are unchanged. */
+export function ciProfileOf(
+  profile: BoardResourceProfile,
+  ciCpuCores: number | undefined,
+  declaredCpuCores: number,
+): BoardResourceProfile {
+  if (ciCpuCores === undefined || ciCpuCores <= profile.cpuCores) return profile;
+  return {
+    ...profile,
+    cpuCores: Math.max(profile.cpuCores, Math.min(ciCpuCores, declaredCpuCores)),
+  };
+}
+
 /** The board's granted state for one worker: every card with a worktree there that is
     provisioning or ready and holds a grant. Group cards take no claim and send nothing. */
 export function syncEntriesFor(input: {
@@ -115,6 +135,7 @@ export function syncEntriesFor(input: {
   readonly repositoryKey: (projectId: ProjectId) => string | null;
 }): ReadonlyArray<BoardSyncedCard> {
   const buildStage = boardStageWithRole(input.board, "build");
+  const doneStage = boardStageWithRole(input.board, "done");
   const entries: BoardSyncedCard[] = [];
   for (const card of input.board.cards) {
     if (isGroup(card) || card.worktree === null) continue;
@@ -131,6 +152,13 @@ export function syncEntriesFor(input: {
           completion.stepId === buildStage.stageId &&
           completion.outcome === "succeeded",
       );
+    const finished =
+      card.worktree.status === "ready" &&
+      boardCardFinishedWithWorktree({
+        archived: card.archivedAt !== null,
+        inDoneStage: doneStage !== null && card.stage === doneStage.stageId,
+        cancelledWork: boardCardWorktreeIsCancelledWork(card),
+      });
     entries.push({
       cardId: card.id,
       repositoryKey: input.repositoryKey(card.projectId),
@@ -140,6 +168,7 @@ export function syncEntriesFor(input: {
       phase: grant.heavy ? "heavy" : "light",
       settled: grant.settled,
       ...(builtOnce ? { builtOnce: true } : {}),
+      ...(finished ? { finished: true } : {}),
     });
   }
   return entries;
@@ -471,6 +500,49 @@ export const makeBoardCapacityAdmission = (deps: BoardCapacityAdmissionDeps) => 
     return null;
   });
 
+  /**
+   * T3o (T3O-127): once a CI pass's card is heavy, one best-effort grow to the project's
+   * `ciCpuCores`. It never waits and never queues the pass: any answer but granted leaves the
+   * card on its grant, and the normal grow's denial cache is untouched. True when granted.
+   */
+  const ensureCiReservation = Effect.fn("BoardCapacityAdmission.ensureCiReservation")(function* (
+    cardId: BoardCardId,
+  ) {
+    // Re-read: `ensureHeavy` may just have recorded the card's grant.
+    const board = yield* deps.readBoard;
+    const card = board.cards.find((candidate) => candidate.id === cardId);
+    if (card === undefined || isGroup(card)) return false;
+    const grant = card.resources?.grant ?? null;
+    const ciCpuCores = ciCpuCoresOf(board, card);
+    if (grant === null || !grant.heavy || ciCpuCores === undefined) return false;
+    if (ciCpuCores <= grant.profile.cpuCores) return false;
+    const workerId = card.placedWorkerId ?? cardWorkerOf(board, card);
+    if (!(yield* deps.client.synced(workerId)) || (yield* backingOff(workerId))) return false;
+    const declared = (yield* deps.client.latest(workerId))?.declared ?? null;
+    if (declared === null) return false;
+    const profile = ciProfileOf(grant.profile, ciCpuCores, declared.cpuCores);
+    if (profile.cpuCores <= grant.profile.cpuCores) return false;
+    // Its own claim id: a reused one inside a live reservation would be accepted unjudged.
+    const answer = yield* claimOn(workerId, {
+      claimId: `${card.id}:ci-grow:${yield* nowMs}`,
+      cardId: card.id,
+      repositoryKey: yield* deps.repositoryKey(card.projectId),
+      kind: "grow",
+      profile,
+      providerInstanceId: null,
+    });
+    if (answer.outcome !== "granted") return false;
+    yield* deps.dispatch({
+      type: "board.card.record-grant",
+      commandId: yield* deps.commandId("ci-grow"),
+      cardId: card.id,
+      profile,
+      createdAt: yield* deps.nowIso,
+    });
+    yield* syncWorker(workerId);
+    return true;
+  });
+
   /** A turn the board didn't start (a human's message, an answer, an approval, the engine's
       own limit resume): the card is heavy with no claim, and may run over, visibly. */
   const recordUnstartedTurn = Effect.fn("BoardCapacityAdmission.recordUnstartedTurn")(function* (
@@ -506,7 +578,15 @@ export const makeBoardCapacityAdmission = (deps: BoardCapacityAdmissionDeps) => 
     for (const card of board.cards) {
       const grant = card.resources?.grant ?? null;
       if (grant === null || card.archivedAt !== null || isGroup(card)) continue;
-      const requested = requestedProfileOf(board, card);
+      const own = requestedProfileOf(board, card);
+      // T3o (T3O-127): a CI pass keeps the larger CPU its admit got, and asks no more here.
+      const ciCpuCores = ciActive(card) ? ciCpuCoresOf(board, card) : undefined;
+      const requested =
+        ciCpuCores !== undefined &&
+        grant.profile.cpuCores > own.cpuCores &&
+        grant.profile.cpuCores <= ciCpuCores
+          ? { ...own, cpuCores: grant.profile.cpuCores }
+          : own;
       const want: BoardResourceProfile = {
         ...requested,
         diskGB: grant.settled ? Math.min(requested.diskGB, grant.profile.diskGB) : requested.diskGB,
@@ -782,6 +862,7 @@ export const makeBoardCapacityAdmission = (deps: BoardCapacityAdmissionDeps) => 
   return {
     placementClaim,
     ensureHeavy,
+    ensureCiReservation,
     recordUnstartedTurn,
     noteTurnEnded,
     resizeGrants,

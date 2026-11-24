@@ -20,8 +20,6 @@
     "t3o-worker": "node scripts/t3o-worker.mjs",
     "t3o-auto-update": "node scripts/t3o-auto-update.mjs",
     "t3o-release": "node scripts/t3o-release.mjs",
-    "t3o-ready": "sh scripts/t3o-ready.sh",
-    "t3o-ready:full": "sh scripts/t3o-ready.sh --full",
     "dist:desktop:deb": "node scripts/build-desktop-artifact.ts --platform linux --target deb --arch x64",
     "kill": "node scripts/kill-dev.ts",
     "start:desktop": "vp run --filter @t3tools/desktop start",
@@ -30,6 +28,7 @@
     "screenshots:mobile": "node scripts/mobile-showcase.ts",
     "icons:export": "node scripts/export-brand-icons.ts",
     "icons:check": "node scripts/export-brand-icons.ts --check",
+    "i18n:check": "node scripts/i18n-check.ts",
     "licenses:sync": "node scripts/sync-third-party-license-notices.ts",
     "icons:export:android": "node scripts/export-android-icons.ts",
     "build": "vp run --filter './apps/*' build",
@@ -43,6 +42,7 @@
     "t3o:test-full": "node scripts/t3o-test-full.ts",
     "report:renders": "node scripts/render-metrics.ts",
     "lint": "vp lint --report-unused-disable-directives",
+    "i18n:untranslated": "node scripts/i18n-untranslated.ts",
     "knip": "knip --preprocessor ./scripts/knip-schemas.ts",
     "knip:check": "vp run knip:check:all",
     "knip:check:files": "knip --include files,dependencies --no-config-hints",
@@ -82,7 +82,7 @@
     "vite-plus": "catalog:"
   },
   "engines": {
-    "node": "26.12.1"
+    "node": "26.13.1"
   },
   "packageManager": "pnpm@12.14.0"
 }

@@ -54,15 +54,18 @@ export function BoardWorkerFilterButton(props: {
         render={
           <button
             className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-input bg-popover px-2 text-board-12 shadow-xs/5 sm:h-6.5 dark:bg-input/32",
+              "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-input bg-popover px-2 text-board-12 shadow-xs/5 sm:h-6.5 dark:bg-input/32 max-sm:size-11 max-sm:justify-center max-sm:px-0",
               props.selection.length > 0 && "border-ring",
             )}
             type="button"
           />
         }
       >
-        <ServerIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="max-w-32 truncate">
+        <ServerIcon
+          aria-hidden="true"
+          className="size-3.5 shrink-0 text-muted-foreground max-sm:size-4.5"
+        />
+        <span className="max-w-32 truncate max-sm:sr-only">
           {boardWorkerFilterLabel(props.selection, props.state)}
         </span>
       </PopoverTrigger>
@@ -92,7 +95,7 @@ export function BoardWorkerFilterStrip(props: {
   readonly onClear: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-1.5 px-3 pb-1 text-board-12 text-muted-foreground sm:px-5">
+    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-1.5 px-3 pb-1 text-board-12 text-muted-foreground sm:px-5">
       <span>
         Showing {props.shown} of {props.total} cards · {props.label}
       </span>

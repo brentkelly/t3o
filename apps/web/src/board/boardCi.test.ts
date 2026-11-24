@@ -62,6 +62,62 @@ describe("boardCiSegments", () => {
     ]);
     expect(boardCiSegments(ci({ phase: "running", steps }))[1]?.state).toBe("failed");
     expect(boardCiSegments(ci({ steps: [step("Test", "timed-out")] }))[0]?.state).toBe("failed");
+    expect(
+      boardCiSegments(ci({ steps: [{ ...step("Test", "passed"), flaky: true }] }))[0]?.state,
+    ).toBe("flaky");
+  });
+});
+
+describe("a skipped CI step (T3O-130)", () => {
+  it("is a neutral segment, out of the count, and a pass with one says so", () => {
+    const steps = [
+      step("Lint", "passed"),
+      step("Test", "skipped"),
+      { ...step("E2E", "pending"), id: "e2e" },
+    ];
+    const marked = ci({ steps, skippedSteps: ["e2e"] });
+    expect(boardCiSegments(marked).map((segment) => [segment.state, segment.tooltip])).toEqual([
+      ["passed", "Lint · passed"],
+      ["skipped", "Test · skipped"],
+      ["pending", "E2E · will be skipped"],
+    ]);
+    expect(boardCiFace(marked, NOW_MS).count).toBe("1/2");
+    const passed = boardCiFace(ci({ phase: "passed", steps: steps.slice(0, 2) }), NOW_MS);
+    expect(passed.detail).toBe("Passed · 1 skipped");
+    expect(passed.count).toBe("1/1");
+    expect(
+      boardCiPassSummary({
+        outcome: "passed",
+        steps: [{ name: "Test", status: "skipped" } as BoardCiPassStep],
+      }),
+    ).toBe("1 skipped");
+  });
+});
+
+describe("deferred load-sensitive tests (T3O-129)", () => {
+  it("a passing card face and pass header never hide them behind green", () => {
+    const steps = [{ ...step("E2E", "passed"), deferred: 3 }, step("Test", "skipped")];
+    expect(boardCiFace(ci({ phase: "passed", steps }), NOW_MS).detail).toBe(
+      "Passed · 1 skipped · 3 deferred",
+    );
+    expect(
+      boardCiPassSummary({
+        outcome: "passed",
+        steps: [
+          {
+            name: "E2E",
+            status: "passed",
+            deferred: [{ title: "a" }, { title: "b" }],
+          } as unknown as BoardCiPassStep,
+          // A skipped step vouches for nothing, its deferrals included.
+          {
+            name: "Unit",
+            status: "skipped",
+            deferred: [{ title: "c" }],
+          } as unknown as BoardCiPassStep,
+        ],
+      }),
+    ).toBe("1 skipped · 2 deferred");
   });
 });
 
@@ -432,6 +488,24 @@ describe("a failed pass's fix row (T3O-57)", () => {
     const fixing = { runId: "run-3", phase: "fixing", fixAttempts: 2, maxFixAttempts: 3 } as const;
     const running = boardCiFixRow({ pass, completions: [], ci: fixing });
     expect(running).toMatchObject({ state: "running", headline: "Fix 2 of 3 · 2 issues" });
+    // T3O-126: a flaky check is numbered after the fixes and checks before it.
+    const checking = { ...fixing, fixAttempts: 3, flakyChecks: 1, fixTriage: true } as const;
+    expect(
+      boardCiFixRow({
+        pass,
+        completions: [
+          {
+            stepId: boardCiFixStepId(pass.entry, 5),
+            payload: JSON.stringify({ verdict: "flaky", issues: [{ id: "s0", status: "flaky" }] }),
+            threadId: null,
+          },
+        ],
+        ci: checking,
+      })?.issues.map((issue) => issue.status),
+    ).toEqual(["flaky", "open"]);
+    expect(boardCiFixRow({ pass, completions: [], ci: checking })).toMatchObject({
+      headline: "Flaky check · 2 issues",
+    });
     expect(running?.issues.map((issue) => issue.status)).toEqual(["open", "open"]);
     // Without stop on failure, the pass keeps running with its failures queued.
     expect(

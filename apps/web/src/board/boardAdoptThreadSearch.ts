@@ -44,9 +44,12 @@ const search = createThreadSearchResultsAtomFamily({
   labelPrefix: "t3o:board:adopt-search",
 });
 
-const EMPTY = Atom.make<ThreadSearchResultsState>({ matches: [], isLoading: false, rows: [] }).pipe(
-  Atom.withLabel("t3o:board:adopt-search:empty"),
-);
+const EMPTY = Atom.make<ThreadSearchResultsState>({
+  matches: [],
+  isLoading: false,
+  failed: false,
+  rows: [],
+}).pipe(Atom.withLabel("t3o:board:adopt-search:empty"));
 
 /** The older settled threads in `projectId` whose titles match `query`, and whether a read is due. */
 export function useBoardAdoptThreadSearch(

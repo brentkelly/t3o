@@ -3,7 +3,12 @@
  * worker's gateway is reported as the local runner reports it, and a worker
  * out of reach is "unavailable" rather than a CI failure.
  */
-import { BoardWorkerCiProgress, BoardWorkerRunCiInput, EnvironmentId } from "@t3tools/contracts";
+import {
+  BoardWorkerCiProgress,
+  BoardWorkerGatewayError,
+  BoardWorkerRunCiInput,
+  EnvironmentId,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -80,6 +85,31 @@ it.effect("a worker out of reach is unavailable, not a failed step", () =>
       worker,
     ).run(request, () => Effect.void);
     assert.strictEqual(result.result, "unavailable");
+    const refused = yield* remoteCiRunner(
+      {
+        get: () =>
+          Effect.succeed({
+            gateway: {
+              runCi: () =>
+                Stream.fail(
+                  new BoardWorkerGatewayError({
+                    kind: "refused",
+                    operation: "runCi",
+                    threadId: null,
+                    detail: "/remote/wt is not one of this board's worktrees here.",
+                  }),
+                ),
+            },
+          } as unknown as WorkerRpc),
+      },
+      worker,
+    ).run(request, () => Effect.void);
+    assert.deepStrictEqual(refused, {
+      result: "unavailable",
+      failedIndex: null,
+      detail:
+        "CI couldn't run on the card's worker: /remote/wt is not one of this board's worktrees here.",
+    });
   }),
 );
 
@@ -282,4 +312,89 @@ it.effect("a failed result's headline crosses the wire", () =>
       headline,
     });
   }),
+);
+
+it.effect(
+  "T3O-126: a worker hears the entry's flaky rules and its flaky steps reach the board",
+  () =>
+    Effect.gen(function* () {
+      const inputs: unknown[] = [];
+      const flakyStep = {
+        ...step,
+        status: "passed" as const,
+        exitCode: 1,
+        result: {
+          summary: null,
+          failures: [
+            {
+              title: "adds",
+              file: "a.test.ts",
+              flaky: true,
+              repro: "vp test a",
+              loadSensitive: true,
+            },
+          ],
+          skippedUnderLoad: 2,
+        },
+        // T3o (T3O-127): the worker's load reading and note cross the wire too.
+        cpuPressure: 84.5,
+        underLoad: true as const,
+        skippedUnderLoad: 2,
+        // T3o (T3O-129): and the tests it deferred to the nightly.
+        deferred: [{ file: "e2e/a.spec.ts", title: "slow" }, { title: "no file" }],
+        note: "Target test inconclusive under load",
+        flaky: [
+          {
+            title: "adds",
+            file: "a.test.ts",
+            repro: "vp test a",
+            loadSensitive: true as const,
+            underLoad: true as const,
+          },
+        ],
+      };
+      // Through the wire schema both ways, as the gateway decodes them.
+      const wire = yield* decodeCiProgress({ _tag: "step", index: 0, step: flakyStep });
+      const seen: BoardCiStepProgress[] = [];
+      yield* remoteCiRunner(
+        {
+          get: () =>
+            Effect.succeed({
+              gateway: {
+                runCi: (input: unknown) => {
+                  inputs.push(input);
+                  return Stream.fromIterable([
+                    wire,
+                    { _tag: "done", result: "passed", failedIndex: null },
+                  ]);
+                },
+              },
+            } as unknown as WorkerRpc),
+        },
+        worker,
+      ).run(
+        {
+          ...request,
+          knownFlaky: ["b.test.ts › subtracts"],
+          notFlakyTitle: "c.test.ts › own",
+          loadThreshold: 60,
+          inconclusiveTargetAllowed: true,
+          loadSensitive: [{ file: "e2e/a.spec.ts", title: "slow" }],
+        },
+        (progress) => Effect.sync(() => seen.push(progress)),
+      );
+      const sent = decodeRunCiInputUnknown(inputs[0]);
+      assert.deepStrictEqual(sent.knownFlaky, ["b.test.ts › subtracts"]);
+      assert.strictEqual(sent.notFlakyTitle, "c.test.ts › own");
+      assert.strictEqual(sent.loadThreshold, 60);
+      assert.strictEqual(sent.inconclusiveTargetAllowed, true);
+      assert.deepStrictEqual(sent.loadSensitive, [{ file: "e2e/a.spec.ts", title: "slow" }]);
+      assert.deepStrictEqual(seen[0]?.step.deferred, flakyStep.deferred);
+      assert.deepStrictEqual(seen[0]?.step.flaky, flakyStep.flaky);
+      assert.deepStrictEqual(seen[0]?.step.result, flakyStep.result);
+      assert.strictEqual(seen[0]?.step.cpuPressure, 84.5);
+      assert.strictEqual(seen[0]?.step.underLoad, true);
+      assert.strictEqual(seen[0]?.step.skippedUnderLoad, 2);
+      assert.strictEqual(seen[0]?.step.note, flakyStep.note);
+    }),
 );

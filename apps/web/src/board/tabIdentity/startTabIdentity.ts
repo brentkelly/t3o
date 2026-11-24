@@ -58,18 +58,10 @@ function currentRouteKey(router: AppRouter): TabRouteKey {
   return routeKey(router.state.matches, draftProject);
 }
 
-export function startTabIdentity(router: AppRouter): void {
-  // Electron pins the window title and has no favicon, so skip the board subscription there.
-  if (isElectron) {
-    appAtomRegistry.subscribe(
-      primaryServerConfigAtom,
-      (config) => {
-        document.title = tabFallbackName(config?.environment.serverVersion ?? null);
-      },
-      { immediate: true },
-    );
-    return;
-  }
+/** Owns the tab's title and favicon in a browser. Returns false on Electron, which has no
+    favicon; there upstream's window title runs instead. */
+export function startTabIdentity(router: AppRouter): boolean {
+  if (isElectron) return false;
   const locationKeyAtom = Atom.make<TabRouteKey>(currentRouteKey(router)).pipe(
     Atom.keepAlive,
     Atom.withLabel("t3o-tab-identity-location"),
@@ -229,6 +221,7 @@ export function startTabIdentity(router: AppRouter): void {
     favicon?.set(identity.icon);
   };
   appAtomRegistry.subscribe(identityAtom, apply, { immediate: true });
+  return true;
 }
 
 /**

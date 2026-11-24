@@ -65,6 +65,14 @@ import {
   isEmptyBoardProjectResources,
 } from "./boardCapacity.ts";
 import { BoardCardActualsRow } from "./boardActuals.ts";
+// T3o: t3o.json schedules (T3O-117).
+import {
+  BOARD_SCHEDULE_RPCS,
+  BOARD_SCHEDULE_RPC_SCOPES,
+  BoardScheduleExportedTask,
+  BoardScheduleImportOutcome,
+  BoardScheduleImportRow,
+} from "./boardSchedules.ts";
 import {
   BOARD_WORKER_GIT_CALL_RPC_SCOPES,
   BOARD_WORKER_GIT_CALL_RPCS,
@@ -1068,6 +1076,61 @@ export function isBoardCardAutoMergeSoft(
   return classification === "soft";
 }
 
+export const BoardCardAutoMergeStop = Schema.Literals([
+  "no-pull-request",
+  "no-workspace",
+  "fix-failed",
+]);
+export type BoardCardAutoMergeStop = typeof BoardCardAutoMergeStop.Type;
+
+/**
+ * T3o: the automatic merge fixes spent in one stay in Ready for merge (T3O-116). The ladder resets
+ * its attempt on every new head, and the board's own fix pushes make one, so "one conflict fix" and
+ * "one branch update" are counted per stay instead. Counts apply only while `stageEnteredAt`
+ * equals the card's; a new stay, a human Merge click or someone else's push starts them again.
+ */
+export const BoardCardMergeStay = Schema.Struct({
+  stageEnteredAt: Schema.NullOr(IsoDateTime),
+  conflictFixes: NonNegativeInt,
+  branchUpdates: NonNegativeInt,
+  /** T3o: the base tip when this stay's latest conflict or branch-update fix started (T3O-128).
+      Non-null makes the card its base's merge-queue head until it merges or stops. */
+  fixBaseTip: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** T3o: fixes re-run because the base moved under the last one (T3O-128). */
+  baseFollowUps: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  /** T3o: when the card joined its base's merge queue; null when not queued (T3O-128). */
+  queuedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** T3o: a person's merge holds the queue place; otherwise Auto-merge does, and switching it off
+      gives the place up (T3O-128). */
+  queuedByHand: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+});
+export type BoardCardMergeStay = typeof BoardCardMergeStay.Type;
+
+/** A stay with nothing spent and nothing queued. */
+export function emptyBoardCardMergeStay(stageEnteredAt: string | null): BoardCardMergeStay {
+  return {
+    stageEnteredAt,
+    conflictFixes: 0,
+    branchUpdates: 0,
+    fixBaseTip: null,
+    baseFollowUps: 0,
+    queuedAt: null,
+    queuedByHand: false,
+  };
+}
+
+/** The merge fixes this card has spent in its current stay. A stay left over from an earlier
+    visit to the stage reads as empty, so it is never queued nor a queue head. */
+export function boardCardMergeStayCounts(
+  card: Pick<BoardCard, "stageEnteredAt" | "mergeStay">,
+): BoardCardMergeStay {
+  const stay = card.mergeStay;
+  const stageEnteredAt = card.stageEnteredAt ?? null;
+  return stay !== undefined && stay.stageEnteredAt === stageEnteredAt
+    ? stay
+    : emptyBoardCardMergeStay(stageEnteredAt);
+}
+
 /**
  * On the card aggregate so it survives a restart. Not on step state: a fake step row with no
  * thread would corrupt slot accounting, recovery and boot reconciliation.
@@ -1093,6 +1156,10 @@ export const BoardCardAutoMergeHold = Schema.Struct({
   /** The head commit the probe described. A DIFFERENT sha means new commits
       and therefore new CI, which resets the ladder. */
   headSha: Schema.NullOr(TrimmedNonEmptyString),
+  /** T3o: why the board itself stopped, when it was not the forge's refusal (T3O-116): no pull
+      request (cleared once one is linked), no project checkout, or a fix agent that failed.
+      Absent on forge refusals and older holds. */
+  stop: Schema.optionalKey(BoardCardAutoMergeStop),
 });
 export type BoardCardAutoMergeHold = typeof BoardCardAutoMergeHold.Type;
 
@@ -1109,7 +1176,8 @@ export function boardCardAutoMergeHoldsEqual(
     left.attempt === right.attempt &&
     left.heldSince === right.heldSince &&
     left.retryAt === right.retryAt &&
-    left.headSha === right.headSha
+    left.headSha === right.headSha &&
+    left.stop === right.stop
   );
 }
 
@@ -1210,7 +1278,7 @@ export const BoardCardGroup = Schema.Struct({
   target: BoardCardGroupTarget,
   /** What inheriting children take as their Automation toggles
       (see `resolveBoardCardAutomation`). Auto-build: ready children with their
-      dependencies met start themselves once the group is `started`. */
+      dependencies met start themselves, whether or not the group is `started`. */
   autoBuild: Schema.Boolean,
   /** Children merge themselves, into the integration branch or trunk. */
   autoMerge: Schema.Boolean,
@@ -1496,36 +1564,103 @@ export const BoardCiFailureDetail = Schema.Struct({
   /** The script says this failure is the machine's, not the code's:
       true holds the card with no fix agent, false rules a machine hold out. */
   machine: Schema.optionalKey(Schema.Boolean),
+  /** The script saw this test fail and then pass when re-run alone: a flake. A step
+      whose every failure is flaky passes with a warning (T3O-126). */
+  flaky: Schema.optionalKey(Schema.Boolean),
+  /** The command that re-runs just this test, for the flake's bug card. */
+  repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+  /** T3o (T3O-127): a mark the board no longer reads (T3O-129 keeps the list itself). Still
+      accepted, so an older script's file decodes; the step's tail says it is ignored. */
+  loadSensitive: Schema.optionalKey(Schema.Boolean),
 });
 export type BoardCiFailureDetail = typeof BoardCiFailureDetail.Type;
+
+/** One flaky test, by its file and title: the key a flake's bug card is matched on. */
+export function boardCiFlakeKey(file: string | null | undefined, title: string): string {
+  const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
+  const name = collapse(title);
+  const where = file == null ? "" : collapse(file);
+  return where.length === 0 ? name : `${where} › ${name}`;
+}
+
+/** Whether a reported failure counts as a flake: flagged by its script, or a test
+    already ruled flaky in this CI entry. A card's own target test never does. */
+export function isBoardCiFailureFlaky(
+  failure: Pick<BoardCiFailureDetail, "title" | "file" | "flaky">,
+  options: { readonly knownFlaky?: ReadonlyArray<string>; readonly notFlakyTitle?: string } = {},
+): boolean {
+  const key = boardCiFlakeKey(failure.file, failure.title);
+  if (options.notFlakyTitle !== undefined && key === options.notFlakyTitle) return false;
+  return failure.flaky === true || (options.knownFlaky?.includes(key) ?? false);
+}
+
+/** T3o (T3O-129): one test a script deferred to the nightly. */
+export const BoardCiDeferredTest = Schema.Struct({
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  file: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+});
+export type BoardCiDeferredTest = typeof BoardCiDeferredTest.Type;
+
+/** The most deferred tests a step's result keeps. */
+const BOARD_CI_MAX_DEFERRED = Math.max(BOARD_CI_MAX_FAILURES, 50);
+
+const decodeDeferredTest = Schema.decodeUnknownOption(BoardCiDeferredTest);
 
 /** What a step reported beyond its exit code. Adds detail only: it
     never overrides the exit code. */
 export const BoardCiStepResult = Schema.Struct({
   summary: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1_000))),
   failures: Schema.Array(BoardCiFailureDetail),
+  /** T3o (T3O-127): a count of tests skipped under load. Superseded by `deferred`, and shown
+      only when `deferred` is absent. */
+  skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
+  /** T3o (T3O-129): the load-sensitive tests the script skipped under load, left to the
+      nightly. */
+  deferred: Schema.optionalKey(Schema.Array(BoardCiDeferredTest)),
 });
 export type BoardCiStepResult = typeof BoardCiStepResult.Type;
 
 const decodeFailureDetail = Schema.decodeUnknownOption(BoardCiFailureDetail);
 
-/**
- * Parse a script's `$T3O_CI_RESULT` file: `{ summary?, failures?: [{ title,
- * detail?, file?, line?, machine? }] }`. Invalid failures are dropped and at most
- * `BOARD_CI_MAX_FAILURES` kept; a file that isn't that shape is a warning.
- */
+const clipFailureFields = (entry: unknown): unknown => {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+  const record = { ...(entry as Record<string, unknown>) };
+  for (const [field, max] of [
+    ["title", 500],
+    ["detail", 4_000],
+    ["file", 500],
+    ["repro", 500],
+  ] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > max) record[field] = value.slice(0, max);
+  }
+  return record;
+};
+
+/** Parse a script's `$T3O_CI_RESULT` file. Over-long fields are clipped, invalid failures
+    dropped and at most `BOARD_CI_MAX_FAILURES` kept; a bad file is a warning. `complete` is
+    false when a reported failure didn't survive, so no caller judges the step on the rest. */
 export function parseBoardCiResultFile(text: string): {
   readonly result: BoardCiStepResult | null;
   readonly warning: string | null;
+  readonly complete: boolean;
 } {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
-    return { result: null, warning: "The step's result file isn't valid JSON; ignored." };
+    return {
+      result: null,
+      warning: "The step's result file isn't valid JSON; ignored.",
+      complete: false,
+    };
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { result: null, warning: "The step's result file isn't a JSON object; ignored." };
+    return {
+      result: null,
+      warning: "The step's result file isn't a JSON object; ignored.",
+      complete: false,
+    };
   }
   const record = raw as Record<string, unknown>;
   const summary =
@@ -1534,16 +1669,39 @@ export function parseBoardCiResultFile(text: string): {
       : null;
   const listed = Array.isArray(record.failures) ? record.failures : [];
   const failures = listed.flatMap((entry) => {
-    const decoded = decodeFailureDetail(entry);
+    const decoded = decodeFailureDetail(clipFailureFields(entry));
     return decoded._tag === "Some" ? [decoded.value] : [];
   });
   const dropped = listed.length - failures.length;
+  const skipped = record.skippedUnderLoad;
+  const skippedUnderLoad =
+    typeof skipped === "number" && Number.isInteger(skipped) && skipped >= 0 ? skipped : null;
+  // Once per test: a repeat would count twice on the step, pass and card face.
+  const deferredKeys = new Set<string>();
+  const deferred = Array.isArray(record.deferred)
+    ? record.deferred
+        .flatMap((entry) => {
+          const decoded = decodeDeferredTest(clipFailureFields(entry));
+          if (decoded._tag === "None") return [];
+          const key = boardCiFlakeKey(decoded.value.file, decoded.value.title);
+          if (deferredKeys.has(key)) return [];
+          deferredKeys.add(key);
+          return [decoded.value];
+        })
+        .slice(0, BOARD_CI_MAX_DEFERRED)
+    : null;
   return {
-    result: { summary, failures: failures.slice(0, BOARD_CI_MAX_FAILURES) },
+    result: {
+      summary,
+      failures: failures.slice(0, BOARD_CI_MAX_FAILURES),
+      ...(skippedUnderLoad === null ? {} : { skippedUnderLoad }),
+      ...(deferred === null ? {} : { deferred }),
+    },
     warning:
       dropped > 0
-        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine? }; ignored.`
+        ? `${dropped} of the step's reported failures weren't { title, detail?, file?, line?, machine?, flaky?, repro? }; ignored.`
         : null,
+    complete: dropped === 0 && failures.length <= BOARD_CI_MAX_FAILURES,
   };
 }
 
@@ -1607,12 +1765,13 @@ const BOARD_CI_FAILURE_MARKER = "::t3o-failure::";
 const BOARD_CI_FAILURE_STEP_MAX = 80;
 const BOARD_CI_FAILURE_REASON_MAX = 300;
 
-/** Parse one `::t3o-failure::{step?, reason, machine?}` output line, or null
+/** Parse one `::t3o-failure::{step?, reason, machine?, flaky?}` output line, or null
     when the line is not one, its JSON is unreadable or it has no reason. */
 export function parseBoardCiFailureLine(line: string): {
   readonly step: string | null;
   readonly reason: string;
   readonly machine: boolean | null;
+  readonly flaky: boolean | null;
 } | null {
   const at = line.indexOf(BOARD_CI_FAILURE_MARKER);
   if (at < 0) return null;
@@ -1628,6 +1787,7 @@ export function parseBoardCiFailureLine(line: string): {
       step: text(record.step, BOARD_CI_FAILURE_STEP_MAX),
       reason,
       machine: typeof record.machine === "boolean" ? record.machine : null,
+      flaky: typeof record.flaky === "boolean" ? record.flaky : null,
     };
   } catch {
     return null;
@@ -1682,6 +1842,8 @@ const BOARD_CI_STEP_STATUSES = [
   "failed",
   "timed-out",
   "cancelled",
+  // T3o (T3O-130): a human skipped the step this CI visit. Neutral, never a failure.
+  "skipped",
 ] as const;
 export const BoardCiStepStatus = Schema.Literals(BOARD_CI_STEP_STATUSES);
 export type BoardCiStepStatus = typeof BoardCiStepStatus.Type;
@@ -1813,6 +1975,8 @@ export const BOARD_CI_SILENT_AFTER_MS = 10 * 60_000;
 
 /** A CI step's compact state on the card shell: no command, no output. */
 export const BoardCardCiStep = Schema.Struct({
+  /** The `BoardCiStep.id` this row runs; absent on a pass recorded before T3O-130. */
+  id: Schema.optionalKey(BoardCiStepId),
   name: TrimmedNonEmptyString,
   /** Absent is a script. */
   kind: Schema.optionalKey(Schema.Literals(["script", "agent", "forge-checks"])),
@@ -1827,6 +1991,10 @@ export const BoardCardCiStep = Schema.Struct({
   /** A running step has printed nothing since then, for at least
       `BOARD_CI_SILENT_AFTER_MS`. Display only. */
   silentSince: Schema.optionalKey(IsoDateTime),
+  /** The step passed with only flaky failures: an amber warning in CI detail. */
+  flaky: Schema.optionalKey(Schema.Literal(true)),
+  /** T3o (T3O-129): how many load-sensitive tests the step deferred to the nightly. */
+  deferred: Schema.optionalKey(PositiveInt),
 });
 export type BoardCardCiStep = typeof BoardCardCiStep.Type;
 
@@ -1877,8 +2045,49 @@ export const BoardCardCi = Schema.Struct({
   /** What the pass's first failing step says failed and why, for
       the card face; cleared when the next pass starts. */
   headline: Schema.optionalKey(BoardCiHeadline),
+  /** Uncounted flaky checks the fix agent has run this entry (T3O-126). */
+  flakyChecks: Schema.optionalKey(NonNegativeInt),
+  /** The running fix is a flaky-only check: it can call failures flaky, never fix them. */
+  fixTriage: Schema.optionalKey(Schema.Literal(true)),
+  /** `boardCiFlakeKey` of every test ruled flaky this entry, on code unchanged since: a repeat
+      passes with no agent. */
+  flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** T3o (T3O-130): ids of the steps a human skipped or marked to skip this entry. They carry
+      across its passes; a fresh entry runs everything. */
+  skippedSteps: Schema.optionalKey(Schema.Array(BoardCiStepId)),
 });
 export type BoardCardCi = typeof BoardCardCi.Type;
+
+/** T3o (T3O-130): why a step skip that would leave nothing to run is refused. */
+export const BOARD_CI_LAST_STEP_SKIP_REFUSAL = "Use Skip CI to skip all of CI.";
+
+/** T3o (T3O-130): the hold for a pass that ended with every step skipped. */
+export const BOARD_CI_ALL_SKIPPED_REASON = "Every step was skipped. Use Skip CI.";
+
+/** T3o (T3O-130): whether a step of `ci` is skipped, or marked to be. */
+export function isBoardCiStepSkipped(
+  ci: Pick<BoardCardCi, "skippedSteps">,
+  step: Pick<BoardCardCiStep, "id" | "status">,
+): boolean {
+  return (
+    step.status === "skipped" ||
+    (step.id !== undefined && (ci.skippedSteps ?? []).includes(step.id))
+  );
+}
+
+/** Most flaky titles a CI entry remembers. */
+const BOARD_CI_MAX_FLAKY_TITLES = 50;
+
+/** Uncounted flaky checks one CI entry allows: a loop guard, not a budget. */
+export const BOARD_CI_MAX_FLAKY_CHECKS = 10;
+
+/** A CI entry's flaky titles with `more` added, deduped and capped. */
+export function boardCiMergeFlakyTitles(
+  current: ReadonlyArray<string> | undefined,
+  more: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  return [...new Set([...(current ?? []), ...more])].slice(-BOARD_CI_MAX_FLAKY_TITLES);
+}
 
 /** How a card last left CI other than by passing, for the card face: sent
     back to review (the failing step and the fixes used) or skipped by a
@@ -1914,6 +2123,8 @@ export type BoardCiPassOutcome = typeof BoardCiPassOutcome.Type;
 
 /** One step of a recorded pass, with what the card detail shows. */
 export const BoardCiPassStep = Schema.Struct({
+  /** T3o (T3O-130): the `BoardCiStep.id` this row runs; absent on older passes. */
+  id: Schema.optionalKey(BoardCiStepId),
   name: TrimmedNonEmptyString,
   command: TrimmedNonEmptyString,
   timeoutMinutes: PositiveInt,
@@ -1945,6 +2156,39 @@ export const BoardCiPassStep = Schema.Struct({
   silentSince: Schema.optionalKey(IsoDateTime),
   /** A failed or timed-out step's headline: what failed and why. */
   headline: Schema.optionalKey(BoardCiHeadline),
+  /** T3o (T3O-127): host CPU pressure (`/proc/pressure/cpu` some, max of avg10/avg60,
+      percent) read before the step's group started; absent when unknown. */
+  cpuPressure: Schema.optionalKey(Schema.Number),
+  /** The reading was at or above the project's under-load threshold, so the step ran
+      with `T3O_UNDER_LOAD=1`. */
+  underLoad: Schema.optionalKey(Schema.Literal(true)),
+  /** Tests the step skipped under load, as its result file reported. */
+  skippedUnderLoad: Schema.optionalKey(NonNegativeInt),
+  /** T3o (T3O-129): the load-sensitive tests the step deferred to the nightly, moved here
+      from its result file. */
+  deferred: Schema.optionalKey(Schema.Array(BoardCiDeferredTest)),
+  /** The step passed, but only because every failure it had was a flake: these
+      tests (T3O-126). Its status is `passed`. */
+  flaky: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+        file: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+        repro: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+        /** The fix agent, not the script, saw it pass alone. */
+        byAgent: Schema.optionalKey(Schema.Literal(true)),
+        /** The test is in the card's own change. */
+        inDiff: Schema.optionalKey(Schema.Literal(true)),
+        /** T3o (T3O-129): the fix agent's own words name the test, not the script's, so no
+            script can match it on the load-sensitive list. */
+        agentWorded: Schema.optionalKey(Schema.Literal(true)),
+        /** T3o (T3O-127): the runner reported the test marked load-sensitive. */
+        loadSensitive: Schema.optionalKey(Schema.Literal(true)),
+        /** The step it flaked in ran under load. */
+        underLoad: Schema.optionalKey(Schema.Literal(true)),
+      }),
+    ),
+  ),
 });
 export type BoardCiPassStep = typeof BoardCiPassStep.Type;
 
@@ -1979,6 +2223,7 @@ export function boardCiPassStepsFromSnapshot(
   steps: ReadonlyArray<BoardCiStep>,
 ): ReadonlyArray<BoardCiPassStep> {
   return steps.map((step) => ({
+    id: step.id,
     name: step.name,
     command:
       step.kind === "script" ? step.command : step.kind === "agent" ? "Agent step" : "Forge checks",
@@ -2032,6 +2277,7 @@ export function boardCardCiSteps(
   steps: ReadonlyArray<
     Pick<
       BoardCiPassStep,
+      | "id"
       | "name"
       | "status"
       | "startedAt"
@@ -2040,10 +2286,14 @@ export function boardCardCiSteps(
       | "parallel"
       | "progress"
       | "silentSince"
-    >
+    > & {
+      readonly flaky?: BoardCiPassStep["flaky"] | true;
+      readonly deferred?: BoardCiPassStep["deferred"] | number;
+    }
   >,
 ): ReadonlyArray<BoardCardCiStep> {
   return steps.map((step) => ({
+    ...(step.id === undefined ? {} : { id: step.id }),
     name:
       step.name.length > BOARD_CI_SHELL_STEP_NAME_MAX
         ? `${step.name.slice(0, BOARD_CI_SHELL_STEP_NAME_MAX - 1).trimEnd()}…`
@@ -2068,8 +2318,45 @@ export function boardCardCiSteps(
           },
         }),
     ...(step.silentSince === undefined ? {} : { silentSince: step.silentSince }),
+    ...(step.status === "passed" &&
+    (step.flaky === true || (Array.isArray(step.flaky) && step.flaky.length > 0))
+      ? { flaky: true as const }
+      : {}),
+    ...deferredCount(step.deferred),
   }));
 }
+
+function deferredCount(deferred: BoardCiPassStep["deferred"] | number | undefined) {
+  const count = typeof deferred === "number" ? deferred : (deferred?.length ?? 0);
+  return count > 0 ? { deferred: count } : {};
+}
+
+/** T3o: the automation gates (T3O-115), roughly in pipeline order; `boardGateDue` decides which is due. */
+export const BOARD_GATES = [
+  "plan",
+  "answer",
+  "review-start",
+  "sign-off",
+  "split-sign-off",
+  "split",
+  "build",
+  // T3o: the merge gates, last (T3O-116).
+  "merged-done",
+  "merge",
+] as const;
+export type BoardGate = (typeof BOARD_GATES)[number];
+
+/**
+ * T3o: an automation gate that was due but could not act on its last attempt (T3O-115): a
+ * refused move or a fault. Derived blocks (unmet dependencies, no capacity) are not recorded
+ * here; they already show. Written only when `gate` + `reason` change, cleared by the move.
+ */
+export const BoardCardGateBlock = Schema.Struct({
+  gate: Schema.Literals(BOARD_GATES),
+  reason: Schema.Literals(["move-refused", "fault"]),
+  detail: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type BoardCardGateBlock = typeof BoardCardGateBlock.Type;
 
 export const BoardCard = Schema.Struct({
   id: BoardCardId,
@@ -2241,6 +2528,14 @@ export const BoardCard = Schema.Struct({
   resources: Schema.NullOr(BoardCardResources).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** T3o: when the card entered its current stage (T3O-115), stamped by the decider on every
+      stage change and copied onto the step row at `select-step`, so "this stay" is decidable.
+      Absent on rows and events older than migration 083. */
+  stageEnteredAt: Schema.optionalKey(IsoDateTime),
+  /** T3o: the last automation gate attempt that could not act (T3O-115). Absent when none. */
+  gateBlock: Schema.optionalKey(BoardCardGateBlock),
+  /** T3o: merge fixes spent this stay in Ready for merge (T3O-116). Absent when none. */
+  mergeStay: Schema.optionalKey(BoardCardMergeStay),
   /** Derived from unmet dependencies at Ready and beyond, recorded by
       the decider at each move / dependency edit / unarchive. */
   blocked: Schema.Boolean,
@@ -2718,6 +3013,13 @@ export const BoardCardStepState = Schema.Struct({
   queuedDetail: Schema.NullOr(BoardStepQueuedDetail).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** T3o: the selecting card's `stageEnteredAt` (T3O-115): this row belongs to the card's
+      current stay only while the two match. Absent on older rows and events. */
+  stageEnteredAt: Schema.optionalKey(IsoDateTime),
+  /** T3o: questions the board answered for an unattended planning run on this step, and when it
+      last did (T3O-115). The answer gate stops at `BOARD_AUTO_ANSWER_LIMIT`. Absent when none. */
+  autoAnswers: Schema.optionalKey(PositiveInt),
+  autoAnsweredAt: Schema.optionalKey(IsoDateTime),
   /** When the step began running; null while pending/queued. */
   startedAt: Schema.NullOr(IsoDateTime),
   updatedAt: IsoDateTime,
@@ -2865,10 +3167,20 @@ const BOARD_CARD_ACTIVITY_KINDS = [
   "card-ci-pass-finished",
   "card-ci-sent-back",
   "card-ci-skipped",
+  /** T3o (T3O-130): a human skipped one CI step, marked it to skip, or unmarked it. */
+  "card-ci-step-skip",
   /** CI is holding the card until a human acts (Skip CI, or a fix). */
   "card-ci-held",
   /** CI stopped for a human at the round-trip limit. */
   "card-ci-stopped",
+  /** T3o (T3O-123): what the board did to a finished card's worktree beyond removing it: a
+      snapshot of uncommitted work, ignored files stripped, or why neither happened. */
+  "card-worktree-cleanup",
+  /** T3o (T3O-126): a flaky CI test, noted on its bug card or on the card it flaked on. */
+  "card-ci-flaked-again",
+  "card-ci-flakes-filed",
+  /** T3o (T3O-129): a pass deferred load-sensitive tests to the nightly. */
+  "card-ci-deferred",
 ] as const;
 export const BoardCardActivityKind = Schema.Literals(BOARD_CARD_ACTIVITY_KINDS);
 export type BoardCardActivityKind = typeof BoardCardActivityKind.Type;
@@ -2888,6 +3200,11 @@ export const BoardActivityActor = Schema.Struct({
   providerInstanceId: Schema.NullOr(ProviderInstanceId),
   /** The agent's thread, so the rail can link back to the conversation. */
   threadId: Schema.NullOr(ThreadId),
+  /** An agent writing to a card other than its own: its card's key, frozen at write time.
+      Absent for a schedule run, which has no card, so its source shows only across workers. */
+  sourceCardKey: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Present only when the writing agent ran on a different worker than the card. */
+  sourceWorkerId: Schema.optionalKey(BoardWorkerId),
 });
 export type BoardActivityActor = typeof BoardActivityActor.Type;
 
@@ -2989,6 +3306,11 @@ export const BoardCardActivityPayload = Schema.Struct({
   ciOutcome: Schema.optionalKey(BoardCiPassOutcome),
   ciStepName: Schema.optionalKey(TrimmedNonEmptyString),
   ciFixAttempts: Schema.optionalKey(NonNegativeInt),
+  /** card-ci-step-skip: true skipped or marked the step, false unmarked it. */
+  ciStepSkip: Schema.optionalKey(Schema.Boolean),
+  /** card-edited from another worker: what kind of write it was, when there is no
+      incremental edit to describe. */
+  editKind: Schema.optionalKey(Schema.Literals(["regrouped", "moved", "automation", "details"])),
 });
 export type BoardCardActivityPayload = typeof BoardCardActivityPayload.Type;
 
@@ -3032,6 +3354,103 @@ export const BoardProjectConfigChange = Schema.Struct({
 });
 export type BoardProjectConfigChange = typeof BoardProjectConfigChange.Type;
 
+/** T3o (T3O-129): one test on a project's load-sensitive list. `file` and `title` are kept
+    exactly as the script reported them, since scripts match on those strings. */
+export const BoardProjectLoadSensitiveEntry = Schema.Struct({
+  /** `boardCiFlakeKey(file, title)`. */
+  key: TrimmedNonEmptyString,
+  file: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  lastFlakedAt: IsoDateTime,
+  /** The card whose CI saw the latest flake. */
+  cardKey: TrimmedNonEmptyString,
+  /** Busy flakes seen, one per run at most. */
+  flakes: PositiveInt,
+  lastRunId: TrimmedNonEmptyString,
+});
+export type BoardProjectLoadSensitiveEntry = typeof BoardProjectLoadSensitiveEntry.Type;
+
+/** How long an entry lives after its test's last busy flake. */
+const BOARD_CI_LOAD_SENSITIVE_TTL_DAYS = 14;
+/** The most entries a project's list holds; past it the oldest is evicted. */
+export const BOARD_CI_LOAD_SENSITIVE_MAX = 50;
+
+const LOAD_SENSITIVE_TTL_MS = BOARD_CI_LOAD_SENSITIVE_TTL_DAYS * 24 * 60 * 60_000;
+
+/** When an entry expires, in epoch milliseconds. */
+export function boardLoadSensitiveExpiresAtMs(
+  entry: Pick<BoardProjectLoadSensitiveEntry, "lastFlakedAt">,
+): number {
+  return Date.parse(entry.lastFlakedAt) + LOAD_SENSITIVE_TTL_MS;
+}
+
+/** The entries still live at `nowIso`: the only way the list is read. */
+export function boardLiveLoadSensitive(
+  entries: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
+  nowIso: string,
+): ReadonlyArray<BoardProjectLoadSensitiveEntry> {
+  const now = Date.parse(nowIso);
+  return (entries ?? []).filter((entry) => boardLoadSensitiveExpiresAtMs(entry) > now);
+}
+
+/** One busy flake to record on the list. */
+export interface BoardLoadSensitiveFlake {
+  readonly key: string;
+  readonly file: string;
+  readonly title: string;
+  readonly cardKey: string;
+}
+
+/** The list after `incoming` flaked in run `runId` at `at`: expired entries pruned, known keys
+    refreshed (a run counts once), new keys added, then the oldest evicted past the cap. */
+export function boardLoadSensitiveUpsert(
+  current: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
+  incoming: ReadonlyArray<BoardLoadSensitiveFlake>,
+  runId: string,
+  at: string,
+): ReadonlyArray<BoardProjectLoadSensitiveEntry> {
+  const byKey = new Map(boardLiveLoadSensitive(current, at).map((entry) => [entry.key, entry]));
+  for (const flake of incoming) {
+    const known = byKey.get(flake.key);
+    const newRun = known?.lastRunId !== runId;
+    byKey.set(flake.key, {
+      key: flake.key,
+      file: flake.file,
+      title: flake.title,
+      lastFlakedAt: at,
+      cardKey: flake.cardKey,
+      flakes: known === undefined ? 1 : newRun ? known.flakes + 1 : known.flakes,
+      lastRunId: runId,
+    });
+  }
+  const entries = [...byKey.values()];
+  if (entries.length <= BOARD_CI_LOAD_SENSITIVE_MAX) return entries;
+  // Stable on ties, so the earlier-listed of two equally old entries goes first.
+  const oldestFirst = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort(
+      (a, b) =>
+        Date.parse(a.entry.lastFlakedAt) - Date.parse(b.entry.lastFlakedAt) || a.index - b.index,
+    );
+  const evicted = new Set(
+    oldestFirst
+      .slice(0, entries.length - BOARD_CI_LOAD_SENSITIVE_MAX)
+      .map(({ entry }) => entry.key),
+  );
+  return entries.filter((entry) => !evicted.has(entry.key));
+}
+
+/** The list's revision on the shell, opaque: every record and removal changes it, so a client
+    knows to refetch the list. Null for no list. */
+function boardLoadSensitiveRevision(
+  entries: ReadonlyArray<BoardProjectLoadSensitiveEntry> | undefined,
+): string | null {
+  if (entries === undefined) return null;
+  let newest = "";
+  for (const entry of entries) if (entry.lastFlakedAt > newest) newest = entry.lastFlakedAt;
+  return `${entries.length}:${newest}`;
+}
+
 /**
  * One project's differences from the global pipeline, never a snapshot, so a stage
  * added later reaches every project. `ci.stopOnFailure` is stored only as `false`
@@ -3055,6 +3474,9 @@ const BoardProjectStageConfigV2 = Schema.Struct({
   ),
   /** T3o: the project's Resources settings (T3O-86); absent follows every default. */
   resources: Schema.optionalKey(BoardProjectResources),
+  /** T3o (T3O-129): tests that flaked on a busy machine, which CI scripts may defer to the
+      nightly. The board's own record: outside the version and the `t3o.json` export. */
+  loadSensitive: Schema.optionalKey(Schema.Array(BoardProjectLoadSensitiveEntry)),
 });
 
 /** The legacy shape: a config resolved from a committed `t3o.json`. */
@@ -3124,11 +3546,17 @@ export function boardProjectConfigVersion(delta: BoardProjectStageDelta): string
     delta.resources === undefined
       ? undefined
       : boardProjectResourcesWithoutLearned(delta.resources);
+  // T3o (T3O-124): no checks hashes as before checks existed.
+  const hashed =
+    // Older in-memory resources may lack the field: it decodes with a default.
+    resources === undefined || (resources.readinessChecks ?? []).length > 0
+      ? resources
+      : (({ readinessChecks: _checks, ...rest }) => rest)(resources);
   const text = canonicalJson({
     stageSwitches: delta.stageSwitches,
     overrides: delta.overrides,
     ci: delta.ci,
-    ...(isEmptyBoardProjectResources(resources) ? {} : { resources }),
+    ...(isEmptyBoardProjectResources(resources) ? {} : { resources: hashed }),
   });
   let a = 0x811c9dc5;
   let b = 0x01000193 ^ text.length;
@@ -3216,12 +3644,16 @@ export const BoardProjectStageConfigShell = Schema.Struct({
   version: Schema.String,
   /** T3o: the project's Resources settings (T3O-86); small, and every card's size reads it. */
   resources: Schema.optionalKey(BoardProjectResources),
+  /** T3o (T3O-129): `boardLoadSensitiveRevision`. The list itself is fetched with the full
+      config, since every config delta is re-sent whole to every client. */
+  loadSensitiveRevision: Schema.optionalKey(Schema.String),
 });
 export type BoardProjectStageConfigShell = typeof BoardProjectStageConfigShell.Type;
 
 export function boardProjectStageConfigShell(
   config: BoardProjectStageConfig,
 ): BoardProjectStageConfigShell {
+  const loadSensitiveRevision = boardLoadSensitiveRevision(config.loadSensitive);
   return {
     stageSwitches: config.stageSwitches,
     overrides: Object.fromEntries(
@@ -3238,6 +3670,7 @@ export function boardProjectStageConfigShell(
     })),
     ...(boardCiStopsOnFailure(config.ci) ? {} : { ciStopOnFailure: false as const }),
     ...(config.resources === undefined ? {} : { resources: config.resources }),
+    ...(loadSensitiveRevision === null ? {} : { loadSensitiveRevision }),
     warnings: config.warnings,
     version: config.version,
   };
@@ -3334,11 +3767,21 @@ export const BOARD_CONFLICT_STEP_LABEL = "Conflicts";
  */
 export const BOARD_CHECKS_FIX_STEP_LABEL = "Fixing CI";
 
+/** The step label a merge-stage branch update wears, reserved on the same terms (T3O-116). */
+export const BOARD_BRANCH_UPDATE_STEP_LABEL = "Updating branch";
+
 /** Which merge fix the reactor armed a merge-stage run as, if any. */
-export type BoardMergeFixKind = "conflict" | "checks";
+export type BoardMergeFixKind = "conflict" | "checks" | "update";
 
 function boardMergeFixLabel(kind: BoardMergeFixKind): string {
-  return kind === "conflict" ? BOARD_CONFLICT_STEP_LABEL : BOARD_CHECKS_FIX_STEP_LABEL;
+  switch (kind) {
+    case "conflict":
+      return BOARD_CONFLICT_STEP_LABEL;
+    case "checks":
+      return BOARD_CHECKS_FIX_STEP_LABEL;
+    case "update":
+      return BOARD_BRANCH_UPDATE_STEP_LABEL;
+  }
 }
 
 /**
@@ -3352,7 +3795,8 @@ export function boardSelectedStepLabel(
 ): string | null {
   if (armedFix !== null) return boardMergeFixLabel(armedFix);
   return planStepLabel === BOARD_CONFLICT_STEP_LABEL ||
-    planStepLabel === BOARD_CHECKS_FIX_STEP_LABEL
+    planStepLabel === BOARD_CHECKS_FIX_STEP_LABEL ||
+    planStepLabel === BOARD_BRANCH_UPDATE_STEP_LABEL
     ? null
     : planStepLabel;
 }
@@ -3900,9 +4344,6 @@ export interface BoardResolvedAutomationToggle {
   readonly source: "own" | "inherited" | "board" | null;
   /** The parent group the card inherits from (or overrides), when it has one. */
   readonly inheritedFrom: { readonly id: string; readonly key: string } | null;
-  /** Auto-build only: the parent group has it on but has not begun, so the
-      inherited value stays off until a human starts the group. */
-  readonly waitingForGroupStart: boolean;
   /** Turning the toggle ON is refused, including an inherit that would pick
       up the group's on; turning it off is always accepted. */
   readonly locked: boolean;
@@ -3957,7 +4398,7 @@ function automationStageFacts(
 
 /**
  * The one reading of a card's Automation toggles. Own setting wins; null inherits
- * from the nearest group (Auto-build only once the group has started). Board-wide
+ * from the nearest group, whether or not the group has started (T3O-115). Board-wide
  * auto-merge locks every card's on. Locks refuse only turning a toggle on.
  */
 export function resolveBoardCardAutomation(input: {
@@ -3978,7 +4419,6 @@ export function resolveBoardCardAutomation(input: {
     toggle: BoardAutomationToggle,
     inherited: boolean | null,
     lock: string | null,
-    waitingForGroupStart = false,
   ): BoardResolvedAutomationToggle => {
     const own = ownAutomationSetting(card, toggle);
     const value = own ?? inherited ?? false;
@@ -3988,7 +4428,6 @@ export function resolveBoardCardAutomation(input: {
       own,
       source,
       inheritedFrom,
-      waitingForGroupStart: own === null && waitingForGroupStart,
       locked: lock !== null,
       lockReason: lock,
     };
@@ -4007,19 +4446,13 @@ export function resolveBoardCardAutomation(input: {
 
   const autoPlan = resolve("autoPlan", group === null ? null : group.autoPlan, planLock);
   const autoSignOff = resolve("autoSignOff", group === null ? null : group.autoSignOff, planLock);
-  const autoBuild = resolve(
-    "autoBuild",
-    group === null ? null : group.autoBuild && group.started,
-    buildLock,
-    group !== null && group.autoBuild && !group.started,
-  );
+  const autoBuild = resolve("autoBuild", group === null ? null : group.autoBuild, buildLock);
   const autoMerge: BoardResolvedAutomationToggle = input.boardWideAutoMerge
     ? {
         value: true,
         own: ownAutomationSetting(card, "autoMerge"),
         source: "board",
         inheritedFrom,
-        waitingForGroupStart: false,
         locked: true,
         lockReason: BOARD_AUTOMATION_BOARD_WIDE_MERGE_REASON,
       }
@@ -4032,45 +4465,27 @@ export function resolveBoardCardAutomation(input: {
 }
 
 /**
- * What automates the card's planning, which is when the Auto sign-off gate applies. Null means
- * a person plans, so the plan always waits for them. Plan review's unattended mode adds "review".
+ * T3o: the card's step row when it belongs to the card's current stay in its stage (T3O-115):
+ * same stage step and the same `stageEnteredAt`, so a card dragged back into a stage never
+ * reads the row it left behind. Null otherwise.
  */
-export type BoardPlanAutomatedBy = "auto-plan" | "review" | null;
-
-export function boardPlanAutomatedBy(
-  resolved: BoardResolvedAutomation,
-  /** The card sits in Planning with an unattended plan review on. */
-  review?: { readonly unattendedInPlanning: boolean },
-): BoardPlanAutomatedBy {
-  if (resolved.autoPlan.value) return "auto-plan";
-  return review?.unattendedInPlanning === true ? "review" : null;
+export function boardCardStepThisStay(
+  state: BoardCardStepState | null,
+  card: Pick<BoardCard, "stage" | "stageEnteredAt">,
+): BoardCardStepState | null {
+  if (state === null || state.stepId !== card.stage) return null;
+  return (state.stageEnteredAt ?? null) === (card.stageEnteredAt ?? null) ? state : null;
 }
 
 /** Whether the card's planning run for its current stay in Planning finished:
-    its plan-role step succeeded. */
+    its plan-role step for this stay succeeded. */
 export function boardCardPlanningFinished(
   board: BoardState,
-  card: Pick<BoardCard, "id" | "stage">,
+  card: Pick<BoardCard, "id" | "stage" | "stageEnteredAt">,
 ): boolean {
   const stage = boardStageById(board, card.stage);
   if (stage === null || effectiveBoardStageRole(stage) !== "plan") return false;
-  const state = boardCardStepState(board, card.id);
-  return state !== null && state.stepId === card.stage && state.status === "succeeded";
-}
-
-/**
- * An unattended plan review finished on the card's plan step and its single plan waits on the
- * Sign-off gate. Auto sign-off then approves it; a split always waits for a human.
- */
-export function isBoardCardReviewSignOffPending(
-  board: BoardState,
-  card: Pick<BoardCard, "id" | "stage" | "planReview">,
-): boolean {
-  if (card.planReview?.enabled !== true || card.planReview.unattended !== true) return false;
-  if (!boardCardPlanningFinished(board, card)) return false;
-  const state = boardCardStepState(board, card.id);
-  if (state?.planReviewStartedAt === undefined) return false;
-  return boardCardPlans(board, card.id).length === 1;
+  return boardCardStepThisStay(boardCardStepState(board, card.id), card)?.status === "succeeded";
 }
 
 /** `resolveBoardCardAutomation` over the full board state. */
@@ -4120,35 +4535,6 @@ export function boardAutomationTogglesTurnedOn(input: {
   return BOARD_AUTOMATION_TOGGLES.filter(
     (toggle) => !before[toggle].value && after[toggle].value,
   ).map((toggle) => ({ toggle, before: before[toggle] }));
-}
-
-/**
- * Whether a card's OWN Auto-build should start it now: a live leaf
- * with its own Auto-build on, waiting in the stage before build with every
- * dependency met. An inherited Auto-build is the group cascade's to act on
- * (`cascadeUnblockedChildren`), so one card never has two movers.
- */
-export function boardCardAutoBuildDue(input: {
-  readonly board: BoardState;
-  readonly card: Pick<
-    BoardCard,
-    "id" | "parentCardId" | "stage" | "archivedAt" | "dependsOn" | "autoBuildSetting"
-  > & {
-    readonly group?: BoardCard["group"] | undefined;
-  };
-}): boolean {
-  const card = input.card;
-  if (card.autoBuildSetting !== true) return false;
-  if (card.archivedAt !== null || (card.group ?? null) !== null) return false;
-  const before = boardStageBeforeBuild(input.board);
-  if (before === null || card.stage !== before.stageId) return false;
-  return (
-    unmetBoardCardDependencies({
-      board: input.board,
-      dependsOn: boardCardInheritedDependsOn(input.board, card),
-      cards: input.board.cards,
-    }).length === 0
-  );
 }
 
 function resolveBoardAutoMergeValue(
@@ -5163,11 +5549,11 @@ export const BoardCardMoveCommand = Schema.Struct({
   /** Permits non-adjacent stage moves. A drag is an override — a rigid
       board still has to let you drag a card backwards. */
   override: Schema.optional(Schema.Boolean),
-  /** `auto-build`: the card's own Auto-build started it. Such a
-      move does not begin its parent group, so it never starts its siblings.
-      `human`: stamped by the RPC layer on a person's move, whatever
-      the client sent; it resets the card's CI round trips. */
-  cause: Schema.optional(Schema.Literals(["auto-build", "human"])),
+  /** `auto-build`: the card's own Auto-build moved it; it never begins its parent group.
+      `human`: stamped by the RPC layer on a person's move; it resets CI round trips.
+      `agent`: stamped by board_move_card; like a person's, its backward move disarms the
+      toggle it undoes, and it overrides nothing else. */
+  cause: Schema.optional(Schema.Literals(["auto-build", "human", "agent"])),
   createdAt: IsoDateTime,
 });
 export type BoardCardMoveCommand = typeof BoardCardMoveCommand.Type;
@@ -5348,6 +5734,10 @@ export const BoardCardUpdateCommand = Schema.Struct({
       planner's; `sizeEditor` says whose edit it is, a human's unless an agent's tool says so. */
   size: Schema.optional(Schema.NullOr(BoardCardSize)),
   sizeEditor: Schema.optional(BoardCardSizeEditor),
+  /** T3o: the supervisor's gate-attempt record (T3O-115). Absent leaves it; null clears it. */
+  gateBlock: Schema.optional(Schema.NullOr(BoardCardGateBlock)),
+  /** T3o: the supervisor's per-stay merge fix counts (T3O-116). Absent leaves it; null clears it. */
+  mergeStay: Schema.optional(Schema.NullOr(BoardCardMergeStay)),
   createdAt: IsoDateTime,
 });
 export type BoardCardUpdateCommand = typeof BoardCardUpdateCommand.Type;
@@ -5705,6 +6095,40 @@ export const BoardProjectRecordLearnedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type BoardProjectRecordLearnedCommand = typeof BoardProjectRecordLearnedCommand.Type;
+
+/** T3o (T3O-129): busy flakes onto the project's load-sensitive list. Server-internal, and
+    never moves the config's version. */
+export const BoardProjectRecordLoadSensitiveCommand = Schema.Struct({
+  type: Schema.Literal("board.project.record-load-sensitive"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  runId: TrimmedNonEmptyString,
+  entries: Schema.Array(
+    Schema.Struct({
+      key: TrimmedNonEmptyString,
+      file: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+      title: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+      cardKey: TrimmedNonEmptyString,
+    }),
+  ),
+  createdAt: IsoDateTime,
+});
+export type BoardProjectRecordLoadSensitiveCommand =
+  typeof BoardProjectRecordLoadSensitiveCommand.Type;
+
+/** T3o (T3O-129): a person takes tests off the load-sensitive list, by key or all of them.
+    No expected version: the list is outside it. */
+export const BoardProjectRemoveLoadSensitiveCommand = Schema.Struct({
+  type: Schema.Literal("board.project.remove-load-sensitive"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  keys: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  all: Schema.optionalKey(Schema.Literal(true)),
+  actor: BoardSettingsActor,
+  createdAt: IsoDateTime,
+});
+export type BoardProjectRemoveLoadSensitiveCommand =
+  typeof BoardProjectRemoveLoadSensitiveCommand.Type;
 
 /** The project's "Stop on failure" CI setting. It applies from the
     next pass; a running pass keeps the setting it started with. */
@@ -6181,6 +6605,13 @@ export const BoardCardNoteKind = Schema.Literals([
   "card-auto-planned",
   /** CI is holding the card, with the reason. */
   "card-ci-held",
+  "card-worktree-cleanup",
+  /** T3o (T3O-126): a test this card's open flake card tracks flaked again elsewhere. */
+  "card-ci-flaked-again",
+  /** T3o (T3O-126): CI passed this card over flaky tests, and the bug cards it filed. */
+  "card-ci-flakes-filed",
+  /** T3o (T3O-129): the load-sensitive tests a pass deferred to the nightly. */
+  "card-ci-deferred",
 ]);
 export type BoardCardNoteKind = typeof BoardCardNoteKind.Type;
 
@@ -6213,6 +6644,11 @@ export const BoardCardCiAction = Schema.Union([
     fresh: Schema.optionalKey(Schema.Boolean),
     /** The project's Stop on failure is No, frozen on the pass. */
     continueOnFailure: Schema.optionalKey(Schema.Literal(true)),
+    /** Tests the fix just ruled flaky, so the re-run passes them (T3O-126). */
+    flakyTitles: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** The branch changed since the pass this one replaces started, so the entry's flaky
+        rulings no longer describe this code and are dropped (T3O-126). */
+    flakyRulingsStale: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({
     kind: Schema.Literal("step"),
@@ -6237,6 +6673,15 @@ export const BoardCardCiAction = Schema.Union([
     runId: TrimmedNonEmptyString,
     /** How many issues the fix works on. */
     fixIssues: Schema.optionalKey(NonNegativeInt),
+    /** A flaky-only check (T3O-126): uncounted, allowed once the fixes are used up. */
+    triage: Schema.optionalKey(Schema.Literal(true)),
+  }),
+  /** T3o (T3O-126): the fix agent ruled every failure flaky; the same pass carries on.
+      The fix's attempt is refunded and the row reopened. */
+  Schema.Struct({
+    kind: Schema.Literal("flaky-resume"),
+    runId: TrimmedNonEmptyString,
+    titles: Schema.Array(Schema.String),
   }),
   Schema.Struct({
     kind: Schema.Literal("send-back"),
@@ -6260,6 +6705,16 @@ export const BoardCardCiAction = Schema.Union([
     fixThreadId: Schema.optionalKey(ThreadId),
   }),
   Schema.Struct({ kind: Schema.Literal("skip"), actor: TrimmedNonEmptyString }),
+  /** T3o (T3O-130): a human skips a running step, marks a pending one to skip, or unmarks
+      it (`skip: false`). `stepId` must be the pass snapshot's step at `index`. */
+  Schema.Struct({
+    kind: Schema.Literal("set-step-skip"),
+    runId: TrimmedNonEmptyString,
+    index: NonNegativeInt,
+    stepId: BoardCiStepId,
+    skip: Schema.Boolean,
+    actor: TrimmedNonEmptyString,
+  }),
 ]);
 export type BoardCardCiAction = typeof BoardCardCiAction.Type;
 
@@ -6654,6 +7109,8 @@ export const BoardCardCheckInStepCommand = Schema.Struct({
   progressed: Schema.Boolean,
   /** This check-in delivered a reopened step's Auto-plan prompt. */
   reopenedPrompt: Schema.optionalKey(Schema.Literal(true)),
+  /** T3o: this check-in delivered an auto-answer to a parked planning question (T3O-115). */
+  autoAnswered: Schema.optionalKey(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 export type BoardCardCheckInStepCommand = typeof BoardCardCheckInStepCommand.Type;
@@ -6839,6 +7296,9 @@ export const BoardCardUpdatedPayload = Schema.Struct({
   mergeStrategyEdited: Schema.optional(Schema.Literal(true)),
   /** Present when this update marked the card for auto-planning. */
   autoPlanMarked: Schema.optional(Schema.Literal(true)),
+  /** T3o: present when the update only wrote the supervisor's gate bookkeeping (gate block,
+      merge-stay counts), so it does not re-fire the gate that wrote it (T3O-113). */
+  gateStateOnly: Schema.optional(Schema.Literal(true)),
   /** Rides the shell delta so an override edit updates the card face live. Absent when the
       edit cannot touch review; the SQL cache is refreshed either way. */
   reviewSummary: Schema.optionalKey(BoardCardReviewSummary),
@@ -7131,6 +7591,8 @@ export const BoardProjectStageConfigSetPayload = Schema.Struct({
       "stage-created",
       // T3o: the project's Resources settings (T3O-86).
       "resources",
+      // T3o: the load-sensitive list (T3O-129).
+      "load-sensitive",
     ]),
   ),
 });
@@ -7254,6 +7716,8 @@ export const BoardCiPassSettle = Schema.Struct({
   outcome: Schema.optionalKey(BoardCiPassOutcome),
   finishedAt: Schema.optionalKey(IsoDateTime),
   fixThreadId: Schema.optionalKey(ThreadId),
+  /** Clear the row's finish: a failed pass the fix agent found only flakes in runs on. */
+  reopen: Schema.optionalKey(Schema.Literal(true)),
 });
 export type BoardCiPassSettle = typeof BoardCiPassSettle.Type;
 
@@ -7265,6 +7729,23 @@ export const BoardCardCiRecordedPayload = Schema.Struct({
   action: BoardCardCiAction,
   started: Schema.NullOr(BoardCiPass),
   settled: Schema.Array(BoardCiPassSettle),
+  /** T3o (T3O-130): what the pass row's step takes: the full row the decider built, or a
+      field patch that keeps the row's tail, log and thread. Absent on older events, whose
+      `step` action's row is written as sent. */
+  stepRow: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({ runId: TrimmedNonEmptyString, index: NonNegativeInt, step: BoardCiPassStep }),
+      Schema.Struct({
+        runId: TrimmedNonEmptyString,
+        index: NonNegativeInt,
+        patch: Schema.Struct({
+          status: BoardCiStepStatus,
+          finishedAt: Schema.NullOr(IsoDateTime),
+          note: Schema.optionalKey(Schema.String),
+        }),
+      }),
+    ]),
+  ),
   /** The activity row this record writes, if any. */
   activity: Schema.NullOr(
     Schema.Struct({
@@ -7273,10 +7754,12 @@ export const BoardCardCiRecordedPayload = Schema.Struct({
         "card-ci-sent-back",
         "card-ci-skipped",
         "card-ci-stopped",
+        "card-ci-step-skip",
       ]),
       ciOutcome: Schema.optionalKey(BoardCiPassOutcome),
       ciStepName: Schema.optionalKey(TrimmedNonEmptyString),
       ciFixAttempts: Schema.optionalKey(NonNegativeInt),
+      ciStepSkip: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 });
@@ -7691,6 +8174,10 @@ export const BoardCardShell = Schema.Struct({
       `splitApprovedAfterReview`), absent otherwise. Card-aggregate data like
       `autoPlanPending`: absent means false, with no absent-means-preserve rule. */
   splitApproved: Schema.optionalKey(Schema.Boolean),
+  /** T3o: an automation gate's last attempt could not act (T3O-115); absent otherwise. */
+  gateBlock: Schema.optionalKey(BoardCardGateBlock),
+  /** T3o: waiting its turn in its base's merge queue this stay (T3O-128); absent otherwise. */
+  mergeQueued: Schema.optionalKey(Schema.Boolean),
   /** When auto-merge was first refused, absent when nothing is held (key-optional for the
       byte budget). The pill's elapsed clock measures from here, so it shows the whole wait,
       not the time since the last retry. */
@@ -7932,22 +8419,33 @@ function boundShellTitle(title: string): string {
 }
 
 /**
- * Whether a card shows the "Worktree kept" flag: it still holds a worktree and is
- * finished with it (archived, or in the done-role stage with `reclaimWorktreeOnDone` on).
- * Derived rather than stored, so it cannot go stale.
+ * Whether a card is finished with its worktree: archived, in the done-role stage, or holding
+ * cancelled work. The board removes or strips such a worktree, and counts it at its measured size.
+ */
+export function boardCardFinishedWithWorktree(input: {
+  readonly archived: boolean;
+  readonly inDoneStage: boolean;
+  /** Its worktree is cancelled work (`boardCardWorktreeIsCancelledWork`). */
+  readonly cancelledWork: boolean;
+}): boolean {
+  return input.archived || input.cancelledWork || input.inDoneStage;
+}
+
+/**
+ * Whether a card shows the "Worktree kept" flag: it still holds a worktree it is finished with,
+ * and the setting asked for it to go. Under `keep` a kept worktree is the user's choice, not a
+ * refusal. Derived rather than stored, so it cannot go stale.
  */
 export function boardCardWorktreeKept(input: {
   readonly worktreeReady: boolean;
   readonly archived: boolean;
   readonly inDoneStage: boolean;
-  readonly reclaimWorktreeOnDone: boolean;
+  readonly worktreeAtDone: BoardWorktreeAtDone;
   /** Its worktree is cancelled work (`boardCardWorktreeIsCancelledWork`). */
   readonly cancelledWork: boolean;
 }): boolean {
-  if (!input.worktreeReady) return false;
-  return (
-    input.archived || input.cancelledWork || (input.inDoneStage && input.reclaimWorktreeOnDone)
-  );
+  if (!input.worktreeReady || input.worktreeAtDone === "keep") return false;
+  return boardCardFinishedWithWorktree(input);
 }
 
 /**
@@ -8080,6 +8578,8 @@ export function makeBoardCardShell(input: {
   readonly autoMergeSetting?: boolean | null | undefined;
   readonly autoPlanPending?: boolean | null | undefined;
   readonly splitApproved?: boolean | null | undefined;
+  readonly gateBlock?: BoardCardGateBlock | null | undefined;
+  readonly mergeQueued?: boolean | undefined;
   /** The auto-merge hold's shell facts. On the card
       aggregate, so BOTH producers — the SQL snapshot query
       and the JS delta derivation — must carry them or a held card's pill
@@ -8189,6 +8689,8 @@ export function makeBoardCardShell(input: {
     ...(input.autoMergeSetting == null ? {} : { autoMergeSetting: input.autoMergeSetting }),
     ...(input.autoPlanPending === true ? { autoPlanPending: true } : {}),
     ...(input.splitApproved === true ? { splitApproved: true } : {}),
+    ...(input.gateBlock == null ? {} : { gateBlock: input.gateBlock }),
+    ...(input.mergeQueued === true ? { mergeQueued: true } : {}),
     // The auto-merge hold: three byte-cheap facts, each omitted
     // when it has nothing to say, so a board that has never held a merge is
     // byte-identical to an older payload.
@@ -8309,6 +8811,8 @@ export function boardCardShellFromCard(
     autoMergeSetting: card.autoMergeSetting,
     autoPlanPending: isBoardCardAutoPlanPending(card),
     splitApproved: card.pendingSplitApproval !== undefined,
+    gateBlock: card.gateBlock ?? null,
+    mergeQueued: boardCardMergeStayCounts(card).queuedAt !== null,
     autoMergeHeldSince: card.autoMergeHold?.heldSince ?? null,
     autoMergeGaveUp: boardCardAutoMergeGaveUp(card.autoMergeHold),
     prDraft: boardCardPullRequestIsOpenDraft(card.pullRequest),
@@ -8610,6 +9114,8 @@ const BOARD_INTERNAL_COMMANDS = [
   BoardCardRecordSetupCommand,
   // T3o: a project's learned baseline (T3O-87).
   BoardProjectRecordLearnedCommand,
+  // T3o: busy flakes onto the load-sensitive list (T3O-129).
+  BoardProjectRecordLoadSensitiveCommand,
   // The review loop's server-only carry fields.
   BoardCardSetReviewCarryCommand,
   // The decision log and auto-planning.
@@ -8667,6 +9173,8 @@ const BOARD_SETTINGS_COMMANDS = [
   BoardProjectResetCommand,
   BoardProjectImportFileCommand,
   BoardProjectDismissImportCommand,
+  // T3o: a person clears the load-sensitive list (T3O-129).
+  BoardProjectRemoveLoadSensitiveCommand,
 ] as const;
 
 /** The settings commands a client may send. Import is not one: the server
@@ -9190,6 +9698,8 @@ export const BOARD_WS_METHODS = {
   /** An RPC rather than a board command: a human waits on the outcome, and a refresh must
       not write to the event log on every card open. */
   mergeCardPullRequest: "board.mergeCardPullRequest",
+  /** T3o: a queued card's Start now (T3O-128): attempt its merge, and start its fix, now. */
+  mergeQueueStartNow: "board.mergeQueueStartNow",
   /** Open the card's pull request from the Build stage and route it past Code
       review. An RPC for the same reason merging is one: the
       caller is a human waiting on an answer, and "there is nothing to push"
@@ -9231,6 +9741,9 @@ export const BOARD_WS_METHODS = {
       a stopped or held CI pass, like Skip CI. */
   retryCi: "board.retryCi",
   ciSendBack: "board.ciSendBack",
+  /** T3o (T3O-130): a human skips one step of a queued or running pass, marks a pending
+      one to skip this visit, or unmarks it. */
+  ciSkipStep: "board.ciSkipStep",
   // Stage and project config, at the settings-write tier.
   dispatchSettingsCommand: "board.dispatchSettingsCommand",
   getProjectConfig: "board.projectConfig.get",
@@ -9316,8 +9829,14 @@ export const BoardProjectImportCandidate = Schema.Struct({
       delta: BoardProjectImportDelta,
       createStages: Schema.Array(Schema.Struct({ stageId: BoardStageId, label: Schema.String })),
       texts: Schema.Array(BoardProjectImportText),
+      /** Schedules the import creates, updates, adopts or deletes (T3O-117). */
+      schedules: Schema.optional(Schema.Array(BoardScheduleImportRow)),
+      /** The pipeline and CI already match; only schedules differ. */
+      schedulesOnly: Schema.optional(Schema.Boolean),
     }),
   ),
+  /** How many schedules the file declares, whatever the status (T3O-117). */
+  fileScheduleCount: Schema.optional(NonNegativeInt),
 });
 export type BoardProjectImportCandidate = typeof BoardProjectImportCandidate.Type;
 
@@ -9332,11 +9851,19 @@ export const BoardProjectImportInput = Schema.Struct({
   projectId: ProjectId,
   blobSha: TrimmedNonEmptyString,
   expectedConfigVersion: Schema.String,
+  /** Where each previewed schedule runs, by file id; omitted or null is Don't schedule
+      (T3O-117). Rows the import doesn't change keep their machine whatever this says. */
+  schedulePlacements: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(EnvironmentId))),
 });
 export type BoardProjectImportInput = typeof BoardProjectImportInput.Type;
 
 export const BoardProjectImportResult = Schema.Union([
-  Schema.Struct({ outcome: Schema.Literal("imported"), sequence: NonNegativeInt }),
+  Schema.Struct({
+    outcome: Schema.Literal("imported"),
+    sequence: NonNegativeInt,
+    // T3o: what happened to the file's schedules (T3O-117).
+    schedules: Schema.optional(BoardScheduleImportOutcome),
+  }),
   /** The committed file is no longer the blob the human confirmed. */
   Schema.Struct({ outcome: Schema.Literal("file-changed") }),
   Schema.Struct({ outcome: Schema.Literal("version-mismatch") }),
@@ -9344,18 +9871,34 @@ export const BoardProjectImportResult = Schema.Union([
 ]);
 export type BoardProjectImportResult = typeof BoardProjectImportResult.Type;
 
+export const BoardProjectExportInput = Schema.Struct({
+  projectId: ProjectId,
+  /** "Export again without them": leave out the hand-made tasks the last export linked. */
+  excludeHandMade: Schema.optional(Schema.Boolean),
+});
+export type BoardProjectExportInput = typeof BoardProjectExportInput.Type;
+
+// T3o: hand-made scheduled tasks the export brought into the file, and the
+// tasks it couldn't express (T3O-117).
+const BoardProjectExportSchedules = {
+  handMade: Schema.optional(Schema.Array(BoardScheduleExportedTask)),
+  warnings: Schema.optional(Schema.Array(Schema.String)),
+};
+
 export const BoardProjectExportResult = Schema.Union([
   /** Written to the checkout, not committed. */
   Schema.Struct({
     outcome: Schema.Literal("written"),
     path: Schema.String,
     content: Schema.String,
+    ...BoardProjectExportSchedules,
   }),
   /** No usable checkout: the client offers the content as a download. */
   Schema.Struct({
     outcome: Schema.Literal("download"),
     content: Schema.String,
     reason: Schema.String,
+    ...BoardProjectExportSchedules,
   }),
 ]);
 export type BoardProjectExportResult = typeof BoardProjectExportResult.Type;
@@ -9413,6 +9956,32 @@ export const BoardCiActionInput = Schema.Struct({
   action: Schema.optionalKey(Schema.Literals(["retry", "stop"])),
 });
 export type BoardCiActionInput = typeof BoardCiActionInput.Type;
+
+/** T3o (T3O-130): skip (or, `skip: false`, unmark) step `stepIndex` of pass `runId`. */
+export const BoardCiSkipStepInput = Schema.Struct({
+  cardId: BoardCardId,
+  runId: TrimmedNonEmptyString,
+  stepIndex: NonNegativeInt,
+  skip: Schema.Boolean,
+});
+export type BoardCiSkipStepInput = typeof BoardCiSkipStepInput.Type;
+
+/** What a step skip did. `skipped` stopped a running step, `marked` will skip a pending one,
+    `unskipped` took a mark off. `not-running` is a pass no longer queued or running, a stale
+    run id, or a step that has already settled; `last-step` would leave nothing to run. */
+export const BoardCiSkipStepResult = Schema.Struct({
+  outcome: Schema.Literals([
+    "skipped",
+    "marked",
+    "unskipped",
+    "not-running",
+    "not-in-ci",
+    "unknown-card",
+    "last-step",
+    "failed",
+  ]),
+});
+export type BoardCiSkipStepResult = typeof BoardCiSkipStepResult.Type;
 
 /**
  * Its own input so merge, submit and review-round never carry `force`. `force` is a human
@@ -9500,6 +10069,10 @@ export const BoardMergeCardPullRequestResult = Schema.Union([
   /** The card is not in the merge-role stage. The button renders only there,
       so this answers a client that called the RPC without one. */
   Schema.Struct({ outcome: Schema.Literal("wrong-stage") }),
+  /** T3o: the branch needs a conflict fix or branch update, and another card's fix on the same
+      base runs first (T3O-128). The merge is retried when that card's merge ends; Merge stays
+      disabled and Start now jumps the queue. */
+  Schema.Struct({ outcome: Schema.Literal("queued"), behindCardId: Schema.NullOr(BoardCardId) }),
   /** The card's base branch moved since its last review round started:
       instead of merging a diff that was never reviewed against
       the base it would merge into, the card went back to the review stage to
@@ -9732,9 +10305,10 @@ export const BoardCheckCardWorktreeResult = Schema.Union([
   Schema.Struct({ outcome: Schema.Literal("kept"), reason: Schema.NullOr(Schema.String) }),
   /** Another cleanup of this card was already running, so this one stood down. */
   Schema.Struct({ outcome: Schema.Literal("busy") }),
+  /** Kept by the setting (`worktreeAtDone: keep`); the check strips its ignored files. */
+  Schema.Struct({ outcome: Schema.Literal("kept-by-setting") }),
   Schema.Struct({ outcome: Schema.Literal("no-worktree") }),
-  /** The card is not one the cleanup reclaims: it left Done, or reclaiming
-      at Done is switched off. */
+  /** The card is not one the cleanup reclaims: it is neither archived nor in Done. */
   Schema.Struct({ outcome: Schema.Literal("not-finished") }),
   Schema.Struct({ outcome: Schema.Literal("unknown-card") }),
   Schema.Struct({ outcome: Schema.Literal("failed") }),
@@ -10004,6 +10578,12 @@ export const BOARD_RPCS = [
     success: BoardMergeCardPullRequestResult,
     error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
   }),
+  // T3o: T3O-128.
+  Rpc.make(BOARD_WS_METHODS.mergeQueueStartNow, {
+    payload: BoardCardPullRequestActionInput,
+    success: BoardMergeCardPullRequestResult,
+    error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(BOARD_WS_METHODS.requestReviewRound, {
     payload: BoardRequestReviewRoundInput,
     success: BoardRequestReviewRoundResult,
@@ -10065,6 +10645,11 @@ export const BOARD_RPCS = [
     success: BoardCiActionResult,
     error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(BOARD_WS_METHODS.ciSkipStep, {
+    payload: BoardCiSkipStepInput,
+    success: BoardCiSkipStepResult,
+    error: Schema.Union([BoardSubscribeCardError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(BOARD_WS_METHODS.dispatchSettingsCommand, {
     payload: BoardSettingsClientCommand,
     success: Schema.Struct({ sequence: NonNegativeInt }),
@@ -10086,7 +10671,7 @@ export const BOARD_RPCS = [
     error: Schema.Union([BoardSettingsCommandError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(BOARD_WS_METHODS.exportProjectFile, {
-    payload: BoardProjectConfigInput,
+    payload: BoardProjectExportInput,
     success: BoardProjectExportResult,
     error: Schema.Union([BoardSettingsCommandError, EnvironmentAuthorizationError]),
   }),
@@ -10099,6 +10684,8 @@ export const BOARD_RPCS = [
   // `boardWorker.*` the central server calls over its own session.
   ...BOARD_WORKERS_RPCS,
   ...BOARD_WORKER_RPCS,
+  // T3o: the Schedules tab and the Scheduled tasks page's marker (T3O-117).
+  ...BOARD_SCHEDULE_RPCS,
   // The worker's thread gateway, the MCP relay and attachment staging.
   ...BOARD_WORKER_GATEWAY_RPCS,
   // The named git and forge operations a card's worker runs.
@@ -10125,6 +10712,8 @@ export const BOARD_RPC_SCOPES = {
   // Merging changes the repository and moves the card: the operate tier, the
   // same one every other board mutation rides.
   [BOARD_WS_METHODS.mergeCardPullRequest]: AuthOrchestrationOperateScope,
+  // T3o: starts a merge and its fix agent now, the same tier as merging (T3O-128).
+  [BOARD_WS_METHODS.mergeQueueStartNow]: AuthOrchestrationOperateScope,
   // Submitting starts an agent that pushes a branch and opens a pull request,
   // and moves the card: the same mutation tier as merging.
   [BOARD_WS_METHODS.submitCardForMerge]: AuthOrchestrationOperateScope,
@@ -10132,6 +10721,7 @@ export const BOARD_RPC_SCOPES = {
   [BOARD_WS_METHODS.skipCi]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.retryCi]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.ciSendBack]: AuthOrchestrationOperateScope,
+  [BOARD_WS_METHODS.ciSkipStep]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.removeCardWorktree]: AuthOrchestrationOperateScope,
   [BOARD_WS_METHODS.checkCardWorktree]: AuthOrchestrationOperateScope,
   // The move reads the source worker's git and then changes where the
@@ -10156,6 +10746,7 @@ export const BOARD_RPC_SCOPES = {
   [BOARD_WS_METHODS.projectTokenStatus]: AuthSettingsWriteScope,
   // Worker management and the worker side's handshake.
   ...BOARD_WORKER_RPC_SCOPES,
+  ...BOARD_SCHEDULE_RPC_SCOPES,
   ...BOARD_WORKER_GATEWAY_RPC_SCOPES,
   ...BOARD_WORKER_GIT_CALL_RPC_SCOPES,
 } as const;
@@ -10172,6 +10763,8 @@ export const BoardProjectSettings = Schema.Struct({
       The decoding default keeps older entries decodable, which would otherwise fail the
       whole-settings decode and revert the user's file to defaults. */
   hidden: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** T3o (T3O-124): run the project's readiness script on every worker. Never on by itself. */
+  trustReadinessScript: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type BoardProjectSettings = typeof BoardProjectSettings.Type;
 
@@ -10244,33 +10837,73 @@ export function clampBoardInstanceCap(
 }
 
 /**
- * Archive always reclaims a card's worktree; this only decides whether Done with a merged PR
- * reclaims it earlier. The field's decoding default is load-bearing: an old on-disk `lifecycle`
- * decodes to `{}`, and a missing required key would discard the whole settings file.
+ * What happens to a card's worktree once the card is finished (Done, archived, or its work
+ * cancelled): `remove` removes it (snapshotting uncommitted work first), `remove-if-clean` only
+ * when nothing in it would be lost, `keep` never. A worktree that stays is stripped of the files
+ * git ignores.
  */
-export const DEFAULT_BOARD_RECLAIM_WORKTREE_ON_DONE = true;
+export const BoardWorktreeAtDone = Schema.Literals(["remove", "remove-if-clean", "keep"]);
+export type BoardWorktreeAtDone = typeof BoardWorktreeAtDone.Type;
+export const DEFAULT_BOARD_WORKTREE_AT_DONE: BoardWorktreeAtDone = "remove";
+
+/** The mode a stored or patched lifecycle block asks for: the new key wins, else the legacy
+    `reclaimWorktreeOnDone` boolean (`false` kept worktrees, `true` reclaimed them). */
+function boardWorktreeAtDoneFrom(input: {
+  readonly worktreeAtDone?: BoardWorktreeAtDone | undefined;
+  readonly reclaimWorktreeOnDone?: boolean | undefined;
+}): BoardWorktreeAtDone | undefined {
+  if (input.worktreeAtDone !== undefined) return input.worktreeAtDone;
+  if (input.reclaimWorktreeOnDone === undefined) return undefined;
+  return input.reclaimWorktreeOnDone ? "remove" : "keep";
+}
+
 /** Auto-archive of idle Done cards is opt-in. Its fields are NEW
     names on purpose: older settings files still carry `archiveAfterDays`, and
     reviving that name would switch the feature on silently at upgrade. */
 export const DEFAULT_BOARD_AUTO_ARCHIVE_DONE = false;
 export const DEFAULT_BOARD_AUTO_ARCHIVE_AFTER_DAYS = 7;
 
-export const BoardLifecycleSettings = Schema.Struct({
-  /** Reclaim a card's worktree on arrival at Done when its pull request is
-      merged, instead of waiting for archive. Default on: a busy board otherwise
-      stacks a full checkout — dependency install and all — per finished card,
-      for as long as those cards sit in Done. */
-  reclaimWorktreeOnDone: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_RECLAIM_WORKTREE_ON_DONE)),
-  ),
+const BoardLifecycleSettingsType = Schema.Struct({
+  worktreeAtDone: BoardWorktreeAtDone,
   /** Archive cards left untouched in Done for `autoArchiveAfterDays`. */
+  autoArchiveDone: Schema.Boolean,
+  autoArchiveAfterDays: PositiveInt,
+});
+
+/** Every field decodes a default: `lifecycle` is indivisible, and a missing required key would
+    discard the whole settings file. `deepMerge` never deletes a key, so a stored block may hold
+    both the legacy boolean and `worktreeAtDone`; the latter wins. */
+export const BoardLifecycleSettings = Schema.Struct({
+  worktreeAtDone: Schema.optionalKey(BoardWorktreeAtDone),
+  reclaimWorktreeOnDone: Schema.optionalKey(Schema.Boolean),
   autoArchiveDone: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_AUTO_ARCHIVE_DONE)),
   ),
   autoArchiveAfterDays: PositiveInt.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_AUTO_ARCHIVE_AFTER_DAYS)),
   ),
-});
+}).pipe(
+  Schema.decodeTo(
+    BoardLifecycleSettingsType,
+    SchemaTransformation.transform<
+      typeof BoardLifecycleSettingsType.Type,
+      {
+        readonly worktreeAtDone?: BoardWorktreeAtDone;
+        readonly reclaimWorktreeOnDone?: boolean;
+        readonly autoArchiveDone: boolean;
+        readonly autoArchiveAfterDays: number;
+      }
+    >({
+      decode: ({ worktreeAtDone, reclaimWorktreeOnDone, ...rest }) => ({
+        worktreeAtDone:
+          boardWorktreeAtDoneFrom({ worktreeAtDone, reclaimWorktreeOnDone }) ??
+          DEFAULT_BOARD_WORKTREE_AT_DONE,
+        ...rest,
+      }),
+      encode: (settings) => settings,
+    }),
+  ),
+);
 export type BoardLifecycleSettings = typeof BoardLifecycleSettings.Type;
 
 /** Board display preferences. Shared by every client of this board. */
@@ -10618,16 +11251,24 @@ export function decodeBoardCiAgentStepPayload(
 /** One issue's outcome in a fix agent's report. */
 export const BoardCiFixIssueReport = Schema.Struct({
   id: TrimmedNonEmptyString,
-  status: Schema.Literals(["resolved", "cannot-fix"]),
+  status: Schema.Literals(["resolved", "cannot-fix", "flaky"]),
   note: Schema.optionalKey(Schema.String),
+  /** A flaky issue's test, `file › name` or its name: required for a whole-step issue. */
+  title: Schema.optionalKey(Schema.String),
+  file: Schema.optionalKey(Schema.String),
+  /** The command that re-ran it alone. */
+  repro: Schema.optionalKey(Schema.String),
+  /** The test is in the card's own change. */
+  inDiff: Schema.optionalKey(Schema.Boolean),
 });
 export type BoardCiFixIssueReport = typeof BoardCiFixIssueReport.Type;
 
 /** `fixed` re-runs every CI step; `cannot-fix` (or the older `return-to-review`) stops the
-    card for a human with `finding` saying why. An issue left out of `issues` reads resolved
-    under `fixed` and open otherwise. */
+    card for a human with `finding` saying why; `flaky` says every failure passed when re-run
+    alone, so the pass carries on. An issue left out of `issues` reads resolved under `fixed`
+    and open otherwise. */
 export const BoardCiFixPayload = Schema.Struct({
-  verdict: Schema.Literals(["fixed", "cannot-fix", "return-to-review"]),
+  verdict: Schema.Literals(["fixed", "cannot-fix", "return-to-review", "flaky"]),
   finding: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   issues: Schema.optionalKey(Schema.Array(BoardCiFixIssueReport)),
   fixedSha: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -10635,7 +11276,7 @@ export const BoardCiFixPayload = Schema.Struct({
 export type BoardCiFixPayload = typeof BoardCiFixPayload.Type;
 
 export const BOARD_CI_FIX_PAYLOAD_SHAPE =
-  '{ "verdict": "fixed" | "cannot-fix", "issues": [{ "id": string, "status": "resolved" | "cannot-fix", "note"?: string }], "fixedSha"?: string, "finding": string }';
+  '{ "verdict": "fixed" | "cannot-fix" | "flaky", "issues": [{ "id": string, "status": "resolved" | "cannot-fix" | "flaky", "note"?: string, "title"?: string, "file"?: string, "repro"?: string, "inDiff"?: boolean }], "fixedSha"?: string, "finding": string }';
 
 /** The most issues one fix is handed; the rest roll into a last issue. */
 export const BOARD_CI_MAX_FIX_ISSUES = 30;
@@ -10665,7 +11306,8 @@ export function boardCiFixIssues(
   for (const [stepIndex, step] of steps.entries()) {
     if (!isBoardCiStepFailure(step.status)) continue;
     const failures = step.result?.failures ?? [];
-    if (failures.length === 0) {
+    // Flagged flakes aren't the fix's to touch (T3O-126); the rest keep their numbering.
+    if (failures.every((failure) => failure.flaky === true)) {
       all.push({
         id: `s${stepIndex}`,
         stepIndex,
@@ -10675,6 +11317,7 @@ export function boardCiFixIssues(
       continue;
     }
     for (const [n, failure] of failures.entries()) {
+      if (failure.flaky === true) continue;
       all.push({
         id: `s${stepIndex}-${n + 1}`,
         stepIndex,
@@ -10702,7 +11345,7 @@ export function boardCiFixIssues(
   ];
 }
 
-export type BoardCiFixIssueStatus = "open" | "resolved" | "cannot-fix";
+export type BoardCiFixIssueStatus = "open" | "resolved" | "cannot-fix" | "flaky";
 
 /** Each issue's status for display. A reported status wins; an issue
     the report leaves out reads resolved under `fixed` and open otherwise.
@@ -12254,8 +12897,8 @@ export const DEFAULT_BOARD_SYNC_PHASE_PROMPT = `This card's base branch has adva
 export const BoardStepExecution = Schema.Struct({
   prompt: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   model: Schema.NullOr(BoardModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  /** Unset means the mode-based default `resolveBoardStageExecution` fills: `auto` in build
-      mode, `approval-required` otherwise. A value the user picked is honoured verbatim. */
+  /** Unset means `auto`, filled by `resolveBoardStageExecution`. A value the user picked is
+      honoured verbatim. */
   runtimeMode: Schema.optional(RuntimeMode),
   timeoutMs: PositiveInt.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_STEP_TIMEOUT_MS)),
@@ -12393,8 +13036,8 @@ export const BoardStageExecutionSimple = Schema.Struct({
   autoExecute: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   prompt: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   model: Schema.NullOr(BoardModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  /** Unset means the mode-based default `resolveBoardStageExecution` fills: `auto` in build
-      mode, `approval-required` otherwise. A value the user picked is honoured verbatim. */
+  /** Unset means `auto`, filled by `resolveBoardStageExecution`. A value the user picked is
+      honoured verbatim. */
   runtimeMode: Schema.optional(RuntimeMode),
   mode: BoardStageMode.pipe(Schema.withDecodingDefault(Effect.succeed("plan" as const))),
   humanInLoop: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -12450,8 +13093,8 @@ export const BoardStageExecutionReview = Schema.Struct({
   autoExecute: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   prompt: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   model: Schema.NullOr(BoardModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  /** Unset means the mode-based default `resolveBoardStageExecution` fills: `auto` in build
-      mode, `approval-required` otherwise. A value the user picked is honoured verbatim. */
+  /** Unset means `auto`, filled by `resolveBoardStageExecution`. A value the user picked is
+      honoured verbatim. */
   runtimeMode: Schema.optional(RuntimeMode),
   mode: BoardStageMode.pipe(Schema.withDecodingDefault(Effect.succeed("build" as const))),
   humanInLoop: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -12569,6 +13212,24 @@ export const RETIRED_BOARD_MERGE_CONFLICT_PROMPTS: ReadonlyArray<string> = [
  */
 export const DEFAULT_BOARD_CHECKS_FIX_PROMPT =
   "This card's pull request cannot merge because its CI checks are failing. Find out why: read the failing checks and their logs (`gh pr checks` and `gh run view --log-failed` on GitHub, or the equivalent for this repository's forge). Fix the cause in this card's branch, then run the project's own checks and tests and fix what they catch. Merge the base branch in only if the failure actually needs it. Then commit and push normally. Do NOT rebase, do NOT force-push, and do NOT convert the pull request back to a draft: a push to a ready pull request re-runs CI, which is exactly what has to happen next. If the failure is flaky, an infrastructure problem, or unrelated to this branch's changes, do not guess at a fix. Stop and say so.";
+
+/**
+ * T3o: appended to the conflict-fix and branch-update prompts, edited or not, so a fix keeps up
+ * with a base that moves while it runs (T3O-128). Compiled in, not editable.
+ */
+export const BOARD_MERGE_BASE_FIX_PROMPT_SEGMENT =
+  "Before you push and finish, fetch the base branch again. If it moved while you worked, merge it in again and resolve any new conflicts the same way, and repeat until the branch is up to date with its base. If the branch already merges cleanly with its base, finish without changes. If you are told mid-run that the base moved, do the same before finishing.";
+
+/** T3o: the handoff a follow-up fix gets when the base moved under the last one (T3O-128). */
+export const BOARD_MERGE_BASE_FOLLOW_UP_HANDOFF =
+  "An earlier fix on this branch may already have merged in part of the base; merge in what the base has gained since, and resolve only the conflicts that brings.";
+
+/**
+ * Compiled in for the same reason: it starts only when the forge refuses a merge solely because
+ * the branch is behind its base, once per stay in the merge stage (T3O-116).
+ */
+export const DEFAULT_BOARD_BRANCH_UPDATE_PROMPT =
+  "This card's pull request cannot merge because its branch is behind the base branch and the repository requires it to be up to date. There are no known conflicts. Merge the base branch into this card's branch. If the merge does conflict after all, resolve each conflict on the merits: read enough of both sides to understand what each change was for and keep the intent of both, never discarding one side to make the merge go through. Then run the project's own checks and tests and fix what the merge broke. Commit and push normally. Do NOT rebase, and do NOT force-push under any circumstances: this branch has an open pull request, and rewriting its history strands the review comments anchored to it and can destroy work someone else pushed. If a conflict needs a decision you cannot make from the code alone, stop and say so rather than guessing.";
 
 /**
  * `autoExecute` is forced off: the only agent run this stage starts is the conflict fix, after
@@ -12696,7 +13357,7 @@ export const DEFAULT_BOARD_CI_FIX_PROMPT =
   "This card must pass the project's CI steps to become ready for merge. Fix every failure CI reported, commit and push.";
 
 /** The fix attempts one CI entry allows before the card stops for a human. */
-export const DEFAULT_BOARD_CI_MAX_FIX_ATTEMPTS = 3;
+export const DEFAULT_BOARD_CI_MAX_FIX_ATTEMPTS = 5;
 
 /** CI failure round trips allowed before the card stops for a human.
     Unused since CI stopped sending cards back by itself; kept so
@@ -12910,7 +13571,7 @@ export const BoardSettings = Schema.Struct({
   lifecycle: BoardLifecycleSettings.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
-        reclaimWorktreeOnDone: DEFAULT_BOARD_RECLAIM_WORKTREE_ON_DONE,
+        worktreeAtDone: DEFAULT_BOARD_WORKTREE_AT_DONE,
         autoArchiveDone: DEFAULT_BOARD_AUTO_ARCHIVE_DONE,
         autoArchiveAfterDays: DEFAULT_BOARD_AUTO_ARCHIVE_AFTER_DAYS,
       }),
@@ -12937,11 +13598,34 @@ export const DEFAULT_BOARD_SETTINGS: BoardSettings = Schema.decodeSync(BoardSett
 // deleted. So clearing an override is a retained entry of nulls (`{ keyPrefix: null }`, a
 // `null` cap), which the resolvers read as "use the default", never an omitted key.
 
-export const BoardLifecycleSettingsPatch = Schema.Struct({
-  reclaimWorktreeOnDone: Schema.optionalKey(Schema.Boolean),
+const BoardLifecycleSettingsPatchType = Schema.Struct({
+  worktreeAtDone: Schema.optionalKey(BoardWorktreeAtDone),
   autoArchiveDone: Schema.optionalKey(Schema.Boolean),
   autoArchiveAfterDays: Schema.optionalKey(PositiveInt),
 });
+
+/** Still accepts the legacy `reclaimWorktreeOnDone` boolean from out-of-date web clients,
+    mapped to `worktreeAtDone` so it lands on the key the server reads. */
+export const BoardLifecycleSettingsPatch = Schema.Struct({
+  worktreeAtDone: Schema.optionalKey(BoardWorktreeAtDone),
+  reclaimWorktreeOnDone: Schema.optionalKey(Schema.Boolean),
+  autoArchiveDone: Schema.optionalKey(Schema.Boolean),
+  autoArchiveAfterDays: Schema.optionalKey(PositiveInt),
+}).pipe(
+  Schema.decodeTo(
+    BoardLifecycleSettingsPatchType,
+    SchemaTransformation.transform<
+      typeof BoardLifecycleSettingsPatchType.Type,
+      typeof BoardLifecycleSettingsPatchType.Type & { readonly reclaimWorktreeOnDone?: boolean }
+    >({
+      decode: ({ worktreeAtDone, reclaimWorktreeOnDone, ...rest }) => {
+        const mode = boardWorktreeAtDoneFrom({ worktreeAtDone, reclaimWorktreeOnDone });
+        return mode === undefined ? rest : { ...rest, worktreeAtDone: mode };
+      },
+      encode: (patch) => patch,
+    }),
+  ),
+);
 export type BoardLifecycleSettingsPatch = typeof BoardLifecycleSettingsPatch.Type;
 
 export const BoardDisplaySettingsPatch = Schema.Struct({
@@ -12979,14 +13663,13 @@ export type BoardSettingsPatch = typeof BoardSettingsPatch.Type;
  * through, keeping the user's rounds and per-phase edits.
  */
 /**
- * Honours the user's pick, else `auto` in build mode and `approval-required` in plan mode,
- * which runs in the shared project root. The board never forces `full-access`.
+ * Honours the user's pick, else `auto`, Planning included (T3O-115): an unattended planning run
+ * must not wait on approvals, and its envelope forbids changing the shared project root. A
+ * custom plan-mode stage has no such guard and defaults to `approval-required` in
+ * `resolveBoardStageExecution`. The board never forces `full-access`.
  */
-export function effectiveBoardRuntimeMode(
-  runtimeMode: RuntimeMode | undefined,
-  mode: BoardStageMode,
-): RuntimeMode {
-  return runtimeMode ?? (mode === "build" ? "auto" : "approval-required");
+export function effectiveBoardRuntimeMode(runtimeMode: RuntimeMode | undefined): RuntimeMode {
+  return runtimeMode ?? "auto";
 }
 
 /** Whether board-wide auto-merge is on: the merge-role stage's own
@@ -13185,7 +13868,7 @@ export function resolveBoardStageExecution(
       ...base,
       mode: "build",
       humanInLoop: false,
-      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode, "build"),
+      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode),
     };
   }
   if (stageId === BOARD_SEED_STAGE_IDS.merge) {
@@ -13205,7 +13888,7 @@ export function resolveBoardStageExecution(
         : base.prompt,
       autoExecute: false,
       mode: "build",
-      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode, "build"),
+      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode),
     };
   }
   if (stageId === BOARD_SEED_STAGE_IDS.building) {
@@ -13227,7 +13910,7 @@ export function resolveBoardStageExecution(
       ...base,
       mode: "build",
       humanInLoopWithPlan: false,
-      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode, "build"),
+      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode),
     };
   }
   if (stageId === BOARD_SEED_STAGE_IDS.ci) {
@@ -13247,7 +13930,7 @@ export function resolveBoardStageExecution(
       humanInLoopWithPlan: false,
       humanInLoopWithoutPlan: false,
       autoAdvance: true,
-      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode, "build"),
+      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode),
     };
   }
   // Planning always runs read-only and human-in-the-loop, with the retired pause-on-plan
@@ -13266,7 +13949,7 @@ export function resolveBoardStageExecution(
       mode: "plan",
       humanInLoop: true,
       humanInLoopWithPlan: false,
-      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode, "plan"),
+      runtimeMode: effectiveBoardRuntimeMode(base.runtimeMode),
     };
   }
   const resolved = applyBoardStageExecutionPatch(
@@ -13275,7 +13958,9 @@ export function resolveBoardStageExecution(
   );
   return {
     ...resolved,
-    runtimeMode: effectiveBoardRuntimeMode(resolved.runtimeMode, resolved.mode),
+    // Only Planning carries the plan root guard, so another plan-mode stage, which shares the
+    // project root, still waits on approvals unless the user picked a mode.
+    runtimeMode: resolved.runtimeMode ?? (resolved.mode === "build" ? "auto" : "approval-required"),
   };
 }
 
@@ -13613,4 +14298,12 @@ export function assignBoardKeyPrefix(input: {
 /** Whether a project (and its cards) is hidden from the board view. */
 export function isBoardProjectHidden(board: BoardSettings, projectId: ProjectId): boolean {
   return board.projects[projectId]?.hidden ?? false;
+}
+
+/** T3o (T3O-124): whether the board owner trusts a project to run its readiness script. */
+export function boardProjectTrustsReadinessScript(
+  board: Pick<BoardSettings, "projects">,
+  projectId: string,
+): boolean {
+  return board.projects[projectId as ProjectId]?.trustReadinessScript ?? false;
 }

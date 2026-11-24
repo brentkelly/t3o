@@ -100,6 +100,14 @@ import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { useNowSecond } from "../hooks/useNowSecond";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { Fragment, Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
+import type { BoardCardDetailsStatus } from "./boardCardDetailsStatus";
+import {
+  BoardCardDetailsButton,
+  BoardCardDetailsScrim,
+  BoardCardDetailsSheetHeader,
+  boardCardDetailsSheetClass,
+  useBoardCardDetailsSheet,
+} from "./BoardCardDetailsSheet";
 
 import { BoardCardNavRails, useBoardCardNavKeys, type BoardCardNav } from "./BoardCardNavRails";
 import { useBoardUiStore } from "./boardUiStore";
@@ -214,6 +222,7 @@ import { deriveBoardUsageBreakdown } from "./usage/boardUsageBreakdown";
 import type { BoardSummarySectionId } from "./boardSummaryOverview";
 import { BoardPopoverPopup } from "./ui/BoardPopoverPopup";
 import { BoardSheetPopup } from "./ui/BoardDialog";
+import type { BoardCiSkipStepHandler } from "./BoardCardCiPane";
 
 const providerDisabledWords = boardStalledWords("provider-disabled-for-project", null, undefined);
 
@@ -464,6 +473,8 @@ export interface BoardCardDetailGroup {
 
 export interface BoardCardDetailViewProps {
   readonly environmentId: EnvironmentId;
+  /** T3o (T3O-134): what the phone Details button says while the sheet is closed. */
+  readonly detailsStatus?: BoardCardDetailsStatus | null | undefined;
   /** Why the live step stalled, from the card's shell (drives the
       provider-stall panels). */
   readonly stalledReason?: BoardCardStepStalledReason | undefined;
@@ -619,6 +630,8 @@ export interface BoardCardDetailViewProps {
   readonly onRetryCi?: (() => void) | undefined;
   /** Stop CI on a queued, running or fixing pass. */
   readonly onStopCi?: (() => void) | undefined;
+  /** T3o (T3O-130): skip, mark or unmark one step of a queued or running pass. */
+  readonly onSkipCiStep?: BoardCiSkipStepHandler | undefined;
   readonly onCiSendBack?: (() => void) | undefined;
   /** A Skip CI request is in flight. */
   readonly skipCiPending?: boolean | undefined;
@@ -640,6 +653,8 @@ export interface BoardCardDetailViewProps {
       by the container, which holds both the shell flag and the pull request's
       base branch. */
   readonly conflictFix: BoardConflictFixInfo | null;
+  /** T3o: waiting its turn in its base's merge queue (T3O-128). */
+  readonly mergeQueued?: boolean | undefined;
   /** The shell's `held`, ranked by `boardCardAttention` — the build stage's
       forward button appears only on it. */
   readonly stepHeld?: boolean;
@@ -841,10 +856,13 @@ function TitleBody({
   title,
   done,
   onSave,
+  clamp = false,
 }: {
   readonly title: string;
   readonly done: boolean;
   readonly onSave: (title: string) => void;
+  /** T3o (T3O-134): two lines at most on a phone, so the thread keeps the screen. */
+  readonly clamp?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -854,7 +872,7 @@ function TitleBody({
     setEditing(false);
   };
   const frame =
-    "mx-2.5 mt-2 shrink-0 rounded-board-7 px-1.5 text-board-21/tight font-semibold tracking-board-n1-5 text-pretty text-foreground";
+    "mx-2.5 mt-2 shrink-0 rounded-board-7 px-1.5 text-board-21/tight font-semibold tracking-board-n1-5 text-pretty text-foreground max-sm:text-board-17/tight";
   if (editing) {
     return (
       <h2 className={cn(frame, "flex bg-muted shadow-board-ring-primary")} id={CARD_TITLE_ID}>
@@ -885,7 +903,7 @@ function TitleBody({
     <h2 className={cn(frame, "cursor-text hover:bg-accent")} id={CARD_TITLE_ID}>
       <BoardHint label="Click to edit">
         <button
-          className="block w-full cursor-text text-left"
+          className={cn("block w-full cursor-text text-left", clamp && "max-sm:line-clamp-2")}
           onClick={() => {
             setDraft(title);
             setEditing(true);
@@ -1208,7 +1226,7 @@ function QueueSection({ props }: { readonly props: BoardCardDetailViewProps }) {
           {/* A card waiting for its worker's checkout has no limit to start
               past: nothing can run until the clone lands. */}
           {props.onQueueForceStart === undefined || info.waitingForCheckout === true ? null : (
-            <BoardHint label={forceStartHint(requested)}>
+            <BoardHint label={info.forceStartHint ?? forceStartHint(requested)}>
               <button
                 className={cn(
                   "inline-flex h-[28px] items-center justify-center gap-1.5 rounded-lg border border-primary bg-primary px-2.5 text-board-12 font-medium text-primary-foreground shadow-xs hover:bg-primary/90",
@@ -1933,8 +1951,11 @@ function ActionsSection({
   const actionContext = {
     pullRequestState: pullRequest?.state ?? null,
     pullRequestNumber: pullRequest?.number ?? null,
-    conflictFixLive: props.conflictFix !== null,
-    conflictFixReason: props.conflictFix?.mergeDisabledReason ?? null,
+    // T3o: a card waiting in the merge queue cannot merge until its turn (T3O-128).
+    conflictFixLive: props.conflictFix !== null || props.mergeQueued === true,
+    conflictFixReason:
+      props.conflictFix?.mergeDisabledReason ??
+      (props.mergeQueued === true ? "Waiting in the merge queue" : null),
     stepHeld: props.stepHeld === true,
     hasBranch: card.worktree !== null,
     blocked: card.blocked,
@@ -2632,22 +2653,22 @@ function PaneTabs({
 }) {
   const pill = (active: boolean) =>
     cn(
-      "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-board-7 px-2.5 text-board-11-5",
+      "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-board-7 px-2.5 text-board-11-5 max-sm:h-9 max-sm:px-3 max-sm:text-board-13",
       active
         ? "bg-card font-medium text-foreground shadow-board-ring-border"
         : "text-muted-foreground hover:text-foreground",
     );
   const tab = (value: BoardCardPane) => pill(pane === value);
   return (
-    <div className="flex shrink-0 items-center gap-0.5 rounded-board-9 bg-accent p-0.5">
+    <div className="flex shrink-0 items-center gap-0.5 rounded-board-9 bg-accent p-0.5 max-sm:min-w-0 max-sm:shrink max-sm:overflow-x-auto max-sm:[scrollbar-width:none]">
       <button className={tab("thread")} onClick={() => onSelect("thread")} type="button">
-        <MessageSquareIcon className="size-3" />
+        <MessageSquareIcon className="size-3 max-sm:hidden" />
         Thread
       </button>
       {hasPlanning ? (
         <BoardHint label="The thread that planned this group">
           <button className={tab("planning")} onClick={() => onSelect("planning")} type="button">
-            <MessageSquareTextIcon className="size-3" />
+            <MessageSquareTextIcon className="size-3 max-sm:hidden" />
             Planning
           </button>
         </BoardHint>
@@ -2655,7 +2676,7 @@ function PaneTabs({
       {hasReview ? (
         <BoardHint label="Adversarial review loop">
           <button className={tab("review")} onClick={() => onSelect("review")} type="button">
-            <RefreshCcwIcon className="size-3" />
+            <RefreshCcwIcon className="size-3 max-sm:hidden" />
             Review
           </button>
         </BoardHint>
@@ -2663,7 +2684,7 @@ function PaneTabs({
       {hasCi ? (
         <BoardHint label={ciLive ? "Continuous integration · running" : "Continuous integration"}>
           <button className={tab("ci")} onClick={() => onSelect("ci")} type="button">
-            <ListChecksIcon className="size-3" />
+            <ListChecksIcon className="size-3 max-sm:hidden" />
             CI
             {ciLive ? (
               <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-info" />
@@ -2674,20 +2695,24 @@ function PaneTabs({
       {hasSummary ? (
         <BoardHint label="How this card's work went">
           <button className={tab("summary")} onClick={() => onSelect("summary")} type="button">
-            <ListChecksIcon className="size-3" />
+            <ListChecksIcon className="size-3 max-sm:hidden" />
             Summary
           </button>
         </BoardHint>
       ) : null}
       {hasPlan ? (
         <button className={tab("plan")} onClick={() => onSelect("plan")} type="button">
-          {planCount === null ? <FileIcon className="size-3" /> : <LayersIcon className="size-3" />}
+          {planCount === null ? (
+            <FileIcon className="size-3 max-sm:hidden" />
+          ) : (
+            <LayersIcon className="size-3 max-sm:hidden" />
+          )}
           {plansLabel ??
             (planCount === null ? "Plan" : `${planCount} ${planCount === 1 ? "plan" : "plans"}`)}
         </button>
       ) : null}
       <button className={tab("brief")} onClick={() => onSelect("brief")} type="button">
-        <FileTextIcon className="size-3" />
+        <FileTextIcon className="size-3 max-sm:hidden" />
         Brief
       </button>
     </div>
@@ -2750,6 +2775,7 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [mergeStrategyOpen, setMergeStrategyOpen] = useState(false);
+  const detailsSheet = useBoardCardDetailsSheet();
   const onSetMergeStrategy = props.onSetMergeStrategy;
   const mergeStrategy = boardCardMergeStrategyView({
     card,
@@ -3067,7 +3093,9 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
       {/* Identity row: key, the card's labels, its stage. `relative z-10` lifts
           it (and the × / ⋯ / fullscreen buttons it carries) above the nav
           rails' band, which would otherwise sit over them. */}
-      <div className="relative z-10 flex shrink-0 items-start gap-2.25 px-4 pt-4">
+      {/* T3o (T3O-134): on a phone the chips, ⋯ and × share the first line and the tabs
+          take their own, so the right-hand group dissolves into the row. */}
+      <div className="relative z-10 flex shrink-0 items-start gap-2.25 px-4 pt-4 max-sm:flex-wrap max-sm:items-center max-sm:gap-y-2 max-sm:px-3 max-sm:pt-board-card-safe">
         {/* The key and its chips wrap onto a second line rather than pushing
             the tabs and the kebab off a narrow modal. */}
         <div className="flex min-h-7 min-w-0 flex-1 flex-wrap items-center gap-x-2.25 gap-y-1.5">
@@ -3206,26 +3234,29 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
             </BoardHint>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2.25">
-          <PaneTabs
-            ciLive={inCi && isBoardCiLive(card.ci)}
-            hasCi={hasCi}
-            hasPlan={hasPlan}
-            hasReview={hasReview}
-            hasSummary={hasSummary}
-            onSelect={setPane}
-            hasPlanning={planningLink !== undefined}
-            pane={activePane}
-            planCount={planRows === null ? null : planRows.rows.length}
-            plansLabel={group === null || planRows === null ? null : "Cards"}
-          />
+        <div className="flex shrink-0 items-center gap-2.25 max-sm:contents">
+          <div className="contents max-sm:order-last max-sm:flex max-sm:min-w-0 max-sm:basis-full max-sm:items-center max-sm:justify-between max-sm:gap-1">
+            <PaneTabs
+              ciLive={inCi && isBoardCiLive(card.ci)}
+              hasCi={hasCi}
+              hasPlan={hasPlan}
+              hasReview={hasReview}
+              hasSummary={hasSummary}
+              onSelect={setPane}
+              hasPlanning={planningLink !== undefined}
+              pane={activePane}
+              planCount={planRows === null ? null : planRows.rows.length}
+              plansLabel={group === null || planRows === null ? null : "Cards"}
+            />
+            <BoardCardDetailsButton sheet={detailsSheet} status={props.detailsStatus ?? null} />
+          </div>
           <Menu>
             <MenuTrigger
               aria-label="More actions"
               title="More actions"
               render={
                 <button
-                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground max-sm:size-11"
                   type="button"
                 />
               }
@@ -3334,7 +3365,7 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
           <BoardHint label="Close">
             <button
               aria-label="Close"
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground max-sm:size-11"
               onClick={props.onClose}
               type="button"
             >
@@ -3344,7 +3375,12 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
         </div>
       </div>
 
-      <TitleBody done={done} onSave={props.onSaveTitle} title={card.title} />
+      <TitleBody
+        clamp={wide && activePane === "thread"}
+        done={done}
+        onSave={props.onSaveTitle}
+        title={card.title}
+      />
 
       {/* One insertion above the layout split covers both forms. Only
           the wide one offers `View thread`: the narrow layout has no thread
@@ -3376,7 +3412,7 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
       )}
 
       {wide ? (
-        <div className="mt-3 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_336px] border-t border-border">
+        <div className="mt-3 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_336px] border-t border-border max-sm:grid-cols-1">
           {activePane === "brief" ? (
             <section className="flex min-h-0 min-w-0 flex-col border-r border-border bg-muted/55">
               <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border pl-3.5 pr-3">
@@ -3460,6 +3496,7 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
                 onSkipCi={props.onSkipCi}
                 onRetryCi={props.onRetryCi}
                 onStopCi={props.onStopCi}
+                onSkipStep={props.onSkipCiStep}
                 onSendBack={props.onCiSendBack}
                 passes={props.detail.ciPasses}
                 completions={props.detail.stepCompletions}
@@ -3620,8 +3657,19 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
             </Suspense>
           )}
 
-          {/* The rail: everything about the card that is not the conversation. */}
-          <div className="flex min-h-0 flex-col overflow-y-auto [&>*:first-child]:border-t-0">
+          {/* The rail: everything about the card that is not the conversation. On a
+              phone it is the Details sheet. */}
+          <BoardCardDetailsScrim sheet={detailsSheet} />
+          <div
+            aria-label="Card details"
+            className={cn(
+              "flex min-h-0 flex-col overflow-y-auto [&>*:nth-child(2)]:border-t-0",
+              boardCardDetailsSheetClass(detailsSheet.open),
+            )}
+            id={detailsSheet.sheetId}
+            role="region"
+          >
+            <BoardCardDetailsSheetHeader sheet={detailsSheet} />
             {group === null || groupUsesCardActions ? (
               <ActionsSection
                 group={group}
@@ -3663,15 +3711,25 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
             ) : null}
             <RailSections
               group={group}
-              onOpenCi={hasCi ? () => setPane("ci") : undefined}
-              onOpenThread={selectThread}
+              onOpenCi={
+                hasCi
+                  ? () => {
+                      detailsSheet.setOpen(false);
+                      setPane("ci");
+                    }
+                  : undefined
+              }
+              onOpenThread={(threadId) => {
+                detailsSheet.setOpen(false);
+                selectThread(threadId);
+              }}
               props={props}
             />
           </div>
         </div>
       ) : (
         <div className="mt-3 flex min-h-0 flex-[0_1_auto] flex-col overflow-y-auto border-t border-border">
-          <div className="flex items-stretch">
+          <div className="flex items-stretch max-sm:flex-col">
             {/* ── Left: what the card is ─────────────────────────────── */}
             <div className="flex min-w-0 flex-1 flex-col gap-4.5 px-5 pt-4 pb-5">
               {props.stepFailure !== null ? (
@@ -3723,7 +3781,17 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
             </div>
 
             {/* ── Right: what you can do with it ──────────────────────── */}
-            <div className="flex w-[244px] shrink-0 flex-col border-l border-border [&>*:first-child]:border-t-0">
+            <BoardCardDetailsScrim sheet={detailsSheet} />
+            <div
+              aria-label="Card details"
+              className={cn(
+                "flex w-[244px] shrink-0 flex-col border-l border-border [&>*:nth-child(2)]:border-t-0",
+                boardCardDetailsSheetClass(detailsSheet.open),
+              )}
+              id={detailsSheet.sheetId}
+              role="region"
+            >
+              <BoardCardDetailsSheetHeader sheet={detailsSheet} />
               {group === null || groupUsesCardActions ? (
                 <ActionsSection
                   group={group}
@@ -3737,8 +3805,18 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
               <PlanReviewSection key={props.detail.card.id} props={props} />
               <RailSections
                 group={group}
-                onOpenCi={hasCi ? () => setPane("ci") : undefined}
-                onOpenThread={selectThread}
+                onOpenCi={
+                  hasCi
+                    ? () => {
+                        detailsSheet.setOpen(false);
+                        setPane("ci");
+                      }
+                    : undefined
+                }
+                onOpenThread={(threadId) => {
+                  detailsSheet.setOpen(false);
+                  selectThread(threadId);
+                }}
                 props={props}
               />
             </div>
@@ -3841,6 +3919,9 @@ export function BoardCardDetailPopup({
         // `group/sheet` is what the nav rails watch: they reveal on hover of
         // the whole sheet, not of their own invisible band.
         "group/sheet overflow-hidden",
+        // T3o (T3O-134): full-screen on a phone, maximised or not; `dvh` keeps the composer
+        // above the iOS toolbar, and a narrow Electron window clears its titlebar.
+        "max-sm:h-dvh max-sm:max-h-dvh max-sm:w-full max-sm:max-w-none max-sm:border-t-0 max-sm:wco:pt-(--native-titlebar-height)",
         maximised
           ? null
           : wide
@@ -3852,6 +3933,7 @@ export function BoardCardDetailPopup({
       )}
       maximised={maximised}
       ref={setSheet}
+      viewportClassName="max-sm:pt-0"
       {...(cardId === null ? {} : { "data-board-card-detail": cardId })}
     >
       {children}

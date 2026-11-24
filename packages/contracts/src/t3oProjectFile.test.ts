@@ -17,7 +17,9 @@ import {
   boardProjectDeltasEqual,
   boardProjectFirstStageId,
   boardProjectStagesInOrder,
+  describeScheduleWhen,
   isBoardReviewStageExecution,
+  ScheduledTaskUpsertSchedule,
   normalizeBoardProjectDelta,
   resolveBoardStageExecution,
   withBoardProjectConfigVersion,
@@ -320,9 +322,115 @@ describe("export", () => {
       stages: { remove: ["sprint"] },
       ci: { enabled: true },
     });
+    // T3o (T3O-129): the board's load-sensitive list is never exported.
+    const listed = {
+      ...config,
+      loadSensitive: [
+        {
+          key: "a › b",
+          file: "a",
+          title: "b",
+          lastFlakedAt: "2026-11-01T00:00:00.000Z",
+          cardKey: "T3O-1",
+          flakes: 1,
+          lastRunId: "run",
+        },
+      ],
+    };
+    expect(buildT3oProjectFile({ board, config: listed })).toEqual(file);
     const back = resolve(JSON.parse(JSON.stringify(file)), board);
     expect(back.createStages).toEqual([]);
     expect(boardProjectDeltasEqual(back.delta, config)).toBe(true);
+  });
+
+  it("parses each readiness check kind and drops what it can't use, with warnings (T3O-124)", () => {
+    const checks = [
+      { command: "cmake", fix: "sudo apt install cmake", os: ["linux"] },
+      { command: "node", version: { from: "./.node-version" } },
+      { command: "pnpm", version: { atLeast: 10 }, warn: true },
+      { rustToolchain: "rust-toolchain.toml" },
+      { cargoConfig: { contains: "rustc-slot" } },
+      { exists: "$PLAYWRIGHT_BROWSERS_PATH/chromium-*" },
+      { exists: "~/.local/state/seed/refresh.log", maxAgeHours: 3, warn: true },
+      { env: "ANDROID_HOME" },
+      { docker: { plugins: ["compose", "buildx"], loggedIn: ["ghcr.io"] } },
+      { git: "identity" },
+      { git: "push", name: "push \u001b[31maccess\u0007" },
+      { gh: "github.com" },
+      { writable: "$TMPDIR" },
+      { command: "mytool", version: { atLeast: "1" } },
+      // Dropped:
+      { kubectl: "context" },
+      { command: "node", git: "fetch" },
+      { command: "../bin/node" },
+      { command: "-rf" },
+      { command: "x".repeat(65) },
+      { exists: "~/.cache/**/chromium" },
+      { exists: "src/*.ts" },
+      { exists: "~/a/../../etc" },
+      { exists: "~/*/x" },
+      { exists: "/opt/*/*/*/bin" },
+      { exists: "$SECRET_DIR/x" },
+      { writable: "build" },
+      { git: "pull" },
+      { command: "node", version: { atLeast: "10", from: "package.json" } },
+      { command: "node", version: { from: "../package.json" } },
+      { command: "node", version: { from: "notes.txt" } },
+      { docker: { plugins: ["--host=x"] } },
+      { docker: { plugins: [], loggedIn: ["-x"] } },
+      { gh: "--hostname" },
+      { command: "node", os: ["plan9"] },
+      { rustToolchain: "/etc/rust-toolchain" },
+    ];
+    const back = resolve({
+      resources: { readiness: { checks, path: ".t3/ready.sh", future: true } },
+    });
+    expect(back.delta.resources?.readinessChecks).toEqual([
+      { command: "cmake", fix: "sudo apt install cmake", os: ["linux"] },
+      { command: "node", version: { from: ".node-version" } },
+      { command: "pnpm", version: { atLeast: "10" }, warn: true },
+      { rustToolchain: "rust-toolchain.toml" },
+      { cargoConfig: { contains: "rustc-slot" } },
+      { exists: "$PLAYWRIGHT_BROWSERS_PATH/chromium-*" },
+      { exists: "~/.local/state/seed/refresh.log", maxAgeHours: 3, warn: true },
+      { env: "ANDROID_HOME" },
+      { docker: { plugins: ["compose", "buildx"], loggedIn: ["ghcr.io"] } },
+      { git: "identity" },
+      { git: "push", name: "push access" },
+      { gh: "github.com" },
+      { writable: "$TMPDIR" },
+      // A version t3o can't ask for warns and becomes an existence check.
+      { command: "mytool" },
+    ]);
+    const warnings = back.delta.warnings.join("\n");
+    expect(warnings).toContain("resources.readiness.future: unknown key");
+    expect(warnings).toContain("checks[13].version: t3o doesn't know how to ask mytool");
+    expect(warnings).toContain("checks[14]: not a check this board knows");
+    expect(warnings).toContain("checks[15]: names more than one check");
+    for (let index = 16; index < checks.length; index++) {
+      expect(warnings).toContain(`checks[${index}]`);
+    }
+    // More than 50 checks warn: the rest are reported as not run.
+    const many = resolve({
+      resources: { readiness: { checks: Array.from({ length: 60 }, () => ({ git: "fetch" })) } },
+    });
+    expect(many.delta.warnings.join("\n")).toContain("more than 50 checks");
+    // timeoutSeconds is clamped to 600.
+    const slow = resolve({ resources: { readiness: { timeoutSeconds: 10 ** 9 } } });
+    expect(slow.delta.resources?.readinessTimeoutSeconds).toBe(600);
+    // An unknown field on a known check warns and is dropped; the check stays.
+    const extra = resolve({
+      resources: { readiness: { checks: [{ git: "fetch", retries: 3 }] } },
+    });
+    expect(extra.delta.resources?.readinessChecks).toEqual([{ git: "fetch" }]);
+    expect(extra.delta.warnings.join("\n")).toContain("checks[0].retries");
+    // Checks export and import back unchanged.
+    const file = buildT3oProjectFile({ board: EMPTY_BOARD_STATE, config: back.delta });
+    expect((file.resources as { readiness: { checks: unknown } }).readiness.checks).toEqual(
+      back.delta.resources?.readinessChecks,
+    );
+    const again = resolve(JSON.parse(JSON.stringify(file)));
+    expect(boardProjectDeltasEqual(again.delta, back.delta)).toBe(true);
   });
 
   it("round-trips the project's resources, and drops a bad entry with a warning (T3O-86)", () => {
@@ -338,6 +446,7 @@ describe("export", () => {
       setupTimeoutMinutes: 20,
       readinessPath: null,
       readinessTimeoutSeconds: 60,
+      readinessChecks: [],
     });
     expect(back.delta.warnings.join("\n")).toContain("resources.readiness.path");
     const file = buildT3oProjectFile({
@@ -365,6 +474,23 @@ describe("export", () => {
       ),
     );
     expect(boardProjectDeltasEqual(exported.delta, upgraded)).toBe(true);
+  });
+
+  it("round-trips the CI reservation and under-load threshold; absent stays absent (T3O-127)", () => {
+    const back = resolve({ resources: { ciCpuCores: 8, ciLoadThreshold: 60 } });
+    expect(back.delta.resources).toMatchObject({ ciCpuCores: 8, ciLoadThreshold: 60 });
+    const file = buildT3oProjectFile({ board: EMPTY_BOARD_STATE, config: back.delta });
+    expect(file.resources).toEqual({ ciCpuCores: 8, ciLoadThreshold: 60 });
+    const exported = resolve(JSON.parse(JSON.stringify(file)));
+    expect(boardProjectDeltasEqual(exported.delta, back.delta)).toBe(true);
+    const bad = resolve({ resources: { ciCpuCores: -1, ciLoadThreshold: 101 } });
+    expect(bad.delta.resources).not.toHaveProperty("ciCpuCores");
+    expect(bad.delta.resources).not.toHaveProperty("ciLoadThreshold");
+    expect(bad.delta.warnings.join("\n")).toContain("resources.ciCpuCores");
+    expect(bad.delta.warnings.join("\n")).toContain("resources.ciLoadThreshold");
+    expect(resolve({ resources: { setupTimeoutMinutes: 5 } }).delta.resources).not.toHaveProperty(
+      "ciLoadThreshold",
+    );
   });
 
   it("round-trips Stop on failure: absent is Yes, and only No is written (T3O-57)", () => {
@@ -719,5 +845,131 @@ describe("resolveBoardStageExecution with a project config", () => {
       delta,
     );
     expect(exec).toMatchObject({ kind: "simple", autoExecute: true, prompt: "QA it" });
+  });
+});
+
+const decodeUpsertSchedule = Schema.decodeExit(ScheduledTaskUpsertSchedule);
+
+describe("schedules (T3O-117)", () => {
+  const nightly = {
+    id: "nightly-tests",
+    title: "  Nightly full test run ",
+    schedule: { type: "fixed_time", timeOfDay: "02:00" },
+    prompt: " Run the suite. ",
+  };
+
+  it("is null when the key is absent and [] when the block is empty", () => {
+    expect(resolve({ version: 2 }).schedules).toBeNull();
+    expect(resolve({ schedules: [] }).schedules).toEqual([]);
+  });
+
+  it("trims, defaults enabled to true, and keeps freshSession: true silently", () => {
+    const resolved = resolve({ schedules: [{ ...nightly, freshSession: true }] });
+    expect(resolved.schedules).toEqual([
+      {
+        id: "nightly-tests",
+        title: "Nightly full test run",
+        schedule: { type: "fixed_time", timeOfDay: "02:00" },
+        enabled: true,
+        prompt: "Run the suite.",
+      },
+    ]);
+    expect(resolved.delta.warnings).toEqual([]);
+    expect(
+      resolve({ schedules: [{ ...nightly, freshSession: false }] }).delta.warnings.join("\n"),
+    ).toContain("false has no effect");
+  });
+
+  it.each([
+    ["a non-object entry", 3, "expected an object"],
+    ["a bad id", { ...nightly, id: "has space" }, ".id: needs letters"],
+    ["an empty title", { ...nightly, id: "b", title: "  " }, ".title: required"],
+    ["an empty prompt", { ...nightly, id: "c", prompt: "" }, ".prompt: required"],
+    [
+      "a webhook",
+      { ...nightly, id: "d", schedule: { type: "webhook", signature: null } },
+      "webhook schedules can't be declared",
+    ],
+    [
+      "a one-time run",
+      { ...nightly, id: "e", schedule: { type: "once", runAt: "2026-01-01T00:00:00Z" } },
+      "once schedules can't be declared",
+    ],
+    [
+      "an interval under a minute",
+      { ...nightly, id: "f", schedule: { type: "interval", everyMs: 1000 } },
+      ".schedule: expected",
+    ],
+    ["a repeated id", nightly, "the id is used twice"],
+  ])("drops %s with a warning and keeps the rest", (_name, entry, warning) => {
+    const resolved = resolve({ schedules: [nightly, entry] });
+    expect(resolved.schedules?.map((schedule) => schedule.id)).toEqual(["nightly-tests"]);
+    expect(resolved.delta.warnings.join("\n")).toContain(warning);
+  });
+
+  it("keeps the id of a malformed entry so an import leaves its schedule alone", () => {
+    const resolved = resolve({
+      schedules: [
+        { ...nightly, id: "typo", schedule: { type: "fixed_time", timeOfDay: "noon" } },
+        { ...nightly, id: "has space" },
+        { ...nightly, title: "" },
+        nightly,
+      ],
+    });
+    expect(resolved.schedules).toEqual([]);
+    expect(resolved.keptScheduleIds).toEqual(["typo", "nightly-tests"]);
+    expect(resolved.delta.warnings.join("\n")).toContain("the id is used twice");
+  });
+
+  it("warns about a block that is not a list", () => {
+    const resolved = resolve({ schedules: { nightly } });
+    expect(resolved.schedules).toBeNull();
+    expect(resolve({ schedules: null }).schedules).toBeNull();
+    expect(resolved.delta.warnings[0]).toContain("schedules: expected a list");
+  });
+
+  it("round-trips through export, and decodes as an upstream upsert schedule", () => {
+    const resolved = resolve({
+      schedules: [
+        nightly,
+        { ...nightly, id: "sweep", schedule: { type: "interval", everyMs: 1_800_000 } },
+        {
+          ...nightly,
+          id: "audit",
+          enabled: false,
+          schedule: { type: "fixed_time", timeOfDay: "6:30", weekdays: [1, 4] },
+        },
+      ],
+    });
+    const file = buildT3oProjectFile({
+      board: EMPTY_BOARD_STATE,
+      config: resolved.delta,
+      schedules: resolved.schedules!,
+    });
+    expect(resolve(JSON.parse(JSON.stringify(file))).schedules).toEqual(resolved.schedules);
+    for (const schedule of resolved.schedules!) {
+      expect(decodeUpsertSchedule(schedule.schedule)._tag).toBe("Success");
+    }
+    expect(
+      buildT3oProjectFile({ board: EMPTY_BOARD_STATE, config: resolved.delta }),
+    ).not.toHaveProperty("schedules");
+  });
+});
+
+describe("describeScheduleWhen", () => {
+  it.each([
+    [{ type: "interval", everyMs: 30 * 60_000 }, "Every 30 min"],
+    [{ type: "interval", everyMs: 60 * 60_000 }, "Every hour"],
+    [{ type: "interval", everyMs: 6 * 60 * 60_000 }, "Every 6 hours"],
+    [{ type: "interval", everyMs: 90 * 60_000 }, "Every 1 h 30 min"],
+    [{ type: "interval", everyMs: 2 * 24 * 60 * 60_000 }, "Every 2 days"],
+    [{ type: "fixed_time", timeOfDay: "2:00" }, "Daily at 02:00"],
+    [{ type: "fixed_time", timeOfDay: "02:00", weekdays: [] }, "Daily at 02:00"],
+    [{ type: "fixed_time", timeOfDay: "04:00", weekdays: [5, 4, 3, 2, 1] }, "Weekdays at 04:00"],
+    [{ type: "fixed_time", timeOfDay: "09:15", weekdays: [6, 0] }, "Weekends at 09:15"],
+    [{ type: "fixed_time", timeOfDay: "03:00", weekdays: [0] }, "Sun at 03:00"],
+    [{ type: "fixed_time", timeOfDay: "06:30", weekdays: [4, 1] }, "Mon, Thu at 06:30"],
+  ] as const)("describes %j as %s", (schedule, text) => {
+    expect(describeScheduleWhen(schedule)).toBe(text);
   });
 });

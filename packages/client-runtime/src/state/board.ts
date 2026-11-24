@@ -5,6 +5,8 @@
  */
 import {
   BOARD_SEED_STAGE_IDS,
+  BOARD_SCHEDULE_WS_METHODS,
+  BOARD_WORKERS_WS_METHODS,
   BOARD_WS_METHODS,
   boardCardEffectivePriority,
   boardCardPriorityRank,
@@ -24,13 +26,19 @@ import {
   type BoardCardDependencyRef,
   type BoardCardDetail,
   type BoardCardId,
+  type BoardCiSkipStepInput,
   type BoardCardPriority,
   type BoardCardShell,
   type BoardCardThreadShell,
   type BoardLabel,
   type BoardThreadStateSource,
   type BoardProjectImportCandidatesInput,
+  type BoardProjectExportInput,
   type BoardProjectImportInput,
+  type BoardScheduleListInput,
+  type BoardScheduleRef,
+  type BoardScheduleRetryInput,
+  type BoardScheduleSetMachineInput,
   type BoardProjectStageConfigShell,
   type BoardStageDefinition,
   type BoardStageId,
@@ -64,6 +72,13 @@ import {
   cloneBoardProjectHere,
 } from "../operations/boardWorkers.ts";
 import {
+  boardScheduleManagedTasks,
+  listBoardSchedules,
+  retryBoardSchedules,
+  runBoardScheduleNow,
+  setBoardScheduleMachine,
+} from "../operations/boardSchedules.ts";
+import {
   approveBoardPlans,
   startBoardPlanReview,
   approveBoardSplitAfterReview,
@@ -81,6 +96,7 @@ import {
   getBoardProjectImportCandidates,
   getBoardProjectTokenStatus,
   importBoardProjectFile,
+  removeBoardProjectLoadSensitive,
   resetBoardProject,
   setBoardProjectCiEnabled,
   setBoardProjectCiStopOnFailure,
@@ -92,6 +108,7 @@ import {
   attachBoardCardFile,
   detachBoardCardFile,
   mergeBoardCardPullRequest,
+  startBoardMergeQueueCardNow,
   moveBoardCard,
   moveBoardCards,
   setBoardCardGroupSettings,
@@ -108,6 +125,7 @@ import {
   startBoardStageThread,
   requestBoardReviewRound,
   skipBoardCardCi,
+  skipBoardCardCiStep,
   retryBoardCardCi,
   sendBackBoardCardCi,
   removeBoardCardWorktree,
@@ -140,6 +158,7 @@ import {
   type DismissBoardProjectImportInput,
   type ResetBoardProjectInput,
   type SetBoardProjectCiEnabledInput,
+  type RemoveBoardProjectLoadSensitiveInput,
   type SetBoardProjectCiStopOnFailureInput,
   type SetBoardProjectCiStepsInput,
   type SetBoardProjectStageOverrideInput,
@@ -915,6 +934,48 @@ export function createBoardEnvironmentAtoms<R, ER>(
     ).pipe(Atom.withLabel(`environment-board-workers:${environmentId}`)),
   );
 
+  /** What re-reads a card's worker thread titles: its worker threads changing, or one of their
+      workers going online or offline. Titles are fixed at spawn, so nothing else does. A re-read
+      on going offline loses nothing: the board answers with the titles it already read. */
+  const workerThreadTitlesSignalAtom = Atom.family((key: string) => {
+    const [environmentId, cardId] = JSON.parse(key) as [EnvironmentId, BoardCardId];
+    return Atom.make((get) => {
+      const links = get(cardThreadLinksAtom(environmentId)).filter(
+        (link) => link.cardId === cardId && link.workerId !== undefined,
+      );
+      if (links.length === 0) return "";
+      const online = new Set(
+        get(workersAtom(environmentId))
+          .workers.filter((worker) => worker.status.state === "online")
+          .map((worker) => worker.id),
+      );
+      return links
+        .map((link) => `${link.threadId}:${online.has(link.workerId!) ? 1 : 0}`)
+        .sort()
+        .join(",");
+    }).pipe(Atom.withLabel(`environment-board-worker-thread-titles-signal:${key}`));
+  });
+
+  // T3o: a card's thread titles from its workers, whose threads this shell never holds (T3O-121).
+  const workerThreadTitlesAtom = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:worker-thread-titles",
+    tag: BOARD_WORKERS_WS_METHODS.threadTitles,
+    refreshTrigger: ({ environmentId, input }) =>
+      workerThreadTitlesSignalAtom(JSON.stringify([environmentId, input.cardId])),
+  });
+
+  // T3o: the Schedules tab and the Scheduled tasks page's marker (T3O-117).
+  const schedulesAtom = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:schedules",
+    tag: BOARD_SCHEDULE_WS_METHODS.list,
+    staleTimeMs: 0,
+  });
+  const managedScheduleTasksAtom = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:managed-schedule-tasks",
+    tag: BOARD_SCHEDULE_WS_METHODS.managedTasks,
+    staleTimeMs: 0,
+  });
+
   /** The archive page's cards, read when the page opens. */
   const archivedCardsAtom = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:board:archived-cards",
@@ -996,10 +1057,13 @@ export function createBoardEnvironmentAtoms<R, ER>(
     cardsByProjectAtom,
     cardThreadsByCardAtom,
     archivedCardsAtom,
+    schedulesAtom,
+    managedScheduleTasksAtom,
     labelCatalogueAtom,
     stageListAtom,
     projectStageConfigsAtom,
     workersAtom,
+    workerThreadTitlesAtom,
     /** Raw subscription state (loading/failure visible), keyed like
         `cardDetailValueAtom`. */
     cardDetailStateAtom,
@@ -1033,6 +1097,11 @@ export function createBoardEnvironmentAtoms<R, ER>(
       label: "environment-data:commands:board:merge-card-pull-request",
       execute: (input: { readonly cardId: BoardCardId }) => mergeBoardCardPullRequest(input),
     }),
+    /** T3o: a queued card's Start now (T3O-128): merge, and fix, now. */
+    mergeQueueStartNow: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:merge-queue-start-now",
+      execute: (input: { readonly cardId: BoardCardId }) => startBoardMergeQueueCardNow(input),
+    }),
     /** Open the card's pull request from Building and route it past Code
         review. Resolves to the outcome the card reports — started, or
         the reason it was refused. */
@@ -1065,6 +1134,11 @@ export function createBoardEnvironmentAtoms<R, ER>(
     skipCi: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:skip-ci",
       execute: (input: { readonly cardId: BoardCardId }) => skipBoardCardCi(input),
+    }),
+    /** T3o (T3O-130): skip, mark or unmark one step of a running CI pass. */
+    skipCiStep: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:skip-ci-step",
+      execute: (input: BoardCiSkipStepInput) => skipBoardCardCiStep(input),
     }),
     /** Remove a finished card's kept worktree past the safety rule. */
     removeCardWorktree: createEnvironmentCommand(runtime, {
@@ -1295,6 +1369,12 @@ export function createBoardEnvironmentAtoms<R, ER>(
       label: "environment-data:commands:board:reset-project",
       execute: (input: ResetBoardProjectInput) => resetBoardProject(input),
     }),
+    // T3o (T3O-129): a person takes tests off the load-sensitive list.
+    removeProjectLoadSensitive: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:remove-project-load-sensitive",
+      execute: (input: RemoveBoardProjectLoadSensitiveInput) =>
+        removeBoardProjectLoadSensitive(input),
+    }),
     dismissProjectImport: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:dismiss-project-import",
       execute: (input: DismissBoardProjectImportInput) => dismissBoardProjectImport(input),
@@ -1317,7 +1397,28 @@ export function createBoardEnvironmentAtoms<R, ER>(
     }),
     exportProjectFile: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:export-project-file",
-      execute: (input: { readonly projectId: ProjectId }) => exportBoardProjectFile(input),
+      execute: (input: BoardProjectExportInput) => exportBoardProjectFile(input),
+    }),
+    // T3o: t3o.json schedules (T3O-117).
+    listSchedules: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:list-schedules",
+      execute: (input: BoardScheduleListInput) => listBoardSchedules(input),
+    }),
+    setScheduleMachine: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:set-schedule-machine",
+      execute: (input: BoardScheduleSetMachineInput) => setBoardScheduleMachine(input),
+    }),
+    runScheduleNow: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:run-schedule-now",
+      execute: (input: BoardScheduleRef) => runBoardScheduleNow(input),
+    }),
+    retrySchedules: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:retry-schedules",
+      execute: (input: BoardScheduleRetryInput) => retryBoardSchedules(input),
+    }),
+    managedScheduleTasks: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:managed-schedule-tasks",
+      execute: (_input: Record<string, never>) => boardScheduleManagedTasks(),
     }),
     startStageThread: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:start-stage-thread",

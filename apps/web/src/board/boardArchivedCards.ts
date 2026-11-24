@@ -3,18 +3,20 @@
  * component so it can be read and tested without pulling the web runtime
  * graph in behind it.
  */
-import type { BoardCardShell, ProjectId } from "@t3tools/contracts";
+import type { BoardCardShell } from "@t3tools/contracts";
+
+import { boardCardInProjectScope, type BoardProjectSelection } from "./boardProjectScope";
 
 /**
- * The archived cards the sheet should show: the board's own project scope
+ * The archived cards the sheet should show: the board's own project filter
  * applied to the archive snapshot, nothing else. The server already returns
  * them newest-archived first — the card you just archived by mistake is the
  * one you came to restore — so this must not reorder them.
  */
 export function boardArchivedCardsInScope(
   cards: ReadonlyArray<BoardCardShell>,
-  scopeProjectId: ProjectId | null,
+  selection: BoardProjectSelection,
 ): ReadonlyArray<BoardCardShell> {
-  if (scopeProjectId === null) return cards;
-  return cards.filter((card) => card.projectId === scopeProjectId);
+  if (selection.length === 0) return cards;
+  return cards.filter((card) => boardCardInProjectScope(card, selection));
 }

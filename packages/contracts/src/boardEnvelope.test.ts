@@ -19,9 +19,13 @@ import {
   composeBoardCiFixPrompt,
   composeBoardReviewFollowUpPrompt,
   BOARD_AUTO_PLAN_INSTRUCTION,
+  BOARD_AUTO_PLAN_NO_QUESTIONS,
+  BOARD_AUTO_SIGN_OFF_NOTE,
+  BOARD_ENVELOPE_PLAN_ROOT_GUARD,
   boardAutoPlanInstruction,
   BOARD_ENVELOPE_DECISION_LOG,
   BOARD_ENVELOPE_BUILD_DELIVERABLE,
+  BOARD_ENVELOPE_MERGE_GUARD,
   BOARD_ENVELOPE_MOVE_GUARD,
   BOARD_ENVELOPE_PLAN_DELIVERABLE,
   BOARD_ENVELOPE_QUESTION_MECHANISM,
@@ -70,12 +74,14 @@ describe("boardStepPostamble (envelope split)", () => {
   // t3o card 11: the plan-role contract states that a SECOND plan splits the
   // card, because that is the fact the planning agent was missing when it
   // reached for a split on a one-line bug fix.
-  it("tells the plan role that two or more plans splits the card behind a human gate", () => {
+  it("tells the plan role that two or more plans splits the card behind an approval gate", () => {
     const prompt = promptFor({ role: "plan", humanInLoop: false });
     expect(prompt).toContain("ONE plan");
     expect(prompt).toContain("child cards");
-    expect(prompt).toContain("human approval gate");
+    expect(prompt).toContain("approval gate");
     expect(prompt).toContain("splitRationale");
+    // T3o: planning shares the project root, so it is told not to change it (T3O-115).
+    expect(prompt).toContain(BOARD_ENVELOPE_PLAN_ROOT_GUARD);
   });
 
   it("states the split rule for the plan role only", () => {
@@ -92,6 +98,11 @@ describe("boardStepPostamble (envelope split)", () => {
         const prompt = promptFor({ role, humanInLoop, prompt: "Rewritten from scratch." });
         expect(prompt).toContain("board_complete_step");
         expect(prompt).toContain(BOARD_ENVELOPE_MOVE_GUARD);
+        // The board owns the merge, on every stage (T3O-133).
+        expect(prompt.indexOf(BOARD_ENVELOPE_MERGE_GUARD)).toBeGreaterThan(-1);
+        expect(prompt.indexOf(BOARD_ENVELOPE_MERGE_GUARD)).toBeLessThan(
+          prompt.indexOf(BOARD_ENVELOPE_MOVE_GUARD),
+        );
       }
     }
   });
@@ -215,8 +226,22 @@ describe("decision log and auto-plan (T3O-32)", () => {
       role: "plan",
     });
     expect(auto).toContain(boardAutoPlanInstruction(true));
-    expect(auto).toContain("a single plan you propose is approved automatically");
-    expect(auto).toContain("A proposed split always waits for the user's approval.");
+    // T3o: a split is approved the same way, and nobody answers a question (T3O-115).
+    expect(auto).toContain(BOARD_AUTO_SIGN_OFF_NOTE);
+    expect(auto).toContain(BOARD_AUTO_PLAN_NO_QUESTIONS);
+    expect(auto).not.toContain(BOARD_ENVELOPE_QUESTION_MECHANISM);
+  });
+
+  it("tells attended planning when Auto sign-off will approve it (T3O-115)", () => {
+    const attended = boardStepPostamble({
+      humanInLoop: true,
+      role: "plan",
+      step: stepOf(null),
+      autoSignOff: true,
+    });
+    expect(attended).toContain(BOARD_AUTO_SIGN_OFF_NOTE);
+    expect(attended).not.toContain(BOARD_AUTO_PLAN_INSTRUCTION);
+    expect(promptFor({ role: "plan", humanInLoop: true })).not.toContain(BOARD_AUTO_SIGN_OFF_NOTE);
   });
 });
 

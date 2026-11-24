@@ -9,6 +9,7 @@ import {
   BoardStageId,
   CommandId,
   boardCiStepsFromLegacy,
+  emptyBoardCardMergeStay,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -16,8 +17,11 @@ import {
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import { BoardQueries } from "./BoardQueries.ts";
+import { makeBoardSqlProjector } from "./projection.ts";
 import {
   boardStackEngine,
   boardStackSnapshotQuery,
@@ -205,6 +209,18 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-"))("a CI pass", (it) => {
       });
       yield* record({ kind: "finish-pass", runId: "run-b", result: "failed" });
       yield* record({ kind: "begin-fix", runId: "run-b", fixIssues: 2 });
+      // T3O-126: a flaky verdict reopens the failed pass's row and carries it on.
+      yield* record({ kind: "flaky-resume", runId: "run-b", titles: ["a.test.ts › adds"] });
+      const resumed = yield* (yield* BoardQueries).boardCardDetail(cardId);
+      const reopened = resumed!.ciPasses.find((entry) => entry.runId === "run-b");
+      assert.isNull(reopened?.finishedAt);
+      assert.isNull(reopened?.outcome);
+      assert.deepInclude(resumed!.card.ci, {
+        phase: "running",
+        flakyChecks: 1,
+        flakyTitles: ["a.test.ts › adds"],
+      });
+      yield* record({ kind: "begin-fix", runId: "run-b", fixIssues: 2 });
       yield* record({
         kind: "stop",
         runId: "run-b",
@@ -300,6 +316,35 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-leave-"))("a card leaving CI", (i
       });
       yield* record({ kind: "finish-pass", runId: "run-a", result: "failed" });
       yield* record({ kind: "begin-fix", runId: "run-a" });
+      // T3o: the per-stay merge fix counts persist through the projection (T3O-116), and so
+      // does the merge queue's state on them (T3O-128).
+      const mergeStay = {
+        ...emptyBoardCardMergeStay(null),
+        conflictFixes: 1,
+        fixBaseTip: "tip-a",
+        baseFollowUps: 2,
+        queuedAt: at,
+      };
+      yield* engine.dispatch({
+        type: "board.card.update",
+        commandId: id(),
+        cardId,
+        mergeStay,
+        createdAt: at,
+      });
+      assert.deepStrictEqual(
+        (yield* (yield* BoardQueries).boardCardDetail(cardId))!.card.mergeStay,
+        mergeStay,
+      );
+
+      // T3o: the move's trailing CI event must not carry a stale gate block back (T3O-115).
+      yield* engine.dispatch({
+        type: "board.card.update",
+        commandId: id(),
+        cardId,
+        gateBlock: { gate: "build", reason: "fault", detail: null },
+        createdAt: at,
+      });
 
       yield* engine.dispatch({
         type: "board.card.move",
@@ -313,6 +358,7 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-leave-"))("a card leaving CI", (i
       const detail = yield* (yield* BoardQueries).boardCardDetail(cardId);
       assert.strictEqual(detail!.ciPasses[0]!.outcome, "cancelled");
       assert.isNull(detail!.card.ci);
+      assert.isUndefined(detail!.card.gateBlock);
 
       // A send-back counts a round trip; the board's own move keeps
       // the count, and a human's move starts it again.
@@ -354,6 +400,127 @@ it.layer(makeBoardStackTestLayer("t3o-board-ci-leave-"))("a card leaving CI", (i
         createdAt: at,
       });
       assert.strictEqual(yield* roundTrips(), 0);
+    }),
+  );
+});
+
+it.layer(makeBoardStackTestLayer("t3o-board-ci-skip-"))("a CI step skip (T3O-130)", (it) => {
+  it.effect("patches the row, keeping its tail; an event from before stepRow still projects", () =>
+    Effect.gen(function* () {
+      const engine = yield* boardStackEngine;
+      let n = 0;
+      const id = () => CommandId.make(`cmd-ci-skip-${n++}`);
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: id(),
+        projectId,
+        title: "CI project",
+        workspaceRoot: `/tmp/${projectId}`,
+        defaultModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt" },
+        createdAt: at,
+      });
+      yield* engine.dispatch({
+        type: "board.project.set-ci-steps",
+        commandId: id(),
+        projectId,
+        steps: ciSteps,
+        createdAt: at,
+      });
+      yield* engine.dispatch({
+        type: "board.project.set-ci-enabled",
+        commandId: id(),
+        projectId,
+        on: true,
+        createdAt: at,
+      });
+      yield* engine.dispatch({
+        type: "board.card.create",
+        commandId: id(),
+        cardId,
+        projectId,
+        title: "Goes through CI",
+        keyPrefix: "CI",
+        stage: BoardStageId.make("review"),
+        createdAt: at,
+      });
+      yield* engine.dispatch({
+        type: "board.card.pipeline-move",
+        commandId: id(),
+        cardId,
+        toStage: BOARD_SEED_STAGE_IDS.ci,
+        createdAt: at,
+      });
+      const record = (action: BoardCardRecordCiCommand["action"]) =>
+        engine.dispatch({
+          type: "board.card.record-ci",
+          commandId: id(),
+          cardId,
+          action,
+          createdAt: at,
+        });
+      yield* record({
+        kind: "start-pass",
+        runId: "run-s",
+        entry: 1,
+        ordinal: 1,
+        steps: ciSteps,
+        maxFixAttempts: 2,
+        logDir: "/wt/.t3/ci/run-s",
+        queued: false,
+        fixThreadId: null,
+      });
+      yield* record({ kind: "step", runId: "run-s", index: 0, step: step(0, "passed", "ok") });
+      yield* record({ kind: "step", runId: "run-s", index: 1, step: step(1, "running", "half") });
+      yield* record({
+        kind: "set-step-skip",
+        runId: "run-s",
+        index: 1,
+        stepId: ciSteps[1]!.id,
+        skip: true,
+        actor: "Ana",
+      });
+      const detail = yield* (yield* BoardQueries).boardCardDetail(cardId);
+      const row = detail!.ciPasses[0]!.steps[1]!;
+      assert.deepInclude(row, {
+        id: ciSteps[1]!.id,
+        status: "skipped",
+        finishedAt: at,
+        note: "Skipped",
+        tail: "half",
+      });
+      assert.deepStrictEqual(detail!.card.ci?.skippedSteps, [ciSteps[1]!.id]);
+      assert.isTrue(
+        detail!.activity.some(
+          (entry) =>
+            entry.kind === "card-ci-step-skip" &&
+            entry.payload.ciStepName === "Test" &&
+            entry.payload.ciStepSkip === true,
+        ),
+      );
+
+      // An event stored before `stepRow` existed writes its step action's row as sent.
+      const events = yield* Stream.runCollect(engine.readBoardEvents(0)).pipe(Effect.orDie);
+      const first = [...events].find(
+        (event) =>
+          event.type === "board.card-ci-recorded" &&
+          event.payload.action.kind === "step" &&
+          event.payload.action.index === 0,
+      );
+      assert.isDefined(first);
+      if (first?.type !== "board.card-ci-recorded" || first.payload.action.kind !== "step") return;
+      const { stepRow: _stepRow, ...old } = first.payload;
+      const projector = makeBoardSqlProjector(yield* SqlClient.SqlClient);
+      yield* projector
+        .applyBoardEvent({
+          ...first,
+          payload: {
+            ...old,
+            action: { ...first.payload.action, step: step(0, "passed", "replayed") },
+          },
+        })
+        .pipe(Effect.orDie);
+      const replayed = yield* (yield* BoardQueries).boardCardDetail(cardId);
+      assert.strictEqual(replayed!.ciPasses[0]!.steps[0]!.tail, "replayed");
     }),
   );
 });

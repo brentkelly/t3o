@@ -43,7 +43,6 @@ import {
   boardRunningStepCount,
   boardThreadStateSourceWithSubagents,
   isBoardCardPlacementSettled,
-  mergeBoardStageColumns,
   planBoardCardReorder,
   snapBoardCardDropOrder,
   type BoardCardPlacement,
@@ -90,6 +89,7 @@ import { useBoardAttentionSettle } from "./boardAttentionSettle";
 import { BOARD_COLUMN_CARD_CAP } from "./boardColumnCap";
 import { boardCardNoPullRequest } from "./boardCardNotice";
 import { boardQueueInfo, type BoardQueueInfo } from "./boardQueueInfo";
+import { boardMergeQueueInfo } from "./boardMergeQueueInfo";
 import type { BoardCardTodoContext } from "./BoardCardItem";
 import { boardShellAutomationNode, resolveBoardShellAutomation } from "./boardCardAutomation";
 import { BoardColumn, BOARD_CARD_GAP } from "./BoardColumn";
@@ -111,7 +111,16 @@ import {
   type BoardScope,
 } from "./boardScope";
 import { BoardSubBoardHeader } from "./BoardSubBoardHeader";
-import { BoardProjectScopeSelect } from "./BoardProjectScopeSelect";
+import { BoardProjectFilter } from "./BoardProjectFilter";
+import {
+  boardEffectiveProjectScope,
+  boardProjectScopedColumns,
+  boardProjectScopePipelineProjects,
+  boardSingleProjectScope,
+  parseBoardProjectScope,
+  serializeBoardProjectScope,
+  type BoardProjectSelection,
+} from "./boardProjectScope";
 import { BoardHint } from "./BoardHint";
 import { BoardGroupStartDialog, BoardNewPhaseDialog } from "./BoardGroupDialogs";
 import {
@@ -139,7 +148,7 @@ import { isBoardColumnCollapsed, useBoardUiStore } from "./boardUiStore";
 import { BoardCardCostFigure } from "./usage/BoardUsageFigure";
 import { BoardGroupUsageButton, BoardUsageChip } from "./usage/BoardUsagePopovers";
 import { boardUsageInView } from "./usage/boardUsageViews";
-import { projectAccent, projectIconColorOf } from "./projectAccent";
+import { projectIconColorOf } from "./projectAccent";
 import { BoardWorkersContext, useBoardWorkersCardView } from "./workers/BoardWorkersContext";
 import { usePruneWorkerThreadEnvironments } from "./workers/boardWorkersState";
 import { boardQueueReason } from "./workers/cardWorker";
@@ -148,8 +157,8 @@ import { validateBoardSearch, type BoardSearch } from "../routes/board";
 import { BoardServerUnavailableNotice } from "./BoardServerSettings";
 import { useBoardEnvironment, useBoardSettings } from "./useBoardEnvironmentId";
 
-const EMPTY_COLUMNS: BoardStageColumns = mergeBoardStageColumns([]);
 const EMPTY_CARDS: ReadonlyArray<BoardCardShell> = [];
+const NO_PROJECT_SELECTION: BoardProjectSelection = [];
 const EMPTY_QUEUE_INFO: ReadonlyMap<string, BoardQueueInfo> = new Map();
 const EMPTY_CARD_THREADS: ReadonlyArray<BoardCardThreadShell> = [];
 
@@ -269,12 +278,12 @@ function BoardPage({
 function useBoardLiveColumns({
   environmentId,
   boardSettings,
-  scopeProjectId,
+  projectSelection,
   orderedStages,
 }: {
   readonly environmentId: EnvironmentId;
   readonly boardSettings: BoardSettings;
-  readonly scopeProjectId: ProjectId | null;
+  readonly projectSelection: BoardProjectSelection;
   readonly orderedStages: ReadonlyArray<BoardStageDefinition>;
 }) {
   // Card-linked threads only: an unrelated thread's push leaves the page alone.
@@ -285,17 +294,11 @@ function useBoardLiveColumns({
   const [placements, setPlacements] = useState<ReadonlyArray<BoardCardPlacement>>([]);
 
   const threadShellOf = (threadId: ThreadId) => threadShellsById.get(threadId);
-  const liveColumns = (() => {
-    if (scopeProjectId !== null) {
-      if (isBoardProjectHidden(boardSettings, scopeProjectId)) return EMPTY_COLUMNS;
-      return cardsByProject.get(scopeProjectId) ?? EMPTY_COLUMNS;
-    }
-    return mergeBoardStageColumns(
-      [...cardsByProject.entries()]
-        .filter(([projectId]) => !isBoardProjectHidden(boardSettings, projectId))
-        .map(([, columns]) => columns),
-    );
-  })();
+  const liveColumns = boardProjectScopedColumns({
+    cardsByProject,
+    isHidden: (projectId) => isBoardProjectHidden(boardSettings, projectId),
+    selection: projectSelection,
+  });
 
   const unsettledPlacements =
     placements.length === 0
@@ -502,8 +505,8 @@ function useBoardPageModel({
 
   // `?project` scopes the ROOT board only — a sub-board's project is implied
   // by its parent, so the param is ignored there rather than double-filtering.
-  const scopeProjectId =
-    scope.kind === "root" ? ((search.project ?? null) as ProjectId | null) : null;
+  const projectSelection =
+    scope.kind === "root" ? parseBoardProjectScope(search.project) : NO_PROJECT_SELECTION;
   const {
     liveColumns,
     setPlacements,
@@ -515,7 +518,12 @@ function useBoardPageModel({
     groupShells,
     threadIdleSinceByCard,
     attentionNow,
-  } = useBoardLiveColumns({ environmentId, boardSettings, scopeProjectId, orderedStages });
+  } = useBoardLiveColumns({
+    environmentId,
+    boardSettings,
+    projectSelection,
+    orderedStages,
+  });
   const parentKeyFor = (cardId: string) =>
     scope.kind === "root" ? parentKeyById.get(cardId) : undefined;
 
@@ -555,14 +563,13 @@ function useBoardPageModel({
   const projects = allProjects.filter(
     (project) => !isBoardProjectHidden(boardSettings, project.id),
   );
-  // A stale deep link (project deleted, hidden, or another environment's id)
-  // still needs a visible scope so the user can switch back to All projects.
-  const scopeIsStale =
-    scopeProjectId !== null &&
-    allProjects.length > 0 &&
-    !projects.some((project) => project.id === scopeProjectId);
-  const scopeIsHidden =
-    scopeProjectId !== null && isBoardProjectHidden(boardSettings, scopeProjectId);
+  // Create, the pipeline columns and pill dimming read the selected projects that are on
+  // the board; a selection of only hidden or deleted ones behaves as no selection there.
+  const effectiveProjectSelection = boardEffectiveProjectScope(
+    projectSelection,
+    projects.map((project) => project.id),
+  );
+  const singleScopeProjectId = boardSingleProjectScope(effectiveProjectSelection);
 
   // "Needs a human", derived client-side from the shell + stage list with no
   // extra payload (a split approval is one of its reasons). The card
@@ -588,15 +595,15 @@ function useBoardPageModel({
     });
   // A finished card still holding its worktree — the amber `Worktree
   // kept` notice. Here because the "finished" half needs the done-role stage
-  // and `reclaimWorktreeOnDone`, which the shell cannot carry (its SQL producer
+  // and `worktreeAtDone`, which the shell cannot carry (its SQL producer
   // cannot see settings).
-  const reclaimWorktreeOnDone = boardSettings.lifecycle.reclaimWorktreeOnDone;
+  const worktreeAtDone = boardSettings.lifecycle.worktreeAtDone;
   const worktreeKeptFor = (card: BoardCardShell) =>
     boardCardWorktreeKept({
       worktreeReady: card.worktreeReady === true,
       archived: card.archivedAt !== null,
       inDoneStage: doneStageId !== null && card.stage === doneStageId,
-      reclaimWorktreeOnDone,
+      worktreeAtDone,
       cancelledWork: boardCardWorktreeIsCancelledWork(card),
     })
       ? boardCardWorktreeKeptReason(card.worktreeKeptReason)
@@ -651,7 +658,7 @@ function useBoardPageModel({
   const defaultCreateStageId = boardCreateDefaultStage(
     stageState,
     parentGroup?.started === true,
-    parentShell?.projectId ?? scopeProjectId,
+    parentShell?.projectId ?? singleScopeProjectId,
   );
   // Ancestors of this sub-board's group, root first: the breadcrumb, and
   // where Back goes (one level up).
@@ -673,37 +680,40 @@ function useBoardPageModel({
     Object.values(byStage).flat(),
   );
 
-  const queueSlots = (() => {
-    const queue = boardBuildQueue(
-      everyCard,
-      orderedStages,
-      // oxlint-disable-next-line react/purity -- Schedule-due samples the clock when the cards change; the compiler recomputes it only then.
-      Date.now(),
-    );
-    if (queue.size === 0) return EMPTY_QUEUE_INFO;
-    const running = boardRunningStepCount(everyCard);
-    const cardKeys = new Map(everyCard.map((card) => [String(card.cardId), card.key] as const));
-    const cardsById = new Map(everyCard.map((card) => [card.cardId, card] as const));
-    const projectNames = new Map(
-      allProjects.map((project) => [project.id, project.title] as const),
-    );
-    const info = new Map<string, BoardQueueInfo>();
-    for (const [cardId, slot] of queue) {
-      const card = cardsById.get(cardId as BoardCardShell["cardId"]);
-      const reason =
-        card === undefined
-          ? null
-          : boardQueueReason({
-              card,
-              state: cardWorkersState,
-              cardKeys,
-              projectName: projectNames.get(card.projectId) ?? "this project",
-            });
-      const resolved = boardQueueInfo({ slot, running, reason });
-      if (resolved !== null) info.set(cardId, resolved);
-    }
-    return info;
-  })();
+  const queueSlots = withMergeQueueSlots(
+    everyCard,
+    (() => {
+      const queue = boardBuildQueue(
+        everyCard,
+        orderedStages,
+        // oxlint-disable-next-line react/purity -- Schedule-due samples the clock when the cards change; the compiler recomputes it only then.
+        Date.now(),
+      );
+      if (queue.size === 0) return EMPTY_QUEUE_INFO;
+      const running = boardRunningStepCount(everyCard);
+      const cardKeys = new Map(everyCard.map((card) => [String(card.cardId), card.key] as const));
+      const cardsById = new Map(everyCard.map((card) => [card.cardId, card] as const));
+      const projectNames = new Map(
+        allProjects.map((project) => [project.id, project.title] as const),
+      );
+      const info = new Map<string, BoardQueueInfo>();
+      for (const [cardId, slot] of queue) {
+        const card = cardsById.get(cardId as BoardCardShell["cardId"]);
+        const reason =
+          card === undefined
+            ? null
+            : boardQueueReason({
+                card,
+                state: cardWorkersState,
+                cardKeys,
+                projectName: projectNames.get(card.projectId) ?? "this project",
+              });
+        const resolved = boardQueueInfo({ slot, running, reason });
+        if (resolved !== null) info.set(cardId, resolved);
+      }
+      return info;
+    })(),
+  );
 
   // ── Groups ────────────────────────────────────────────────
   // A group card's face, folded once per board render over the shells the
@@ -781,9 +791,7 @@ function useBoardPageModel({
     const inView =
       scope.kind === "sub-board"
         ? allProjects.filter((project) => subBoardProjectIds.has(project.id))
-        : scopeProjectId === null
-          ? projects
-          : allProjects.filter((project) => project.id === scopeProjectId);
+        : boardProjectScopePipelineProjects(projects, effectiveProjectSelection);
     return inView.map((project) => ({ id: project.id, title: project.title }));
   })();
   const pipelineColumns = boardPipelineColumns({
@@ -941,7 +949,9 @@ function useBoardPageModel({
     setArchiveOpen,
     unarchiveCard,
     deleteCard,
-    scopeProjectId,
+    projectSelection,
+    effectiveProjectSelection,
+    singleScopeProjectId,
     parentKeyFor,
     labelsById,
     stageState,
@@ -952,8 +962,6 @@ function useBoardPageModel({
     allProjects,
     accentNameFor,
     projects,
-    scopeIsStale,
-    scopeIsHidden,
     attentionFor,
     noPullRequestFor,
     worktreeKeptFor,
@@ -1046,7 +1054,9 @@ function EnvironmentBoard({
     setArchiveOpen,
     unarchiveCard,
     deleteCard,
-    scopeProjectId,
+    projectSelection,
+    effectiveProjectSelection,
+    singleScopeProjectId,
     parentKeyFor,
     labelsById,
     stageState,
@@ -1057,8 +1067,6 @@ function EnvironmentBoard({
     allProjects,
     accentNameFor,
     projects,
-    scopeIsStale,
-    scopeIsHidden,
     attentionFor,
     noPullRequestFor,
     worktreeKeptFor,
@@ -1559,9 +1567,7 @@ function EnvironmentBoard({
     const inScope =
       scope.kind === "sub-board"
         ? projects.filter((project) => project.id === parentProjectId)
-        : scopeProjectId === null
-          ? projects
-          : projects.filter((project) => project.id === scopeProjectId);
+        : boardProjectScopePipelineProjects(projects, effectiveProjectSelection);
     return inScope.map((project) => ({
       id: project.id,
       title: project.title,
@@ -1582,7 +1588,10 @@ function EnvironmentBoard({
             onOpenCard={(cardId) => patchSearch((previous) => ({ ...previous, card: cardId }))}
             workers={cardWorkersState}
           />
-          <BoardUsageChip inView={usageInView} />
+          {/* T3o (T3O-134): spend stays off a phone's header; Usage is in the corner menu. */}
+          <span className="contents max-sm:hidden">
+            <BoardUsageChip inView={usageInView} />
+          </span>
           {/* T3o: hidden on a board with no remote workers (T3O-87). */}
           {cardWorkersState.workers.length === 0 ? null : (
             <BoardWorkerFilterButton
@@ -1609,7 +1618,12 @@ function EnvironmentBoard({
             total={workerUnfilteredCount}
           />
         )}
-        <div className="flex shrink-0 items-center gap-3 px-3 py-2 sm:px-5">
+        <div
+          className={cn(
+            "flex min-w-0 shrink-0 items-center gap-3 px-3 py-2 max-sm:gap-1.5 sm:px-5",
+            scope.kind === "sub-board" && "max-sm:flex-wrap",
+          )}
+        >
           {scope.kind === "sub-board" ? (
             <>
               {/* Back goes up one level: to the group above, or the
@@ -1669,39 +1683,23 @@ function EnvironmentBoard({
             </>
           ) : (
             <>
-              <BoardProjectScopeSelect
+              <BoardProjectFilter
                 accentNameFor={accentNameFor}
-                onChange={(projectId) =>
-                  patchSearch((previous) => {
-                    const { project: _project, ...rest } = previous;
-                    return projectId === null ? rest : { ...rest, project: projectId };
-                  })
+                isHidden={(projectId) => isBoardProjectHidden(boardSettings, projectId)}
+                onChange={(selection) =>
+                  patchSearch(
+                    (previous) => {
+                      const { project: _project, ...rest } = previous;
+                      const project = serializeBoardProjectScope(selection);
+                      return project === undefined ? rest : { ...rest, project };
+                    },
+                    { replace: true },
+                  )
                 }
                 projects={projects}
-                scopeIsHidden={scopeIsHidden}
-                scopeIsStale={scopeIsStale}
-                scopeProjectId={scopeProjectId}
+                projectsLoaded={allProjects.length > 0}
+                selection={projectSelection}
               />
-              {/* The project legend. Shown for a single project too: its colour is on
-                  every card. */}
-              {scopeProjectId === null && projects.length > 0 ? (
-                <div className="flex min-w-0 items-center gap-3 overflow-hidden">
-                  {projects.map((project) => (
-                    <span
-                      className="inline-flex shrink-0 items-center gap-1.5 text-board-11-5 font-medium text-muted-foreground"
-                      key={project.id}
-                    >
-                      <span
-                        className={cn(
-                          "h-[3px] w-[9px] shrink-0 rounded-xs",
-                          projectAccent(project.id, accentNameFor(project.id)).dot,
-                        )}
-                      />
-                      {project.title}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
             </>
           )}
           <span className="flex-1" />
@@ -1718,13 +1716,15 @@ function EnvironmentBoard({
               title="Show only stalled cards: recovery gave up and a human is needed"
             >
               <TriangleAlertIcon />
-              {showStalledOnly ? "Stalled only" : `Stalled ${stalledCount}`}
+              {/* T3o (T3O-134): icon and count only on a phone. */}
+              <span className="max-sm:sr-only">{showStalledOnly ? "Stalled only" : "Stalled"}</span>
+              {showStalledOnly ? null : <span>{stalledCount}</span>}
             </Button>
           ) : null}
           {scope.kind === "root" ? (
             <Button onClick={() => setArchiveOpen(true)} size="xs" variant="ghost">
               <ArchiveIcon />
-              Archived
+              <span className="max-sm:sr-only">Archived</span>
             </Button>
           ) : null}
         </div>
@@ -1755,6 +1755,9 @@ function EnvironmentBoard({
           <div
             className={cn(
               "flex min-h-0 flex-1 items-start gap-2.5 overflow-auto px-3 sm:px-5",
+              // T3o (T3O-134): phones snap a column at a time with a peek of the next. Proximity,
+              // not mandatory, so drag edge-autoscroll and the narrow collapsed rails still land.
+              "@container max-sm:snap-x max-sm:snap-proximity max-sm:scroll-px-3",
               // Reserved unconditionally: no card comes to rest
               // under the corner menu, and collapsing it does not reflow the
               // columns under the user's cursor.
@@ -1790,6 +1793,9 @@ function EnvironmentBoard({
               });
               return (
                 <BoardColumn
+                  emptyLabel={
+                    projectSelection.length > 0 ? "No cards from the selected projects" : undefined
+                  }
                   accentNameFor={accentNameFor}
                   parentKeyFor={parentKeyFor}
                   attentionFor={attentionFor}
@@ -1837,6 +1843,7 @@ function EnvironmentBoard({
                   key={stage.stageId}
                   label={stage.label}
                   atMergeStage={stage.stageId === mergeStageId}
+                  atDoneStage={stage.stageId === doneStageId}
                   costSlotFor={stage.stageId === doneStageId ? costSlotFor : undefined}
                   noPullRequestFor={noPullRequestFor}
                   worktreeKeptFor={worktreeKeptFor}
@@ -1942,7 +1949,7 @@ function EnvironmentBoard({
             patchSearch((previous) => ({ ...previous, card: cardId }));
           }}
           open={archiveOpen}
-          scopeProjectId={scopeProjectId}
+          projectSelection={projectSelection}
         />
         <BoardPlanningExitConfirmDialog
           open={unplannedDrop !== null}
@@ -1972,7 +1979,7 @@ function EnvironmentBoard({
         />
         <BoardCardCreateDialog
           defaultProjectId={
-            scope.kind === "sub-board" ? (parentShell?.projectId ?? null) : scopeProjectId
+            scope.kind === "sub-board" ? (parentShell?.projectId ?? null) : singleScopeProjectId
           }
           defaultStage={createStage ?? defaultCreateStageId}
           environmentId={environmentId}
@@ -2130,3 +2137,19 @@ function EnvironmentBoard({
 }
 
 export default BoardPage;
+
+/** T3o: the merge queue's pill on every card waiting its turn there (T3O-128). */
+function withMergeQueueSlots(
+  cards: ReadonlyArray<BoardCardShell>,
+  slots: ReadonlyMap<string, BoardQueueInfo>,
+): ReadonlyMap<string, BoardQueueInfo> {
+  const queued = cards.filter((card) => card.mergeQueued === true);
+  if (queued.length === 0) return slots;
+  const running = boardRunningStepCount(cards);
+  const merged = new Map(slots);
+  for (const card of queued) {
+    const info = boardMergeQueueInfo({ card, running });
+    if (info !== null && !merged.has(String(card.cardId))) merged.set(String(card.cardId), info);
+  }
+  return merged;
+}

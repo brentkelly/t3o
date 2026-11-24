@@ -27,13 +27,22 @@ const BOARD_SHEET_MAXIMISED_CLASS =
 export function BoardSheetPopup({
   className,
   maximised = false,
+  viewportClassName,
   ...props
-}: DialogPrimitive.Popup.Props & { readonly maximised?: boolean }) {
+}: DialogPrimitive.Popup.Props & {
+  readonly maximised?: boolean;
+  /** Overrides on the viewport, e.g. the full-screen phone card dropping the sheet's top gap. */
+  readonly viewportClassName?: string | undefined;
+}) {
   return (
     <DialogPortal>
       <DialogBackdrop />
       <DialogPrimitive.Viewport
-        className={cn(UPSTREAM_DIALOG_VIEWPORT, UPSTREAM_DIALOG_VIEWPORT_MOBILE_SHEET)}
+        className={cn(
+          UPSTREAM_DIALOG_VIEWPORT,
+          UPSTREAM_DIALOG_VIEWPORT_MOBILE_SHEET,
+          viewportClassName,
+        )}
         data-slot="dialog-viewport"
       >
         <DialogPrimitive.Popup

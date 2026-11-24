@@ -100,10 +100,11 @@ export const BOARD_SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["set up clone readiness re-check"],
   },
   {
-    id: "board-reclaim-worktree-on-done",
-    title: 'Reclaim worktrees at "Done"',
+    id: "board-worktree-at-done",
+    title: 'Worktrees at "Done"',
     to: "/settings/board",
     targetId: "board-lifecycle",
+    searchTerms: ["reclaim remove keep ignored files disk"],
   },
   {
     id: "board-auto-archive-done",
@@ -117,4 +118,15 @@ export const BOARD_SETTINGS_SEARCH_ITEMS = [
 export function boardSettingsBreadcrumbLabel(pathname: string): string | null {
   if (pathname.startsWith("/settings/board/projects/")) return "Board project";
   return null;
+}
+
+type BoardSettingsSearchItemId = (typeof BOARD_SETTINGS_SEARCH_ITEMS)[number]["id"];
+
+/** A board settings row's anchor id and title. The board is English-only, so no lookup by locale. */
+export function boardSearchableSetting(id: BoardSettingsSearchItemId): {
+  readonly id: string;
+  readonly title: string;
+} {
+  const item = BOARD_SETTINGS_SEARCH_ITEMS.find((entry) => entry.id === id)!;
+  return { id: item.id, title: item.title };
 }

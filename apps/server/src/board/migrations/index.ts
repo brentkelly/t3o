@@ -90,6 +90,13 @@ import Migration076 from "./076_BoardCardAutoSignOff.ts";
 import Migration077 from "./077_BoardPlanReviewRound.ts";
 import Migration078 from "./078_BoardPendingSplitApproval.ts";
 import Migration079 from "./079_BoardCardsParentIndex.ts";
+import Migration080 from "./080_BoardProjectSchedules.ts";
+import Migration081 from "./081_BoardScheduleRunWorkspace.ts";
+import Migration082 from "./082_BoardScheduleRunWorkspaceRemoved.ts";
+import Migration083 from "./083_BoardGateState.ts";
+import Migration084 from "./084_BoardMergeStay.ts";
+import Migration085 from "./085_BoardEventsTypeIndex.ts";
+import Migration086 from "./086_BoardActivityActorSource.ts";
 
 /** Ledger table for the board migration lineage, independent of upstream. */
 export const BOARD_MIGRATION_TABLE = "t3o_sql_migrations";
@@ -190,6 +197,14 @@ export const BOARD_MIGRATIONS = [
   [77, "BoardPlanReviewRound", Migration077],
   [78, "BoardPendingSplitApproval", Migration078],
   [79, "BoardCardsParentIndex", Migration079],
+  [80, "BoardProjectSchedules", Migration080],
+  [81, "BoardScheduleRunWorkspace", Migration081],
+  [82, "BoardScheduleRunWorkspaceRemoved", Migration082],
+  // T3o: automation gate state (T3O-115).
+  [83, "BoardGateState", Migration083],
+  [84, "BoardMergeStay", Migration084],
+  [85, "BoardEventsTypeIndex", Migration085],
+  [86, "BoardActivityActorSource", Migration086],
 ] as const;
 
 const boardLoader = Migrator.fromRecord(
@@ -280,4 +295,48 @@ export const runBoardMigrations = Effect.fn("runBoardMigrations")(function* () {
     ? Effect.logDebug("Board schema is current")
     : Effect.log("Board migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
   return executedMigrations;
+});
+
+const LATEST_BOARD_MIGRATION_ID = Math.max(...BOARD_MIGRATIONS.map(([id]) => id));
+
+/**
+ * Whether `withBoardDatabase` would write board schema: a legacy layout to heal or
+ * a board migration to run. Attaches `boards` first, which writes nothing.
+ */
+export const hasPendingBoardMigrations = Effect.fn("hasPendingBoardMigrations")(function* () {
+  yield* attachBoardDatabase();
+  const sql = yield* SqlClient.SqlClient;
+  const legacy = yield* sql<{ readonly name: string }>`
+    SELECT name FROM main.sqlite_master
+    WHERE type = 'table' AND (substr(name, 1, 6) = 'board_' OR name = ${BOARD_MIGRATION_TABLE})
+  `;
+  if (legacy.length > 0) return true;
+  const upstreamLedger = yield* sql<{ readonly name: string }>`
+    SELECT name FROM main.sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (upstreamLedger.length > 0) {
+    const legacyRows = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM main.effect_sql_migrations
+      WHERE migration_id >= ${LEGACY_BOARD_ID_FLOOR}
+    `;
+    if ((legacyRows[0]?.count ?? 0) > 0) return true;
+  }
+  const ledger = yield* sql<{ readonly name: string }>`
+    SELECT name FROM boards.sqlite_master WHERE type = 'table' AND name = ${BOARD_MIGRATION_TABLE}
+  `;
+  if (ledger.length === 0) return true;
+  const [latest] = yield* sql<{ readonly id: number | null }>`
+    SELECT MAX(migration_id) AS id FROM ${sql(BOARD_MIGRATION_TABLE_QUALIFIED)}
+  `;
+  return (latest?.id ?? 0) < LATEST_BOARD_MIGRATION_ID;
+});
+
+/** Wraps upstream's migrate step in the board lineage, so one ownership check covers both. */
+export const withBoardDatabase = Effect.fn("withBoardDatabase")(function* <A, E, R>(
+  migrate: Effect.Effect<A, E, R>,
+) {
+  yield* initialiseBoardDatabase().pipe(Effect.orDie);
+  const result = yield* migrate;
+  yield* runBoardMigrations().pipe(Effect.orDie);
+  return result;
 });
