@@ -42,6 +42,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
@@ -100,6 +101,8 @@ const dependencies = [
   // state directory.
   ServerConfig.ServerConfig,
   Path.Path,
+  // T3o: the plan tools read the files a plan cites (T3O-138).
+  FileSystem.FileSystem,
   // Linking a pull request to a card asks the forge through the
   // supervisor, which owns the card's pull-request refresh and settle.
   SupervisorReactor,
@@ -127,7 +130,31 @@ const BoardCardContextAttachment = Schema.Struct({
   mimeType: TrimmedNonEmptyString,
   sizeBytes: Schema.Number,
   path: TrimmedNonEmptyString,
+  /** T3o: where an agent attached it from (T3O-138). Never open it; read `path`. */
+  sourcePath: Schema.optionalKey(Schema.String),
 });
+
+/** T3o: an ancestor's attachment, labelled with the card that holds it (T3O-138). */
+const BoardCardContextInheritedAttachment = Schema.Struct({
+  ...BoardCardContextAttachment.fields,
+  cardKey: TrimmedNonEmptyString,
+});
+
+/** T3o: a file the plan tools or board_attach_files put on the card (T3O-138). */
+const BoardAttachedFile = Schema.Struct({
+  /** The attachment's name: find its readable path in board_get_card_context. */
+  name: TrimmedNonEmptyString,
+  sourcePath: Schema.String,
+  /** Set on a directory, shared as one `.tar.gz`. */
+  memberCount: Schema.optionalKey(Schema.Number),
+});
+
+/** T3o: what a plan write attached, and what it could not (T3O-138). */
+const planFileResultFields = {
+  attachedFiles: Schema.optionalKey(Schema.Array(BoardAttachedFile)),
+  /** Files the plan cites that the builder will NOT get, and what to do about each. */
+  fileWarnings: Schema.optionalKey(Schema.Array(Schema.String)),
+};
 
 /** What the card's agent threads have cost (T3O-77): the total, and one row per step,
     thread, provider and model. `estimated` means some turns were priced from the model
@@ -180,6 +207,9 @@ const BoardCardContext = Schema.Struct({
       machine. Read them on demand; nothing here is pushed into your turn
       except the images a build or planning spawn already showed you. */
   attachments: Schema.Array(BoardCardContextAttachment),
+  /** T3o: every ancestor group's attachments (a split's files sit on its parent), each with
+      the key of the card holding it and a path on this machine (T3O-138). */
+  inheritedAttachments: Schema.Array(BoardCardContextInheritedAttachment),
   dependencies: Schema.Array(BoardCardContextDependency),
   /** Prior step completions on this card, in order. HISTORY ONLY — the work
       the caller is assigned right now is `currentStep`. */
@@ -440,7 +470,7 @@ const regroupApproved = Schema.optional(Schema.Boolean);
 
 const BoardCreateCardTool = Tool.make("board_create_card", {
   description:
-    "Create a new board card and return its allocated key. Use it to populate a board conversationally, e.g. one card per feature. Omit projectId to create the card in this thread's own project (the common case); pass one only to target a different project. A projectId is matched first as a project id, then leniently against a project's title or workspace-root folder name, so a name from the app usually resolves, but the id from board_list_projects is unambiguous. An unresolvable projectId is rejected with the live project list. A card may be created into ANY existing stage. Omit stage for Backlog, or, under a parent group that has already started, for Planning, which begins a planning run; pass stage 'backlog' to park a card there instead. CAUTION: creating into an auto-executing stage (e.g. Building) starts an unattended agent run immediately, with a worktree and a share of its worker's CPU, RAM and disk. Default to the early stages unless a human asked for mid-pipeline work; the build-onward dependency gate still applies. When you make a card for an existing pull request, pass pullRequest so the card tracks it (status, merge, settling) from the start: a url, or repository and number; it must be on the card's project repository, and a pull request the forge cannot find rejects the call before any card is made. NOT idempotent: a retried call creates a second card, so on a timeout list cards before retrying. Labels are named against the existing catalogue; an unknown label name is rejected with the live list rather than created, so create a new label with board_manage_labels first. dependsOn lists card ids this card waits on. parentCardId (a card key or id) creates the card inside that group. If that card is not a group yet, this turns it into one. A card already being built cannot become a group. Dependencies may cross groups; a dependency on a group is met when the whole group is done. A card cannot depend on a group it is inside, and a group cannot depend on a card inside it. mergeStrategy sets how this card's pull request merges (squash, merge or rebase); omit it to follow its group's strategy or the board default. An upstream-sync card must use merge, or the upstream ancestry is lost. priority (low, normal, high or urgent) decides which waiting card gets the next worker slot; set it only when the user directs it, and it defaults to normal.",
+    "Create a new board card and return its allocated key. Use it to populate a board conversationally, e.g. one card per feature. Omit projectId to create the card in this thread's own project (the common case); pass one only to target a different project. A projectId is matched first as a project id, then leniently against a project's title or workspace-root folder name, so a name from the app usually resolves, but the id from board_list_projects is unambiguous. An unresolvable projectId is rejected with the live project list. A card may be created into ANY existing stage. Omit stage for Backlog, or, under a parent group that has already started, for Planning, which begins a planning run; pass stage 'backlog' to park a card there instead. CAUTION: creating into an auto-executing stage (e.g. Building) starts an unattended agent run immediately, with a worktree and a share of its worker's CPU, RAM and disk. Default to the early stages unless a human asked for mid-pipeline work; the build-onward dependency gate still applies. When you make a card for an existing pull request, pass pullRequest so the card tracks it (status, merge, settling) from the start: a url, or repository and number; it must be on the card's project repository, and a pull request the forge cannot find rejects the call before any card is made. NOT idempotent: a retried call creates a second card, so on a timeout list cards before retrying. Labels are named against the existing catalogue; an unknown label name is rejected with the live list rather than created, so create a new label with board_manage_labels first. dependsOn lists card ids this card waits on. parentCardId (a card key or id) creates the card inside that group. If that card is not a group yet, this turns it into one. A card already being built cannot become a group. Dependencies may cross groups; a dependency on a group is met when the whole group is done. A card cannot depend on a group it is inside, and a group cannot depend on a card inside it. mergeStrategy sets how this card's pull request merges (squash, merge or rebase); omit it to follow its group's strategy or the board default. An upstream-sync card must use merge, or the upstream ancestry is lost. priority (low, normal, high or urgent) decides which waiting card gets the next worker slot; set it only when the user directs it, and it defaults to normal. A brief that relies on a file outside the repository (a mock-up or capture in your scratchpad) must have it attached: this tool attaches nothing, so call board_attach_files for your own card; for another card, cite the file in a plan instead or ask its agent to attach it.",
   parameters: Schema.Struct({
     projectId: Schema.optional(ProjectId),
     title: TrimmedNonEmptyString,
@@ -482,7 +512,7 @@ const BoardMoveCardTool = Tool.make("board_move_card", {
 
 const BoardUpdateCardTool = Tool.make("board_update_card", {
   description:
-    "Update a card's title, brief, labels, dependencies, external reference, or linked pull request. cardId takes the card's key (e.g. 'Z5-39') or id. Only the fields you pass change. REPLACING fields overwrite the whole value: title; brief (pass null to clear); labels (the whole label set, named against the catalogue; unknown names are rejected, so create a new label with board_manage_labels first); dependsOn (the whole dependency set); externalRef (null clears; rejected when another live card already tracks the same system and id); pullRequest links a pull request to the card so it tracks its status, merge and settling just as if the card's own branch had opened it (a url, or repository and number, on the card's project repository, checked with the forge first). Use it to link a pull request to ANY card, not only your own, instead of setting externalRef. Linking the pull request the card already has changes nothing; pullRequest null removes an explicit link only, and a pull request found on the card's own branch reappears on the next refresh. ADDING fields keep what is there: briefAppend adds text to the end of the brief; briefSection replaces only the section under one markdown heading (e.g. '## Notes from Z5-34'), or adds it at the end if that heading is not there yet, so repeating the same call does not duplicate it (the section is closed by a '<!-- end <heading> -->' line; leave that line in place); addDependsOn and removeDependsOn add or remove single dependencies by key or id, leaving the rest alone (removing one that is not there does nothing); addLabels and removeLabels add or remove single labels by name, leaving the rest alone (adding one the card has, or removing one it does not, does nothing; a name that is no label at all is rejected; a deleted label can be removed but not added; a name in both is rejected). These are applied to the card as it is when your update lands, so prefer them to read-change-replace: they never overwrite an edit made before yours lands. They do not stop a later whole-brief replace (for example a person saving the brief in the board UI) from overwriting yours. Pass at most one of brief, briefAppend and briefSection, not dependsOn together with addDependsOn/removeDependsOn, and not labels together with addLabels/removeLabels. expectedBriefVersion (from board_get_card or board_get_card_context) makes any brief change fail if the brief changed since you read it; re-read and reapply when that happens. Any dependency change is rejected if it would form a cycle. Dependencies may cross groups; a dependency on a group is met when the whole group is done. A card cannot depend on a group it is inside, and a group cannot depend on a card inside it. planReview turns the card's adversarial plan review on or off, sets its rounds (1-20) and whether it runs unattended (unattended: true, like Auto-plan); null follows the Settings default. A rounds change during a review moves its target, which the planning agent reads at its next round; turning it off stops a running review. Turned on after the plan is posted, the review waits for a human to start it. mergeStrategy sets how this card's pull request merges (squash, merge or rebase), and null returns it to its group's strategy or the board default. An upstream-sync card must use merge, or the upstream ancestry is lost. priority (low, normal, high or urgent) decides which waiting card gets the next worker slot; set it only when the user directs it; a group has no priority, so it is rejected there. size sets the card's size per dimension ({ cpu, ram, disk }, each S, M, L or XL), recorded as your edit beside the planner's suggestion; null drops the edit, back to the planner's. A card already placed keeps the size it was granted until it is placed again. Pinning a card to a worker and starting a card over its worker's capacity are for humans only: no tool does either.",
+    "Update a card's title, brief, labels, dependencies, external reference, or linked pull request. cardId takes the card's key (e.g. 'Z5-39') or id. Only the fields you pass change. REPLACING fields overwrite the whole value: title; brief (pass null to clear); labels (the whole label set, named against the catalogue; unknown names are rejected, so create a new label with board_manage_labels first); dependsOn (the whole dependency set); externalRef (null clears; rejected when another live card already tracks the same system and id); pullRequest links a pull request to the card so it tracks its status, merge and settling just as if the card's own branch had opened it (a url, or repository and number, on the card's project repository, checked with the forge first). Use it to link a pull request to ANY card, not only your own, instead of setting externalRef. Linking the pull request the card already has changes nothing; pullRequest null removes an explicit link only, and a pull request found on the card's own branch reappears on the next refresh. ADDING fields keep what is there: briefAppend adds text to the end of the brief; briefSection replaces only the section under one markdown heading (e.g. '## Notes from Z5-34'), or adds it at the end if that heading is not there yet, so repeating the same call does not duplicate it (the section is closed by a '<!-- end <heading> -->' line; leave that line in place); addDependsOn and removeDependsOn add or remove single dependencies by key or id, leaving the rest alone (removing one that is not there does nothing); addLabels and removeLabels add or remove single labels by name, leaving the rest alone (adding one the card has, or removing one it does not, does nothing; a name that is no label at all is rejected; a deleted label can be removed but not added; a name in both is rejected). These are applied to the card as it is when your update lands, so prefer them to read-change-replace: they never overwrite an edit made before yours lands. They do not stop a later whole-brief replace (for example a person saving the brief in the board UI) from overwriting yours. Pass at most one of brief, briefAppend and briefSection, not dependsOn together with addDependsOn/removeDependsOn, and not labels together with addLabels/removeLabels. expectedBriefVersion (from board_get_card or board_get_card_context) makes any brief change fail if the brief changed since you read it; re-read and reapply when that happens. Any dependency change is rejected if it would form a cycle. Dependencies may cross groups; a dependency on a group is met when the whole group is done. A card cannot depend on a group it is inside, and a group cannot depend on a card inside it. planReview turns the card's adversarial plan review on or off, sets its rounds (1-20) and whether it runs unattended (unattended: true, like Auto-plan); null follows the Settings default. A rounds change during a review moves its target, which the planning agent reads at its next round; turning it off stops a running review. Turned on after the plan is posted, the review waits for a human to start it. mergeStrategy sets how this card's pull request merges (squash, merge or rebase), and null returns it to its group's strategy or the board default. An upstream-sync card must use merge, or the upstream ancestry is lost. priority (low, normal, high or urgent) decides which waiting card gets the next worker slot; set it only when the user directs it; a group has no priority, so it is rejected there. size sets the card's size per dimension ({ cpu, ram, disk }, each S, M, L or XL), recorded as your edit beside the planner's suggestion; null drops the edit, back to the planner's. A card already placed keeps the size it was granted until it is placed again. Pinning a card to a worker and starting a card over its worker's capacity are for humans only: no tool does either. A brief that relies on a file outside the repository (a mock-up or capture in your scratchpad) must have it attached: this tool attaches nothing, so call board_attach_files for your own card; for another card, cite the file in a plan instead or ask its agent to attach it.",
   parameters: Schema.Struct({
     /** Card key or id. */
     cardId: TrimmedNonEmptyString,
@@ -727,7 +757,7 @@ const BoardManageLabelsTool = Tool.make("board_manage_labels", {
 const BoardProposePlansTool = Tool.make("board_propose_plans", {
   // The description leads with the split's consequence so a single plan reads as the norm.
   description:
-    "Record your card's plan (the planning output). Pass ONE plan in almost every case: the array is how a card is SPLIT, and two or more plans each become a child card with its own branch, build and review, behind an approval gate that blocks the card until the split is approved. Split only for a large feature worth building and reviewing in separate pieces, or where building parts concurrently buys a real speed-up, and then splitRationale is required and is shown to the human at the gate. Each plan has a key (a short unique slug), a title, a summary, a dependsOn list referencing other plans' keys (only meaningful in a split), and a markdown body. In a split, mark each plan planned: true when its body is a full implementation plan, so its child lands in Ready to be built, or planned: false when its body is a brief that still needs its own planning, so its child lands in Backlog, or in Planning when its group's Auto-plan is on. A split also recommends the group's settings, which the human sees pre-set at the gate and can change: recommendedAutoBuild (children start themselves once their dependencies are met) and recommendedMergeTarget ('own' cuts the group its own integration branch with one final review; 'inherit' merges each child wherever this card itself merges). Every child fully planned: recommend autoBuild true and 'own'. An epic breakdown whose children still need planning: recommend autoBuild false and 'inherit', with those children planned: false. If your card already sits inside a group that has its own branch (its base branch is an integration branch such as board/<KEY>), prefer 'inherit'. Omitted recommendations fall back to these rules. Approval creates the children. It is a human's unless the card's Auto sign-off is on, which approves the split with the card's own Automation toggles as the group's settings and your recommended merge target, so split only when the work clearly warrants it. Validated on ingest (unique keys, known dependency references, and no cycles) and rejected naming the offending edge. Proposing again replaces the card's whole plan set. To change part of a plan's body, use board_edit_plan instead of re-proposing. When plan review is on for the card, the first proposal returns planReview with the review's instructions: follow them before completing. Give each plan a size: { cpu, ram, disk }, each S, M, L or XL (0.75, 1, 1.25 or 1.5 times the project's baseline reservation; omitted is M), and its reason in sizeReason, and record that reason in the decision log too. Size what the build needs: XL CPU for a heavy compile or test suite, S for docs or small edits. A size too big for the card's worker is still accepted but comes back in sizeWarnings, naming the dimension and the largest size that fits. Your card is resolved from your thread.",
+    "Record your card's plan (the planning output). Pass ONE plan in almost every case: the array is how a card is SPLIT, and two or more plans each become a child card with its own branch, build and review, behind an approval gate that blocks the card until the split is approved. Split only for a large feature worth building and reviewing in separate pieces, or where building parts concurrently buys a real speed-up, and then splitRationale is required and is shown to the human at the gate. Each plan has a key (a short unique slug), a title, a summary, a dependsOn list referencing other plans' keys (only meaningful in a split), and a markdown body. In a split, mark each plan planned: true when its body is a full implementation plan, so its child lands in Ready to be built, or planned: false when its body is a brief that still needs its own planning, so its child lands in Backlog, or in Planning when its group's Auto-plan is on. A split also recommends the group's settings, which the human sees pre-set at the gate and can change: recommendedAutoBuild (children start themselves once their dependencies are met) and recommendedMergeTarget ('own' cuts the group its own integration branch with one final review; 'inherit' merges each child wherever this card itself merges). Every child fully planned: recommend autoBuild true and 'own'. An epic breakdown whose children still need planning: recommend autoBuild false and 'inherit', with those children planned: false. If your card already sits inside a group that has its own branch (its base branch is an integration branch such as board/<KEY>), prefer 'inherit'. Omitted recommendations fall back to these rules. Approval creates the children. It is a human's unless the card's Auto sign-off is on, which approves the split with the card's own Automation toggles as the group's settings and your recommended merge target, so split only when the work clearly warrants it. Validated on ingest (unique keys, known dependency references, and no cycles) and rejected naming the offending edge. Proposing again replaces the card's whole plan set. To change part of a plan's body, use board_edit_plan instead of re-proposing. When plan review is on for the card, the first proposal returns planReview with the review's instructions: follow them before completing. Give each plan a size: { cpu, ram, disk }, each S, M, L or XL (0.75, 1, 1.25 or 1.5 times the project's baseline reservation; omitted is M), and its reason in sizeReason, and record that reason in the decision log too. Size what the build needs: XL CPU for a heavy compile or test suite, S for docs or small edits. A size too big for the card's worker is still accepted but comes back in sizeWarnings, naming the dimension and the largest size that fits. Files the plan cites by absolute path in your scratchpad or temp dir are attached to the card automatically and listed in a generated Attached files footer (the footer cannot be edited); read fileWarnings in the result for cited files the builder will NOT get, and act on each. Your card is resolved from your thread.",
   parameters: Schema.Struct({
     plans: Schema.Array(BoardProposedPlanInput),
     /** Required once `plans` holds two or more (enforced by the decider, which
@@ -743,6 +773,7 @@ const BoardProposePlansTool = Tool.make("board_propose_plans", {
     sizeWarnings: Schema.optionalKey(Schema.Array(Schema.String)),
     /** Plan review started by this proposal (plan review). */
     planReview: Schema.optionalKey(BoardPlanReviewToolResult),
+    ...planFileResultFields,
   }),
   failure: BoardToolFailure,
   dependencies,
@@ -764,12 +795,12 @@ const BoardGetPlanTool = Tool.make("board_get_plan", {
 
 const BoardWritePlanTool = Tool.make("board_write_plan", {
   description:
-    "Replace the whole body of one of your card's plans. Prefer board_edit_plan to change part of it. Rejected once the plan is locked. Locking happens when the plan is materialised to a file at build time, after which the file is the single source of truth and you edit it directly instead. Your card is resolved from your thread.",
+    "Replace the whole body of one of your card's plans. Prefer board_edit_plan to change part of it. Rejected once the plan is locked. Locking happens when the plan is materialised to a file at build time, after which the file is the single source of truth and you edit it directly instead. Files the plan cites by absolute path in your scratchpad or temp dir are attached to the card automatically and listed in a generated Attached files footer (the footer cannot be edited); read fileWarnings in the result for cited files the builder will NOT get, and act on each. Your card is resolved from your thread.",
   parameters: Schema.Struct({
     planId: BoardPlan.fields.planId,
     body: Schema.String,
   }),
-  success: Schema.Struct({ planId: BoardPlan.fields.planId }),
+  success: Schema.Struct({ planId: BoardPlan.fields.planId, ...planFileResultFields }),
   failure: BoardToolFailure,
   dependencies,
 }).annotate(Tool.Title, "Write board plan");
@@ -785,15 +816,36 @@ const BoardEditPlanTool = Tool.make("board_edit_plan", {
   // One flat edit struct, not a union: the JSON codec drops undeclared keys, so
   // a union would silently misread an edit that mixes both kinds.
   description:
-    'Patch one of your card\'s plans without resending it. This is the normal way to revise a plan you have proposed: prefer it over board_write_plan, and do not re-propose just because a body changed. Each edit sets exactly one of old_text or section. A text edit, { old_text, new_text, replace_all? }: old_text must appear exactly once unless replace_all is set (best for small fixes). A section edit, { section, new_text }: section is a markdown heading line exactly as written (e.g. "## Rollout"), and everything from that heading up to the next heading of the same or higher level is replaced by new_text. Unlike board_update_card\'s briefSection, new_text INCLUDES the heading line, so it must start with a heading line; you can rename the section or delete it with "", and a heading that isn\'t there is an error, not an append. Section edits are best for rewriting a large block; a top-level "# Title" section spans the whole plan. To add a section, use a text edit that puts it in front of the following heading line. Edits apply in order and all-or-nothing, and a failure names the edit and why. Returns the new body\'s length. Rejected once the plan is locked; edit the .plans/ file instead. Your card is resolved from your thread.',
+    'Patch one of your card\'s plans without resending it. This is the normal way to revise a plan you have proposed: prefer it over board_write_plan, and do not re-propose just because a body changed. Each edit sets exactly one of old_text or section. A text edit, { old_text, new_text, replace_all? }: old_text must appear exactly once unless replace_all is set (best for small fixes). A section edit, { section, new_text }: section is a markdown heading line exactly as written (e.g. "## Rollout"), and everything from that heading up to the next heading of the same or higher level is replaced by new_text. Unlike board_update_card\'s briefSection, new_text INCLUDES the heading line, so it must start with a heading line; you can rename the section or delete it with "", and a heading that isn\'t there is an error, not an append. Section edits are best for rewriting a large block; a top-level "# Title" section spans the whole plan. To add a section, use a text edit that puts it in front of the following heading line. Edits apply in order and all-or-nothing, and a failure names the edit and why. Returns the new body\'s length. Rejected once the plan is locked; edit the .plans/ file instead. Files the plan cites by absolute path in your scratchpad or temp dir are attached to the card automatically and listed in a generated Attached files footer (the footer cannot be edited); read fileWarnings in the result for cited files the builder will NOT get, and act on each. Pass edits: [] to only rescan and re-attach the cited files, for example after a fileWarnings retry. Your card is resolved from your thread.',
   parameters: Schema.Struct({
     planId: BoardPlan.fields.planId,
-    edits: Schema.Array(BoardPlanEditInput).check(Schema.isMinLength(1)),
+    /** T3o: empty rescans the plan's cited files and re-attaches them (T3O-138). */
+    edits: Schema.Array(BoardPlanEditInput),
   }),
-  success: Schema.Struct({ planId: BoardPlan.fields.planId, length: Schema.Number }),
+  success: Schema.Struct({
+    planId: BoardPlan.fields.planId,
+    length: Schema.Number,
+    ...planFileResultFields,
+  }),
   failure: BoardToolFailure,
   dependencies,
 }).annotate(Tool.Title, "Edit board plan");
+
+const BoardAttachFilesTool = Tool.make("board_attach_files", {
+  description:
+    "Attach files to your own card so every later agent on it (builders and reviewers, on any machine) can read them from board_get_card_context attachments. Use it for a file a brief or plan relies on that lives outside the repository, such as a mock-up, capture or data file in your scratchpad. paths are absolute paths (or ~/ paths) on the machine you run on, 1 to 20 per call. Only your own regular files and directories under the temp folders (os.tmpdir(), $TMPDIR, /tmp, /var/tmp) or the chat attachments folder can be shared; anything else is refused, so copy it into your scratchpad first and attach the copy. A directory is attached as one <dirname>.tar.gz (at most 200 files); each item is limited to 20 MiB, and a card holds at most 20 attachments. Attaching a path again is a no-op when the file is unchanged and replaces the earlier copy when it changed. Plan tools already attach the temp files a plan cites, so call this for briefs, for a locked plan, or to retry. Returns attached (each name and sourcePath) and refused (each path, reason and what to do). Your card is resolved from your thread.",
+  parameters: Schema.Struct({
+    paths: Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+  }),
+  success: Schema.Struct({
+    attached: Schema.Array(BoardAttachedFile),
+    refused: Schema.Array(
+      Schema.Struct({ path: Schema.String, reason: Schema.String, message: Schema.String }),
+    ),
+  }),
+  failure: BoardToolFailure,
+  dependencies,
+}).annotate(Tool.Title, "Attach files to your card");
 
 const BoardRecordDecisionsTool = Tool.make("board_record_decisions", {
   description:
@@ -875,6 +927,7 @@ export const BoardToolkit = Toolkit.make(
   BoardGetPlanTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardWritePlanTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardEditPlanTool.annotate(McpSchema.EnabledWhen, shownToThreads),
+  BoardAttachFilesTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardRecordDecisionsTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardSetAutomationTool.annotate(McpSchema.EnabledWhen, shownToThreads),
 );

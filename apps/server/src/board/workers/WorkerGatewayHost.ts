@@ -53,6 +53,7 @@ import * as Base64 from "effect/encoding/Base64";
 
 import * as ServerConfig from "../../config.ts";
 import { boardCardAttachmentsDir, resolveBoardCardAttachmentPath } from "../attachments.ts";
+import { inspectShareableFiles, readShareableItem } from "../shareableFiles.ts";
 import { LocalThreadGateway, type TodoLogEntry } from "../ThreadGateway.ts";
 import { BoardRelayStore } from "./BoardRelayStore.ts";
 import { BoardActualsMeter } from "../actuals/BoardActualsMeter.ts";
@@ -96,7 +97,9 @@ type CallerBound =
   | "pruneScheduleRuns"
   | ThreadMutation
   | "runCi"
-  | "readCiLog";
+  | "readCiLog"
+  | "inspectShareableFiles"
+  | "readShareableFile";
 
 /** The calls that change a thread: only the board that placed it may make them. */
 type ThreadMutation =
@@ -209,6 +212,8 @@ export type WorkerGatewayHostShape = Omit<
   ) => Effect.Effect<void, BoardWorkerGatewayError>;
   readonly runCi: WithCaller<"runCi">;
   readonly readCiLog: WithCaller<"readCiLog">;
+  readonly inspectShareableFiles: WithCaller<"inspectShareableFiles">;
+  readonly readShareableFile: WithCaller<"readShareableFile">;
 } & { readonly [K in ThreadMutation]: WithCaller<K> };
 
 /** The host as one session sees it: the in-process test transport's view. */
@@ -245,6 +250,8 @@ export const hostForSession = (
   unlinkPullRequest: (input) => host.unlinkPullRequest(input, caller),
   runCi: (input) => host.runCi(input, caller),
   readCiLog: (input) => host.readCiLog(input, caller),
+  inspectShareableFiles: (input) => host.inspectShareableFiles(input, caller),
+  readShareableFile: (input) => host.readShareableFile(input, caller),
 });
 
 export class WorkerGatewayHost extends Context.Service<WorkerGatewayHost, WorkerGatewayHostShape>()(
@@ -358,6 +365,18 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
                 ),
           ),
         );
+  /** A thread's checkout as this machine knows it: its worktree, else its project's root here.
+      The central's guess (its own project root) is used only when this server can't say. */
+  const threadCheckoutRoot = Effect.fn("WorkerGatewayHost.threadCheckoutRoot")(function* (
+    threadId: ThreadId,
+    centralGuess: string | null,
+  ) {
+    const state = yield* local.threadState(threadId).pipe(Effect.orElseSucceed(() => null));
+    if (state === null) return centralGuess;
+    if (state.worktreePath !== null) return state.worktreePath;
+    const project = yield* local.project(state.projectId).pipe(Effect.orElseSucceed(() => null));
+    return project?.workspaceRoot ?? centralGuess;
+  });
   const holdsWorktree = (caller: GatewayCaller, worktreePath: string) =>
     caller.boardId === null || Option.isNone(capacity)
       ? Effect.succeed(false)
@@ -872,6 +891,70 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
     mcpRelayRespond: (response, caller) =>
       relay.respond(response, caller).pipe(Effect.mapError(refused("mcpRelayRespond"))),
     stageAttachments,
+    // T3o: a thread's own temp files, for the board that placed it (T3O-138). The allowlist
+    // and uid check run here, on the machine the files are on.
+    inspectShareableFiles: (input, caller) =>
+      ownThread("inspectShareableFiles", caller, input.threadId as ThreadId).pipe(
+        Effect.andThen(threadCheckoutRoot(input.threadId as ThreadId, input.checkoutRoot)),
+        Effect.flatMap((checkoutRoot) =>
+          inspectShareableFiles(input.paths, {
+            mode: input.mode,
+            checkoutRoot,
+            attachmentsDir: config.attachmentsDir,
+          }),
+        ),
+        Effect.map((items) => ({ items })),
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+      ),
+    readShareableFile: (input, caller) =>
+      ownThread("readShareableFile", caller, input.threadId as ThreadId).pipe(
+        Effect.andThen(
+          readShareableItem(input.sourcePath, {
+            mode: input.mode,
+            checkoutRoot: null,
+            attachmentsDir: config.attachmentsDir,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new BoardWorkerGatewayError({
+                  kind: "failed",
+                  operation: "readShareableFile",
+                  threadId: input.threadId as ThreadId,
+                  detail: error.message,
+                }),
+            ),
+          ),
+        ),
+        Effect.flatMap((read) =>
+          "bytes" in read
+            ? Effect.logInfo("board: a thread's file was shared with its board", {
+                threadId: input.threadId,
+                sourcePath: input.sourcePath,
+                boardId: caller.boardId,
+              }).pipe(
+                Effect.as({
+                  name: read.name,
+                  mimeType: read.mimeType,
+                  contentBase64: Base64.encode(read.bytes),
+                  contentHash: read.contentHash,
+                  ...("memberCount" in read && read.memberCount !== undefined
+                    ? { memberCount: read.memberCount }
+                    : {}),
+                }),
+              )
+            : Effect.fail(
+                new BoardWorkerGatewayError({
+                  kind: "refused",
+                  operation: "readShareableFile",
+                  threadId: input.threadId as ThreadId,
+                  detail: read.message,
+                }),
+              ),
+        ),
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+      ),
     // The card's CI steps, run here where its worktree is: one of the calling board's own.
     runCi: (input, caller) =>
       Stream.unwrap(

@@ -5,6 +5,10 @@
  */
 import {
   OrchestratorMcpFailure,
+  type BoardInspectShareableFilesInput,
+  type BoardInspectShareableFilesResult,
+  type BoardReadShareableFileInput,
+  type BoardReadShareableFileResult,
   type BoardMcpRelayOutcome,
   type BoardMcpRelayRequest,
   type EnvironmentId,
@@ -56,6 +60,14 @@ export class BoardRelayInvocation extends Context.Service<
       void,
       Effect.Error<ReturnType<typeof stageCardFilesOnWorker>> | WorkerUnavailable
     >;
+    /** T3o: the files a plan cites, inspected and read on the worker (T3O-138). Any failure,
+        an older worker's unknown method included, means "not attached this time". */
+    readonly inspectFiles: (
+      input: BoardInspectShareableFilesInput,
+    ) => Effect.Effect<BoardInspectShareableFilesResult, { readonly message: string }>;
+    readonly readFile: (
+      input: BoardReadShareableFileInput,
+    ) => Effect.Effect<BoardReadShareableFileResult, { readonly message: string }>;
   }
 >()("t3/mcp/toolkits/board/relay/BoardRelayInvocation") {}
 
@@ -179,6 +191,8 @@ export const runRelayedBoardTool = Effect.fn("BoardMcpRelay.runRelayedBoardTool"
     readonly request: BoardMcpRelayRequest;
     readonly handlers: Readonly<Record<string, AnyBoardHandler>>;
     readonly stageCardFiles: BoardRelayInvocation["Service"]["stageCardFiles"];
+    readonly inspectFiles: BoardRelayInvocation["Service"]["inspectFiles"];
+    readonly readFile: BoardRelayInvocation["Service"]["readFile"];
   }) {
     const { request, workerId } = input;
     const handler = input.handlers[request.toolName];
@@ -260,6 +274,8 @@ export const runRelayedBoardTool = Effect.fn("BoardMcpRelay.runRelayedBoardTool"
         workerId,
         stateDir: request.stateDir,
         stageCardFiles: input.stageCardFiles,
+        inspectFiles: input.inspectFiles,
+        readFile: input.readFile,
       }),
       Effect.result,
     );

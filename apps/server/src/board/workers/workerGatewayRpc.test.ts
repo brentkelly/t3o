@@ -29,7 +29,7 @@ import { TestClock } from "effect/testing";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { aliveThread, fakeThreadState } from "../threadGateway.testkit.ts";
-import { makeInProcessWorker, WORKER_PROJECT_ID } from "./distributed.testkit.ts";
+import { makeInProcessWorker, WORKER_PROJECT_ID, WORKER_ROOT } from "./distributed.testkit.ts";
 import { scheduleRunBranchOf } from "../schedules/scheduleLogic.ts";
 import { decodeGatewayCallResult } from "./gatewayWire.ts";
 import { makeMcpRelayHost, type McpRelayHostShape } from "./McpRelayHost.ts";
@@ -312,6 +312,51 @@ it.effect("a shared worker lets a board act only on the threads and worktrees it
         steps: [{ name: "test", command: "true", timeoutMinutes: 1 }],
       }).pipe(Stream.runCollect, onHost, Effect.flip);
       assert.strictEqual(ci._tag, "BoardWorkerGatewayError");
+
+      // Nor read its files: both file RPCs report that as a refusal, not a failure.
+      const fileRefusal = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => ("kind" in error ? String(error.kind) : error._tag)),
+        );
+      assert.strictEqual(
+        yield* fileRefusal(
+          other["boardWorker.inspectShareableFiles"]({
+            threadId,
+            paths: ["/tmp/x"],
+            mode: "scan",
+            checkoutRoot: null,
+          }).pipe(onHost),
+        ),
+        "refused",
+      );
+      assert.strictEqual(
+        yield* fileRefusal(
+          other["boardWorker.readShareableFile"]({
+            threadId,
+            sourcePath: "/tmp/x",
+            mode: "scan",
+          }).pipe(onHost),
+        ),
+        "refused",
+      );
+
+      // The owner's inspect skips the worker's own checkout, not the central's guess at it.
+      const planner = ThreadId.make("thread-board-a-planner");
+      yield* Ref.update(env.threads.states, (states) =>
+        new Map(states).set(planner, aliveThread(planner, { projectId: WORKER_PROJECT_ID })),
+      );
+      yield* env.relayStore.store.recordRelayedThread(planner, CENTRAL);
+      const inspected = yield* owner["boardWorker.inspectShareableFiles"]({
+        threadId: planner,
+        paths: [`${WORKER_ROOT}/src/index.ts`],
+        mode: "scan",
+        checkoutRoot: "/home/central/repo",
+      }).pipe(onHost);
+      assert.deepStrictEqual(
+        inspected.items.map((item) => (item.kind === "refused" ? item.reason : item.kind)),
+        ["in-checkout"],
+      );
 
       // Nor may it spawn a thread in another board's name, which would take that board's relay.
       const forged = ThreadId.make("thread-forged-for-a");

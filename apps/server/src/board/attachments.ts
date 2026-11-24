@@ -165,6 +165,87 @@ const claimError = (failure: BoardAttachmentClaimFailure) =>
   new BoardAttachmentClaimError({ failure });
 
 /**
+ * Write a new file into the card's folder under `preferred`, or the first free `name-N`.
+ * Racing attaches read the same record list, so the name is claimed with an exclusive create:
+ * the loser lands as `name-2` instead of overwriting the winner's file (and deleting it on
+ * rollback).
+ */
+const storeUnderFreeName = Effect.fn("board-attachments-store")(function* <E>(input: {
+  readonly stateDir: string;
+  readonly card: BoardCard;
+  readonly preferred: string;
+  readonly write: (target: string) => Effect.Effect<void, E>;
+}) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { preferred } = input;
+  const dir = boardCardAttachmentsDir({ path, stateDir: input.stateDir, cardId: input.card.id });
+  if (dir === null) {
+    return yield* claimError({ reason: "rejected", message: "Attachment name is not allowed." });
+  }
+  const taken = new Set(input.card.attachments.map((attachment) => attachment.name));
+  yield* fileSystem.makeDirectory(dir, { recursive: true }).pipe(
+    Effect.mapError((cause) =>
+      claimError({
+        reason: "storage",
+        message: `Failed to store '${preferred}' for card ${input.card.key}.`,
+        cause,
+      }),
+    ),
+  );
+  let name = dedupeBoardAttachmentName(preferred, taken);
+  for (let attempt = 0; ; attempt += 1) {
+    const target = resolveBoardCardAttachmentPath({
+      path,
+      stateDir: input.stateDir,
+      cardId: input.card.id,
+      name,
+    });
+    if (target === null) {
+      return yield* claimError({ reason: "rejected", message: "Attachment name is not allowed." });
+    }
+    // Reserve with an exclusive open (a failure on an existing file is a
+    // collision, retried under the next suffix), then write over it (a failure
+    // is a storage error: the reservation is removed, nothing retried).
+    const reserved = yield* Effect.scoped(fileSystem.open(target, { flag: "wx" })).pipe(
+      Effect.as(true),
+      Effect.catch((cause) =>
+        fileSystem.exists(target).pipe(
+          Effect.orElseSucceed(() => false),
+          Effect.flatMap((exists) =>
+            exists && attempt < 100
+              ? Effect.succeed(false)
+              : Effect.fail(
+                  claimError({
+                    reason: "storage",
+                    message: `Failed to store '${name}' for card ${input.card.key}.`,
+                    cause,
+                  }),
+                ),
+          ),
+        ),
+      ),
+    );
+    if (!reserved) {
+      taken.add(name);
+      name = dedupeBoardAttachmentName(preferred, taken);
+      continue;
+    }
+    yield* input.write(target).pipe(
+      Effect.tapError(() => fileSystem.remove(target).pipe(Effect.ignore)),
+      Effect.mapError((cause) =>
+        claimError({
+          reason: "storage",
+          message: `Failed to store '${name}' for card ${input.card.key}.`,
+          cause,
+        }),
+      ),
+    );
+    return name;
+  }
+});
+
+/**
  * Copy a pending upload into the card's folder and return the record to
  * store (K2). The pending copy is left for upstream's 24h sweep, as the
  * chat path does. Refuses a non-pending id, a missing or size-mismatched
@@ -187,7 +268,6 @@ export const claimBoardCardAttachment = Effect.fn("board-attachments-claim")(fun
   readonly addedAt: string;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const fail = (failure: BoardAttachmentClaimFailure) => Effect.fail(claimError(failure));
 
   if (input.card.attachments.length >= BOARD_CARD_ATTACHMENTS_MAX) {
@@ -251,78 +331,17 @@ export const claimBoardCardAttachment = Effect.fn("board-attachments-claim")(fun
       message: `'${input.name}' cannot be attached: stored size does not match.`,
     });
   }
-  const dir = boardCardAttachmentsDir({ path, stateDir: input.stateDir, cardId: input.card.id });
-  if (dir === null) {
-    return yield* fail({ reason: "rejected", message: "Attachment name is not allowed." });
-  }
-  // Racing attaches read the same record list, so the name is claimed with an
-  // exclusive create: the loser lands as `name-2` instead of overwriting the
-  // winner's file (and deleting it on rollback).
-  const taken = new Set(input.card.attachments.map((attachment) => attachment.name));
   const preferred = sanitizeBoardAttachmentName({
     name: input.name,
     type: input.type,
     mimeType,
   });
-  yield* fileSystem.makeDirectory(dir, { recursive: true }).pipe(
-    Effect.mapError((cause) =>
-      claimError({
-        reason: "storage",
-        message: `Failed to store '${preferred}' for card ${input.card.key}.`,
-        cause,
-      }),
-    ),
-  );
-  let name = dedupeBoardAttachmentName(preferred, taken);
-  for (let attempt = 0; ; attempt += 1) {
-    const target = resolveBoardCardAttachmentPath({
-      path,
-      stateDir: input.stateDir,
-      cardId: input.card.id,
-      name,
-    });
-    if (target === null) {
-      return yield* fail({ reason: "rejected", message: "Attachment name is not allowed." });
-    }
-    // Reserve with an exclusive open (a failure on an existing file is a
-    // collision, retried under the next suffix), then copy over it (a failure
-    // is a storage error: the reservation is removed, nothing retried).
-    const reserved = yield* Effect.scoped(fileSystem.open(target, { flag: "wx" })).pipe(
-      Effect.as(true),
-      Effect.catch((cause) =>
-        fileSystem.exists(target).pipe(
-          Effect.orElseSucceed(() => false),
-          Effect.flatMap((exists) =>
-            exists && attempt < 100
-              ? Effect.succeed(false)
-              : Effect.fail(
-                  claimError({
-                    reason: "storage",
-                    message: `Failed to store '${name}' for card ${input.card.key}.`,
-                    cause,
-                  }),
-                ),
-          ),
-        ),
-      ),
-    );
-    if (!reserved) {
-      taken.add(name);
-      name = dedupeBoardAttachmentName(preferred, taken);
-      continue;
-    }
-    yield* fileSystem.copyFile(sourcePath, target).pipe(
-      Effect.tapError(() => fileSystem.remove(target).pipe(Effect.ignore)),
-      Effect.mapError((cause) =>
-        claimError({
-          reason: "storage",
-          message: `Failed to store '${name}' for card ${input.card.key}.`,
-          cause,
-        }),
-      ),
-    );
-    break;
-  }
+  const name = yield* storeUnderFreeName({
+    stateDir: input.stateDir,
+    card: input.card,
+    preferred,
+    write: (target) => fileSystem.copyFile(sourcePath, target),
+  });
   return {
     id: input.attachmentId,
     name,
@@ -332,6 +351,50 @@ export const claimBoardCardAttachment = Effect.fn("board-attachments-claim")(fun
     addedAt: input.addedAt,
   } satisfies BoardCardAttachment;
 });
+
+/**
+ * T3o: store bytes an agent shared (T3O-138) and return the record to dispatch, carrying the
+ * path it came from and its hash so a later scan can tell an unchanged file from a changed one.
+ * A name the card already uses lands as `name-2`.
+ */
+export const claimBoardCardAttachmentBytes = Effect.fn("board-attachments-claim-bytes")(
+  function* (input: {
+    readonly stateDir: string;
+    readonly card: BoardCard;
+    readonly attachmentId: BoardCardAttachmentId;
+    readonly name: string;
+    readonly mimeType: string;
+    readonly bytes: Uint8Array;
+    readonly sourcePath: string;
+    readonly contentHash: string;
+    readonly addedAt: string;
+  }) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const mimeType = input.mimeType.toLowerCase();
+    // Only an image the providers can take inline is typed as one, so the K4 push stays
+    // within upstream's image cap; anything else is pulled by path.
+    const type: BoardCardAttachment["type"] =
+      mimeType.startsWith("image/") && input.bytes.length <= PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+        ? "image"
+        : "file";
+    const name = yield* storeUnderFreeName({
+      stateDir: input.stateDir,
+      card: input.card,
+      preferred: sanitizeBoardAttachmentName({ name: input.name, type: "file", mimeType }),
+      write: (target) => fileSystem.writeFile(target, input.bytes),
+    });
+    return {
+      id: input.attachmentId,
+      name,
+      type,
+      mimeType,
+      sizeBytes: input.bytes.length,
+      addedAt: input.addedAt,
+      sourcePath: input.sourcePath,
+      contentHash: input.contentHash,
+    } satisfies BoardCardAttachment;
+  },
+);
 
 /** Delete one attachment's file. A file that is already gone is not an
     error: the record is what the user removed, and it is gone either way.
@@ -390,6 +453,8 @@ export interface BoardCardAttachmentManifestEntry {
   readonly mimeType: string;
   readonly sizeBytes: number;
   readonly path: string;
+  /** Where an agent attached it from; absent on human uploads. Never open it: read `path`. */
+  readonly sourcePath?: string;
 }
 
 /** The pull half (K3): what `board_get_card_context` hands a thread. Pure —
@@ -416,6 +481,7 @@ export function boardCardAttachmentManifest(input: {
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
             path: filePath,
+            ...(attachment.sourcePath === undefined ? {} : { sourcePath: attachment.sourcePath }),
           },
         ];
   });

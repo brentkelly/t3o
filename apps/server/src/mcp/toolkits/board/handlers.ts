@@ -105,6 +105,7 @@ import {
 } from "../../../board/ThreadGateway.ts";
 import { BoardCapacityClient } from "../../../board/capacity/BoardCapacityClient.ts";
 import { BoardEngine, type BoardEngineShape } from "../../../board/BoardEngine.ts";
+import { boardPlansProposalProblem } from "../../../board/decider.ts";
 import { BoardQueries } from "../../../board/BoardQueries.ts";
 import type { BoardDispatchError } from "../../../board/errors.ts";
 import type { BoardQueriesShape } from "../../../board/projection.ts";
@@ -121,6 +122,7 @@ import { boardBriefVersion } from "../../../board/briefEdits.ts";
 import { createBoardCard, resolveBoardCardKeyPrefix } from "../../../board/createCard.ts";
 import { isKeptStepThread, keptPlanningStepId } from "../../../board/planningThreadKeep.ts";
 import { applyBoardPlanEdits } from "../../../board/planEdits.ts";
+import { stripAttachedFilesFooter } from "../../../board/shareableFiles.ts";
 import {
   boardCompletionReopened,
   planReviewInstructions,
@@ -137,6 +139,13 @@ import {
   boardOutdentPlan,
 } from "../../../board/groupOperations.ts";
 import { BoardRelayInvocation, relayable } from "./relay.ts";
+// T3o: plan files reach the builder as card attachments (T3O-138).
+import {
+  attachSharedFiles,
+  boardFileSource,
+  scanPlanFiles,
+  type PlanFilesScan,
+} from "./planFiles.ts";
 import { BoardToolError, BoardToolkit } from "./tools.ts";
 // T3o: a schedule run's board tools are limited to its own cards (T3O-117).
 import { BoardScheduleStore } from "../../../board/schedules/BoardScheduleStore.ts";
@@ -1084,6 +1093,82 @@ const describeSourcePlan = Effect.fn("BoardToolkit.describeSourcePlan")(function
   return { plan, body: body === null || body.trim() === brief?.trim() ? null : body };
 });
 
+/**
+ * T3o: attach files for the caller's card (T3O-138). Read where the thread runs, stored on this
+ * server. Paths under the thread's own checkout are the repository's, so they are skipped.
+ */
+const planFilesAttacher = Effect.fn("BoardToolkit.planFilesAttacher")(function* (
+  deps: BoardToolDeps,
+  card: BoardCard,
+) {
+  const config = yield* ServerConfig.ServerConfig;
+  const state = yield* deps.threads
+    .threadState(deps.scope.thread.threadId)
+    .pipe(Effect.orElseSucceed(() => null));
+  const worktree = state !== null && state !== UNKNOWN_THREAD_STATE ? state.worktreePath : null;
+  const checkoutRoot =
+    worktree ??
+    (yield* deps.threads.project(card.projectId).pipe(
+      Effect.map((project) => project?.workspaceRoot ?? null),
+      Effect.orElseSucceed(() => null),
+    ));
+  const source = yield* boardFileSource({
+    threadId: String(deps.scope.thread.threadId),
+    checkoutRoot,
+  });
+  const readCard = readBoardState(deps).pipe(
+    Effect.map((board) => board.cards.find((candidate) => candidate.id === card.id) ?? null),
+  );
+  const attach = (paths: ReadonlyArray<string>, mode: "scan" | "explicit") =>
+    attachSharedFiles({
+      cardId: card.id,
+      paths,
+      mode,
+      source,
+      stateDir: config.stateDir,
+      readCard,
+      dispatch: (command) => dispatch(deps, command),
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("board: plan files were not attached", { cause }).pipe(
+          Effect.as({
+            attached: [],
+            refused: [],
+            unreachable:
+              "The plan's files could not be attached this time. Re-run board_edit_plan with `edits: []` to retry (or board_attach_files).",
+          }),
+        ),
+      ),
+    );
+  return { attach, readCard };
+});
+
+/** The scan a plan write runs, as the result fields it adds. */
+const scanPlanBodies = Effect.fn("BoardToolkit.scanPlanBodies")(function* (
+  deps: BoardToolDeps,
+  card: BoardCard,
+  bodies: ReadonlyArray<string>,
+  onCardKey?: string,
+) {
+  const files = yield* planFilesAttacher(deps, card);
+  const board = yield* readBoardState(deps);
+  return yield* scanPlanFiles({
+    bodies,
+    onCardKey,
+    attach: (paths) => files.attach(paths, "scan"),
+    readCard: files.readCard,
+    ancestors: boardCardAncestors(board, card),
+  });
+});
+
+const planFileFields = (scan: {
+  readonly attachedFiles: PlanFilesScan["attachedFiles"];
+  readonly fileWarnings: ReadonlyArray<string>;
+}) => ({
+  ...(scan.attachedFiles.length === 0 ? {} : { attachedFiles: scan.attachedFiles }),
+  ...(scan.fileWarnings.length === 0 ? {} : { fileWarnings: scan.fileWarnings }),
+});
+
 const rawBoardHandlers = {
   board_get_card_context: Effect.fn("BoardToolkit.board_get_card_context")(function* () {
     const deps = yield* boardToolDeps;
@@ -1137,23 +1222,31 @@ const rawBoardHandlers = {
     // A relayed call hands out paths on the worker, so the
     // card's files go there first — staging at spawn misses later ones.
     const relayed = yield* Effect.serviceOption(BoardRelayInvocation);
-    if (Option.isSome(relayed) && card.attachments.length > 0) {
+    // T3o: a split child reads the files its planner attached to the group (T3O-138).
+    const fileAncestors = boardCardAncestors(board, card).filter(
+      (ancestor) => ancestor.attachments.length > 0,
+    );
+    if (Option.isSome(relayed)) {
       const config = yield* ServerConfig.ServerConfig;
-      const files = boardCardAttachmentManifest({
-        path: deps.path,
-        stateDir: config.stateDir,
-        card,
-      }).map((entry) => ({ name: entry.name, path: entry.path }));
-      yield* relayed.value.stageCardFiles({ cardId: String(card.id), files }).pipe(
-        Effect.mapError(
-          () =>
-            new BoardToolError({
-              code: "board-unreachable",
-              message:
-                "Couldn't copy the card's files to the machine this thread runs on. This is temporary: retry the call.",
-            }),
-        ),
-      );
+      // Each card staged with its whole list: staging removes the files a card no longer lists.
+      for (const owner of [card, ...fileAncestors]) {
+        if (owner.attachments.length === 0) continue;
+        const files = boardCardAttachmentManifest({
+          path: deps.path,
+          stateDir: config.stateDir,
+          card: owner,
+        }).map((entry) => ({ name: entry.name, path: entry.path }));
+        yield* relayed.value.stageCardFiles({ cardId: String(owner.id), files }).pipe(
+          Effect.mapError(
+            () =>
+              new BoardToolError({
+                code: "board-unreachable",
+                message:
+                  "Couldn't copy the card's files to the machine this thread runs on. This is temporary: retry the call.",
+              }),
+          ),
+        );
+      }
     }
     return {
       capacity: boardCardCapacityFor(board, card),
@@ -1172,6 +1265,13 @@ const rawBoardHandlers = {
         stateDir: deps.stateDir,
         card,
       }),
+      inheritedAttachments: fileAncestors.flatMap((ancestor) =>
+        boardCardAttachmentManifest({
+          path: deps.path,
+          stateDir: deps.stateDir,
+          card: ancestor,
+        }).map((entry) => ({ ...entry, cardKey: ancestor.key })),
+      ),
       dependencies,
       steps: reviewCaller
         ? boardCardStepCompletions(board, card.id).filter(
@@ -2121,11 +2221,26 @@ const rawBoardHandlers = {
     const board = yield* readBoardState(deps);
     const card = yield* requireCallerCard(board, deps.scope);
     const settings = yield* readBoardSettings;
+    // Refuse before the scan, which attaches files a refused proposal would leave behind.
+    const problem = boardPlansProposalProblem(board, card, {
+      plans: input.plans,
+      splitRationale: input.splitRationale ?? null,
+    });
+    if (problem !== null) return yield* new BoardToolError({ code: "rejected", message: problem });
+    const files = yield* scanPlanBodies(
+      deps,
+      card,
+      input.plans.map((plan) => plan.body),
+      input.plans.length > 1 ? card.key : undefined,
+    );
     const command: BoardPlansProposeCommand = {
       type: "board.plans.propose",
       commandId: yield* mintCommandId,
       cardId: card.id,
-      plans: input.plans,
+      plans: input.plans.map((plan, index) => ({
+        ...plan,
+        body: files.bodies[index] ?? plan.body,
+      })),
       // Optional on the tool, explicit on the command: the
       // decider is the one place that decides whether a split needs one.
       splitRationale: input.splitRationale ?? null,
@@ -2149,6 +2264,7 @@ const rawBoardHandlers = {
       planIds: input.plans.map((plan) => boardPlanId(card.id, plan.key)),
       ...(planReview === null ? {} : { planReview }),
       ...(sizeWarnings.length === 0 ? {} : { sizeWarnings }),
+      ...planFileFields(files),
     };
   }),
 
@@ -2185,16 +2301,23 @@ const rawBoardHandlers = {
         message: `No plan '${input.planId}' on your card.`,
       });
     }
+    if (plan.locked) {
+      return yield* new BoardToolError({
+        code: "rejected",
+        message: `Plan '${input.planId}' is locked (materialised to .plans/); edit the file instead.`,
+      });
+    }
+    const files = yield* scanPlanBodies(deps, card, [input.body]);
     const command: BoardPlanWriteCommand = {
       type: "board.plan.write",
       commandId: yield* mintCommandId,
       cardId: card.id,
       planId: input.planId,
-      body: input.body,
+      body: files.bodies[0] ?? input.body,
       createdAt: yield* nowIso,
     };
     yield* dispatch(deps, command);
-    return { planId: input.planId };
+    return { planId: input.planId, ...planFileFields(files) };
   }),
 
   board_edit_plan: Effect.fn("BoardToolkit.board_edit_plan")(function* (input) {
@@ -2221,20 +2344,47 @@ const rawBoardHandlers = {
     const current = yield* deps.board
       .boardPlanBody(input.planId)
       .pipe(Effect.mapError(internalError));
-    const edited = applyBoardPlanEdits(current ?? "", input.edits);
+    // T3o: edits never see the generated footer, so a section edit can't cut it (T3O-138).
+    // `edits: []` only rescans the cited files.
+    const stored = stripAttachedFilesFooter(current ?? "");
+    const edited =
+      input.edits.length === 0
+        ? ({ ok: true, body: stored } as const)
+        : applyBoardPlanEdits(stored, input.edits);
     if (!edited.ok) {
       return yield* new BoardToolError({ code: "invalid-input", message: edited.message });
     }
+    const files = yield* scanPlanBodies(deps, card, [edited.body]);
+    const body = files.bodies[0] ?? edited.body;
     const command: BoardPlanWriteCommand = {
       type: "board.plan.write",
       commandId: yield* mintCommandId,
       cardId: card.id,
       planId: input.planId,
-      body: edited.body,
+      body,
       createdAt: yield* nowIso,
     };
     yield* dispatch(deps, command);
-    return { planId: input.planId, length: edited.body.length };
+    return { planId: input.planId, length: body.length, ...planFileFields(files) };
+  }),
+
+  board_attach_files: Effect.fn("BoardToolkit.board_attach_files")(function* (input) {
+    const deps = yield* boardToolDeps;
+    const board = yield* readBoardState(deps);
+    const card = yield* requireCallerCard(board, deps.scope);
+    const files = yield* planFilesAttacher(deps, card);
+    const result = yield* files.attach(input.paths, "explicit");
+    if (result.unreachable !== null) {
+      return yield* new BoardToolError({ code: "board-unreachable", message: result.unreachable });
+    }
+    return {
+      attached: result.attached.map(({ name, sourcePath, memberCount }) => ({
+        name,
+        sourcePath,
+        ...(memberCount === undefined ? {} : { memberCount }),
+      })),
+      refused: result.refused.map(({ path, reason, message }) => ({ path, reason, message })),
+    };
   }),
 
   board_plan_review_round: Effect.fn("BoardToolkit.board_plan_review_round")(function* (input) {
@@ -2543,6 +2693,9 @@ export const BoardToolkitHandlersLive = McpToolAccess.toLayer(BoardToolkit, {
   ),
   board_get_plan: McpToolAccess.readsAsCaller(
     relayable("board_get_plan", boardHandlers.board_get_plan),
+  ),
+  board_attach_files: McpToolAccess.writesWithCapability(
+    relayable("board_attach_files", boardHandlers.board_attach_files),
   ),
   board_complete_step: McpToolAccess.writesWithCapability(
     relayable("board_complete_step", boardHandlers.board_complete_step),

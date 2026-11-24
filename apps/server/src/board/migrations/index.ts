@@ -97,6 +97,7 @@ import Migration083 from "./083_BoardGateState.ts";
 import Migration084 from "./084_BoardMergeStay.ts";
 import Migration085 from "./085_BoardEventsTypeIndex.ts";
 import Migration086 from "./086_BoardActivityActorSource.ts";
+import Migration087 from "./087_BoardCardAttachmentSource.ts";
 
 /** Ledger table for the board migration lineage, independent of upstream. */
 export const BOARD_MIGRATION_TABLE = "t3o_sql_migrations";
@@ -205,6 +206,7 @@ export const BOARD_MIGRATIONS = [
   [84, "BoardMergeStay", Migration084],
   [85, "BoardEventsTypeIndex", Migration085],
   [86, "BoardActivityActorSource", Migration086],
+  [87, "BoardCardAttachmentSource", Migration087],
 ] as const;
 
 const boardLoader = Migrator.fromRecord(

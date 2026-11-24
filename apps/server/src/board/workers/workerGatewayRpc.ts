@@ -12,6 +12,8 @@ import {
   type BoardGatewayCall,
   type BoardMcpRelayResponse,
   type BoardStageAttachmentsInput,
+  type BoardInspectShareableFilesInput,
+  type BoardReadShareableFileInput,
   type BoardWorkerRunCiInput,
   type BoardWorkerReadCiLogInput,
   type BoardWorkerRunSetupInput,
@@ -192,6 +194,13 @@ export const workerGatewayRpcHandlers = (currentSession: AuthenticatedSession) =
     ),
     [M.stageAttachments]: call(M.stageAttachments, (host, input: BoardStageAttachmentsInput) =>
       host.stageAttachments(input),
+    ),
+    [M.inspectShareableFiles]: call(
+      M.inspectShareableFiles,
+      (host, input: BoardInspectShareableFilesInput) => host.inspectShareableFiles(input, caller),
+    ),
+    [M.readShareableFile]: call(M.readShareableFile, (host, input: BoardReadShareableFileInput) =>
+      host.readShareableFile(input, caller),
     ),
     [M.runCi]: stream(M.runCi, (host, input: BoardWorkerRunCiInput) => host.runCi(input, caller)),
     [M.readCiLog]: stream(M.readCiLog, (host, input: BoardWorkerReadCiLogInput) =>

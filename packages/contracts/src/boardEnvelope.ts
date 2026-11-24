@@ -107,6 +107,9 @@ export const BOARD_ENVELOPE_PLAN_DELIVERABLE = [
   "Split only when this card is a large feature whose parts are worth building and reviewing one at a time, or whose parts could be built concurrently for a real speed-up; then pass splitRationale saying why.",
   "A bug fix, a contained change, or work that is merely long is one plan with several sections.",
   "In a split, mark each plan planned: true when it is a full implementation plan, or planned: false when it is a brief that still needs planning, and pass recommendedAutoBuild and recommendedMergeTarget: every child fully planned → auto-build on with its own branch; an epic breakdown → auto-build off, inherit; already inside a group with its own branch → prefer inherit.",
+  // T3o: the builder may run on another machine, after the scratchpad is gone (T3O-138).
+  "Files your plan relies on that live outside the repository must reach the builder: keep them in your scratchpad or temp dir and cite them as backticked absolute paths; the plan tools attach them and list them under Attached files.",
+  "Check `fileWarnings` in each result. For any other file, copy it into your scratchpad first, or call board_attach_files.",
 ].join(" ");
 
 /** The `build` role's deliverable contract: the structured payload
@@ -120,6 +123,8 @@ export const BOARD_ENVELOPE_BUILD_DELIVERABLE = [
   "`checks` lists every check or test suite you ran or deliberately skipped, with `status` pass, not_run, fail_preexisting or fail; use fail_preexisting only for a failure this card did not cause, and say why in `detail`.",
   "`areas` groups what was built under names like Data, API, Site core, Panel or Docs, each item one short line.",
   "Wrap code identifiers in backticks. If you cannot produce the payload, complete with outcome failed instead.",
+  // T3o: plan files (T3O-138).
+  "A plan's Attached files are the card's attachments: read them from board_get_card_context `attachments` / `inheritedAttachments`, which are authoritative (the footer may lag), and never open the original temp path. Unpack a `.tar.gz` outside the repo with `tar xzf <file> -C <your scratch dir>`.",
 ].join(" ");
 
 /** The frozen execution config a spawn needs, read off the step-state run row. */
