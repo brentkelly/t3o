@@ -123,6 +123,33 @@ describe("attachSharedFiles", () => {
     }).pipe(Effect.provide(services)),
   );
 
+  it.effect("a read that fails gives its share of the byte budget back", () =>
+    Effect.gen(function* () {
+      const half = SHAREABLE_CALL_MAX_BYTES / 2;
+      using h = harness({
+        inspect: (paths) => Effect.succeed(paths.map((path) => fileItem(path, half + 1))),
+        read: (sourcePath) =>
+          sourcePath.endsWith("a")
+            ? Effect.fail("gone")
+            : Effect.succeed({
+                name: NodePath.basename(sourcePath),
+                mimeType: "text/plain",
+                bytes: new TextEncoder().encode(sourcePath),
+                contentHash: `hash-${sourcePath}`,
+              }),
+      });
+      const result = yield* h.attach(["/tmp/s/a", "/tmp/s/b"]);
+      assert.deepStrictEqual(
+        result.refused.map((refusal) => [refusal.path, refusal.reason]),
+        [["/tmp/s/a", "failed"]],
+      );
+      assert.deepStrictEqual(
+        result.attached.map((entry) => entry.path),
+        ["/tmp/s/b"],
+      );
+    }).pipe(Effect.provide(services)),
+  );
+
   it.effect("an unreachable worker attaches nothing and says how to retry", () =>
     Effect.gen(function* () {
       using h = harness({

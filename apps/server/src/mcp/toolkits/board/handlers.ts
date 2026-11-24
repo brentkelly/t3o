@@ -105,6 +105,7 @@ import {
 } from "../../../board/ThreadGateway.ts";
 import { BoardCapacityClient } from "../../../board/capacity/BoardCapacityClient.ts";
 import { BoardEngine, type BoardEngineShape } from "../../../board/BoardEngine.ts";
+import { boardPlansProposalProblem } from "../../../board/decider.ts";
 import { BoardQueries } from "../../../board/BoardQueries.ts";
 import type { BoardDispatchError } from "../../../board/errors.ts";
 import type { BoardQueriesShape } from "../../../board/projection.ts";
@@ -2220,6 +2221,12 @@ const rawBoardHandlers = {
     const board = yield* readBoardState(deps);
     const card = yield* requireCallerCard(board, deps.scope);
     const settings = yield* readBoardSettings;
+    // Refuse before the scan, which attaches files a refused proposal would leave behind.
+    const problem = boardPlansProposalProblem(board, card, {
+      plans: input.plans,
+      splitRationale: input.splitRationale ?? null,
+    });
+    if (problem !== null) return yield* new BoardToolError({ code: "rejected", message: problem });
     const files = yield* scanPlanBodies(
       deps,
       card,

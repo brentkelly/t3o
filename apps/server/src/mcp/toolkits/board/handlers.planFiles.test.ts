@@ -204,6 +204,27 @@ it.layer(layer)("plan files (T3O-138)", (it) => {
     }),
   );
 
+  it.effect("a proposal the board refuses attaches nothing", () =>
+    Effect.gen(function* () {
+      using pad = scratch();
+      const f = yield* fixture("refused");
+      const mock = pad.file("mock.html", "<p>v1</p>");
+      const plan = (key: string) => ({
+        key,
+        title: key,
+        summary: "s",
+        dependsOn: [],
+        body: `See \`${mock}\`.`,
+      });
+      // Two plans with no splitRationale: the decider refuses it.
+      const result = yield* boardHandlers
+        .board_propose_plans({ plans: [plan("a"), plan("b")] })
+        .pipe(f.withScope, Effect.flip);
+      assert.include(result.message, "splitRationale");
+      assert.deepStrictEqual(yield* f.attachments, []);
+    }),
+  );
+
   it.effect("a changed file replaces its attachment, new bytes in, old file gone", () =>
     Effect.gen(function* () {
       using pad = scratch();

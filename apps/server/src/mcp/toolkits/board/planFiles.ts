@@ -128,16 +128,29 @@ export const boardFileSource = Effect.fn("BoardPlanFiles.source")(function* (inp
   } satisfies BoardFileSource;
 });
 
-/** One lock per card, so two calls never race an attach and a replace of the same file. */
-const cardLocks = new Map<BoardCardId, Semaphore.Semaphore>();
-const cardLock = (cardId: BoardCardId) => {
-  let lock = cardLocks.get(cardId);
-  if (lock === undefined) {
-    lock = Semaphore.makeUnsafe(1);
-    cardLocks.set(cardId, lock);
-  }
-  return lock;
-};
+/**
+ * One lock per card, so two calls never race an attach and a replace of the same file. An
+ * entry lives only while a call holds or waits on it.
+ */
+const cardLocks = new Map<BoardCardId, { readonly lock: Semaphore.Semaphore; users: number }>();
+const withCardLock = <A, E, R>(cardId: BoardCardId, effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      let entry = cardLocks.get(cardId);
+      if (entry === undefined) {
+        entry = { lock: Semaphore.makeUnsafe(1), users: 0 };
+        cardLocks.set(cardId, entry);
+      }
+      entry.users += 1;
+      return entry;
+    }),
+    (entry) => entry.lock.withPermits(1)(effect),
+    (entry) =>
+      Effect.sync(() => {
+        entry.users -= 1;
+        if (entry.users === 0) cardLocks.delete(cardId);
+      }),
+  );
 
 export interface AttachedSharedFile {
   readonly name: string;
@@ -194,7 +207,8 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
   const refused: Array<AttachSharedFilesResult["refused"][number]> = [];
   let budget = 0;
 
-  yield* cardLock(input.cardId).withPermits(1)(
+  yield* withCardLock(
+    input.cardId,
     Effect.gen(function* () {
       for (const item of inspected.success) {
         if (item.kind === "refused") {
@@ -246,6 +260,7 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
         budget += item.sizeBytes;
         const read = yield* input.source.read(item.sourcePath, input.mode).pipe(Effect.result);
         if (Result.isFailure(read)) {
+          budget -= item.sizeBytes;
           refused.push({
             path: item.path,
             reason: "failed",

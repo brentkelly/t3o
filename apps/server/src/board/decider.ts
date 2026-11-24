@@ -520,6 +520,71 @@ function findProposedPlanCycle(
   return null;
 }
 
+/**
+ * Why `board.plans.propose` would be refused, from the proposal's shape alone (never its
+ * bodies), or null. Shared so the MCP tool refuses before it attaches any cited file.
+ */
+export function boardPlansProposalProblem(
+  board: BoardState,
+  card: BoardCard,
+  input: {
+    readonly plans: ReadonlyArray<{
+      readonly key: string;
+      readonly dependsOn: ReadonlyArray<string>;
+    }>;
+    readonly splitRationale: string | null;
+  },
+): string | null {
+  // An approved split freezes the plans while any child is LIVE; a fully archived
+  // round may re-plan. Distinct from `locked` (the file handover, below).
+  if (boardCardChildren(board, card.id).some((child) => child.archivedAt === null)) {
+    return `Card '${card.id}' has materialised child cards; the plans are frozen. Work happens on the child cards now.`;
+  }
+  // A locked plan means the card's plans are materialised to .plans/ at
+  // Building entry; re-proposing over them would silently drop the
+  // handover, so it is refused as a whole (edit the files).
+  if (boardCardPlans(board, card.id).some((plan) => plan.locked)) {
+    return `Card '${card.id}' has locked (materialised) plans; edit the .plans/ files instead of re-proposing.`;
+  }
+  // Validate the proposal is self-consistent BEFORE writing anything:
+  // unique keys, every dependency references a plan in the proposal, and
+  // no cycles — the offending edge is named (strictly better than
+  // frontmatter, which only breaks later).
+  const keys = input.plans.map((plan) => plan.key);
+  const duplicateKey = keys.find((key, index) => keys.indexOf(key) !== index);
+  if (duplicateKey !== undefined) {
+    return `Duplicate plan key '${duplicateKey}' in the proposal.`;
+  }
+  const keySet = new Set(keys);
+  for (const plan of input.plans) {
+    for (const dependency of plan.dependsOn) {
+      if (!keySet.has(dependency)) {
+        return `Plan '${plan.key}' depends on unknown plan '${dependency}'.`;
+      }
+    }
+  }
+  const cycle = findProposedPlanCycle(input.plans);
+  if (cycle !== null) {
+    return `Plan dependency edge '${cycle.from} -> ${cycle.to}' would create a cycle: ${cycle.path.join(" -> ")}.`;
+  }
+  // A multi-plan proposal is a card split, so the rejection names the consequence
+  // and both ways forward. A single-plan proposal stores a null rationale, so
+  // non-null means "the last proposal split this card".
+  const splitRationale = input.plans.length >= 2 ? input.splitRationale : null;
+  if (input.plans.length >= 2) {
+    if (splitRationale === null) {
+      return `Card '${card.key}': ${input.plans.length} plans splits this card into ${input.plans.length} child cards, each with its own branch, build and review, and holds it behind a human approval gate. Pass splitRationale (at least ${SPLIT_RATIONALE_MIN_LENGTH} characters) explaining why this card needs splitting, or propose a single plan with several sections.`;
+    }
+    if (splitRationale.length < SPLIT_RATIONALE_MIN_LENGTH) {
+      return `splitRationale must be at least ${SPLIT_RATIONALE_MIN_LENGTH} characters explaining why this card needs splitting into ${input.plans.length} child cards; propose a single plan if it does not.`;
+    }
+    if (splitRationale.length > SPLIT_RATIONALE_MAX_LENGTH) {
+      return `splitRationale must be at most ${SPLIT_RATIONALE_MAX_LENGTH} characters; the plan bodies carry the detail.`;
+    }
+  }
+  return null;
+}
+
 const makeBoardEventBase = Effect.fn("makeBoardEventBase")(function* (input: {
   readonly cardId: BoardCardId;
   readonly occurredAt: string;
@@ -4367,74 +4432,9 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
 
     case "board.plans.propose": {
       const proposalCard = yield* requireActiveBoardCard({ board, command });
-      // An approved split freezes the plans while any child is LIVE; a fully archived
-      // round may re-plan. Distinct from `locked` (the file handover, below).
-      if (boardCardChildren(board, command.cardId).some((child) => child.archivedAt === null)) {
-        return yield* invariant(
-          command,
-          `Card '${command.cardId}' has materialised child cards; the plans are frozen. Work happens on the child cards now.`,
-        );
-      }
-      // A locked plan means the card's plans are materialised to .plans/ at
-      // Building entry; re-proposing over them would silently drop the
-      // handover, so it is refused as a whole (edit the files).
-      if (boardCardPlans(board, command.cardId).some((plan) => plan.locked)) {
-        return yield* invariant(
-          command,
-          `Card '${command.cardId}' has locked (materialised) plans; edit the .plans/ files instead of re-proposing.`,
-        );
-      }
-      // Validate the proposal is self-consistent BEFORE writing anything:
-      // unique keys, every dependency references a plan in the proposal, and
-      // no cycles — the offending edge is named (strictly better than
-      // frontmatter, which only breaks later).
-      const keys = command.plans.map((plan) => plan.key);
-      const duplicateKey = keys.find((key, index) => keys.indexOf(key) !== index);
-      if (duplicateKey !== undefined) {
-        return yield* invariant(command, `Duplicate plan key '${duplicateKey}' in the proposal.`);
-      }
-      const keySet = new Set(keys);
-      for (const plan of command.plans) {
-        for (const dependency of plan.dependsOn) {
-          if (!keySet.has(dependency)) {
-            return yield* invariant(
-              command,
-              `Plan '${plan.key}' depends on unknown plan '${dependency}'.`,
-            );
-          }
-        }
-      }
-      const cycle = findProposedPlanCycle(command.plans);
-      if (cycle !== null) {
-        return yield* invariant(
-          command,
-          `Plan dependency edge '${cycle.from} -> ${cycle.to}' would create a cycle: ${cycle.path.join(" -> ")}.`,
-        );
-      }
-      // A multi-plan proposal is a card split, so the rejection names the consequence
-      // and both ways forward. A single-plan proposal stores a null rationale, so
-      // non-null means "the last proposal split this card".
+      const problem = boardPlansProposalProblem(board, proposalCard, command);
+      if (problem !== null) return yield* invariant(command, problem);
       const splitRationale = command.plans.length >= 2 ? command.splitRationale : null;
-      if (command.plans.length >= 2) {
-        if (splitRationale === null) {
-          return yield* invariant(
-            command,
-            `Card '${proposalCard.key}': ${command.plans.length} plans splits this card into ${command.plans.length} child cards, each with its own branch, build and review, and holds it behind a human approval gate. Pass splitRationale (at least ${SPLIT_RATIONALE_MIN_LENGTH} characters) explaining why this card needs splitting, or propose a single plan with several sections.`,
-          );
-        }
-        if (splitRationale.length < SPLIT_RATIONALE_MIN_LENGTH) {
-          return yield* invariant(
-            command,
-            `splitRationale must be at least ${SPLIT_RATIONALE_MIN_LENGTH} characters explaining why this card needs splitting into ${command.plans.length} child cards; propose a single plan if it does not.`,
-          );
-        }
-        if (splitRationale.length > SPLIT_RATIONALE_MAX_LENGTH) {
-          return yield* invariant(
-            command,
-            `splitRationale must be at most ${SPLIT_RATIONALE_MAX_LENGTH} characters; the plan bodies carry the detail.`,
-          );
-        }
-      }
       // Preserve createdAt for a plan key that already exists (a re-proposal
       // edits in place); a genuinely new plan starts now.
       const existingById = new Map(
