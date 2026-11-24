@@ -22,10 +22,9 @@ export type BoardPlanRowPlan = Pick<
   "planId" | "title" | "dependsOn" | "ordinal"
 >;
 
-/** What a row's dot and its child's face are saying. `blocked` outranks
-    `active` deliberately: a child the board has started but whose sibling has
-    not landed is waiting, and reading it as running would be the same lie the
-    card face's queue indicator exists to avoid. */
+/** What a row's dot and its child's face are saying. `blocked` is the
+    server's own verdict (`shell.blocked`), so the dot turns amber exactly when
+    the card face does. */
 export type BoardPlanRowTone = "done" | "blocked" | "active" | "idle" | "gone";
 
 /** The three states a row can be in. A plan outlives the card cut from
@@ -50,14 +49,26 @@ export interface BoardPlanRowLive {
   readonly awaitingPermission: boolean;
   readonly queued: boolean;
   readonly stalled: boolean;
+  /** The server's gate verdict (`deriveBoardCardBlocked`): build stage onward
+      only, and it counts the group's inherited dependencies too. */
+  readonly blocked: boolean;
 }
 
 export interface BoardPlanRowBlocker {
-  /** The blocking plan's `#N`. */
-  readonly n: number;
-  readonly key: string | null;
+  /** `#3` for a sibling, the card key for a card outside the group. */
+  readonly label: string;
   /** Lower-cased for the inline note ("waiting on #3 · code review"). */
   readonly stageLabel: string;
+}
+
+/** A dependency on a card outside the group. It is never a row: it gets no
+    `#N` and no node, only a mention in the row's note and the node's header. */
+export interface BoardPlanRowOutsideDependency {
+  readonly key: string;
+  readonly stageLabel: string;
+  /** Live and short of done in a stage this board knows. A stage from another
+      project's pipeline cannot be judged, so it does not claim a wait. */
+  readonly waiting: boolean;
 }
 
 export interface BoardPlanRow {
@@ -83,8 +94,22 @@ export interface BoardPlanRow {
   /** `#N`s of everything this row comes after, whatever their state — the
       row's "after #1, #2" line. */
   readonly dependsOnNumbers: ReadonlyArray<number>;
-  /** The subset still unfinished, which is what actually holds this one up. */
+  /** Dependencies on cards outside the group the client holds a shell for. */
+  readonly outsideDependsOn: ReadonlyArray<BoardPlanRowOutsideDependency>;
+  /** The row's "after #1, WAL-123" line, or "no dependencies". */
+  readonly dependencyNote: string;
+  /** The subset still unfinished, which is what actually holds this one up.
+      Empty unless the row itself is live and not done. */
   readonly blockers: ReadonlyArray<BoardPlanRowBlocker>;
+}
+
+/** Whether the sub-board offers a dependency chart: the same rows
+    `deriveBoardPlanRows` draws, minus a group left with only archived cards. */
+export function boardPlanChartAvailable(detail: {
+  readonly plans: ReadonlyArray<unknown>;
+  readonly children: ReadonlyArray<Pick<BoardCardChildRef, "archivedAt">>;
+}): boolean {
+  return detail.plans.length > 0 || detail.children.some((child) => child.archivedAt === null);
 }
 
 export interface BoardPlanRows {
@@ -153,7 +178,24 @@ export function deriveBoardPlanRows(input: {
     readonly title: string;
     readonly child: BoardCardChildRef | null;
     readonly dependsOn: ReadonlyArray<string>;
+    readonly outsideDependsOn: ReadonlyArray<BoardPlanRowOutsideDependency>;
   }
+  // No shell means archived (deleting a card strips its edges), and an
+  // archived dependency counts as met, so it is dropped.
+  const outsideOf = (child: BoardCardChildRef): ReadonlyArray<BoardPlanRowOutsideDependency> =>
+    [...new Set(child.dependsOn as ReadonlyArray<string>)]
+      .filter((id) => id !== child.cardId && !siblingIds.has(id))
+      .flatMap((id) => {
+        const shell = shellByCard.get(id);
+        if (shell === undefined) return [];
+        return [
+          {
+            key: shell.key,
+            stageLabel: labelOf(shell.stage),
+            waiting: shell.stage !== doneStageId && stageIndex.has(shell.stage),
+          },
+        ];
+      });
   const unique = (ids: ReadonlyArray<string>, self: string) =>
     [...new Set(ids)].filter((id) => id !== self);
   const seeds: ReadonlyArray<Seed> = [
@@ -168,6 +210,7 @@ export function deriveBoardPlanRows(input: {
           child.dependsOn.filter((id) => siblingIds.has(id)).map((id) => cardRowId(id)),
           rowId,
         ),
+        outsideDependsOn: outsideOf(child),
       };
     }),
     ...plans
@@ -186,6 +229,7 @@ export function deriveBoardPlanRows(input: {
             }),
             rowId,
           ),
+          outsideDependsOn: [],
         };
       }),
   ];
@@ -226,6 +270,7 @@ export function deriveBoardPlanRows(input: {
       // the pass below closes over the whole set.
       tone: "idle",
       blockers: [],
+      dependencyNote: "",
       live:
         state !== "live" || shell === undefined
           ? null
@@ -237,31 +282,49 @@ export function deriveBoardPlanRows(input: {
               awaitingPermission: isBoardCardAwaitingPermission(shell),
               queued: shell.queued,
               stalled: shell.stalled,
+              blocked: shell.blocked,
             },
       dependsOn: seed.dependsOn,
       dependsOnNumbers,
+      outsideDependsOn: seed.outsideDependsOn,
     };
   });
 
   const rowById = new Map(rows.map((row) => [row.rowId, row]));
   const settled = rows.map((row): BoardPlanRow => {
+    // Only a live, unfinished row can be waiting: an archived child keeps its
+    // `dependsOn`, and a finished one must not claim a wait either.
+    const waiting = row.state === "live" && !row.done;
+    const outsideWaits = waiting ? row.outsideDependsOn.filter((dep) => dep.waiting) : [];
     // Only a live, unfinished sibling blocks; archived or deleted dependencies do
     // not, matching the decider.
-    const blockers = row.dependsOn
-      .map((dependency) => rowById.get(dependency))
-      .filter(
-        (dependency): dependency is DraftPlanRow =>
-          dependency !== undefined && dependency.state === "live" && !dependency.done,
-      )
-      .toSorted((left, right) => left.n - right.n)
-      .map((dependency): BoardPlanRowBlocker => ({
-        n: dependency.n,
-        key: dependency.key,
-        stageLabel: (dependency.stageLabel ?? "").toLowerCase(),
-      }));
-    const tone = toneOf({ ...row, blocked: blockers.length > 0 });
+    const blockers: ReadonlyArray<BoardPlanRowBlocker> = waiting
+      ? [
+          ...row.dependsOn
+            .map((dependency) => rowById.get(dependency))
+            .filter(
+              (dependency): dependency is DraftPlanRow =>
+                dependency !== undefined && dependency.state === "live" && !dependency.done,
+            )
+            .toSorted((left, right) => left.n - right.n)
+            .map((dependency) => ({
+              label: `#${dependency.n}`,
+              stageLabel: (dependency.stageLabel ?? "").toLowerCase(),
+            })),
+          ...outsideWaits.map((dep) => ({
+            label: dep.key,
+            stageLabel: dep.stageLabel.toLowerCase(),
+          })),
+        ]
+      : [];
+    const after = [
+      ...row.dependsOnNumbers.map((n) => `#${n}`),
+      ...outsideWaits.map((dep) => dep.key),
+    ];
+    const dependencyNote = after.length === 0 ? "no dependencies" : `after ${after.join(", ")}`;
+    const tone = toneOf({ ...row, blocked: row.live?.blocked === true });
     const { started: _started, ...rest } = row;
-    return { ...rest, blockers, tone };
+    return { ...rest, blockers, dependencyNote, tone };
   });
 
   const live = settled.filter((row) => row.state === "live");
@@ -293,10 +356,9 @@ function topologicalOrder<
   return ordered;
 }
 
-/** A row's dot, in precedence order. `blocked` outranks `active` on purpose:
-    a child the board has moved into build but whose sibling has not landed is
-    waiting, and a running-coloured dot there would be the same lie the queue
-    indicator exists to avoid. */
+/** A row's dot, in precedence order. `blocked` is the server's flag, never a
+    client recount: it holds only from the build stage onward, matching the
+    card face, group face and list view, so a pre-build wait stays `idle`. */
 function toneOf(row: {
   readonly state: BoardPlanRowState;
   readonly done: boolean;
@@ -330,6 +392,9 @@ export interface BoardPlanGraphNode {
   /** A thread on the child asked a question or wants permission — the same
       violet the row list gives either. */
   readonly needsHuman: boolean;
+  /** Keys of unfinished cards outside the group this live, unfinished node
+      waits on — shown in the header's stage slot. */
+  readonly waitsOnOutside: ReadonlyArray<string>;
   readonly x: number;
   readonly y: number;
   readonly width: number;
@@ -441,6 +506,10 @@ export function boardPlanGraphLayout(
         tone: row.tone,
         cardId: row.live?.cardId ?? null,
         needsHuman: row.live?.awaitingInput === true || row.live?.awaitingPermission === true,
+        waitsOnOutside:
+          row.state === "live" && !row.done
+            ? row.outsideDependsOn.filter((dep) => dep.waiting).map((dep) => dep.key)
+            : [],
         x: at.x,
         y: at.y,
         width: NODE_WIDTH,

@@ -21,6 +21,22 @@ const TONE_DOT: Record<BoardPlanRowTone, string> = {
   gone: "bg-muted-foreground/20",
 };
 
+/** The header's stage slot: a 54px node has no room for a third line, so an
+    outside wait rides beside the stage and the hint carries the full list. */
+function planGraphNodeStageSlot(node: BoardPlanGraphNode): string {
+  const stage = node.stageLabel ?? "No card";
+  const [first, ...more] = node.waitsOnOutside;
+  if (first === undefined) return stage;
+  return `${stage} · waits on ${first}${more.length > 0 ? ` +${more.length}` : ""}`;
+}
+
+function planGraphNodeHint(node: BoardPlanGraphNode): string {
+  const base = node.stageLabel === null ? node.title : `${node.title} (${node.stageLabel})`;
+  return node.waitsOnOutside.length === 0
+    ? base
+    : `${base}, waits on ${node.waitsOnOutside.join(", ")}`;
+}
+
 export function BoardPlanGraph({
   rows,
   onOpenChild,
@@ -80,7 +96,7 @@ function PlanGraphNode({
 }) {
   const openable = node.cardId !== null && onOpenChild !== undefined;
   return (
-    <BoardHint label={node.stageLabel === null ? node.title : `${node.title} (${node.stageLabel})`}>
+    <BoardHint label={planGraphNodeHint(node)}>
       <button
         className={cn(
           "absolute flex flex-col justify-center gap-0.75 rounded-board-9 border px-2.5 text-left shadow-xs",
@@ -103,7 +119,7 @@ function PlanGraphNode({
           <span className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[node.tone])} />
           <span className="text-board-10-5 font-semibold text-muted-foreground">#{node.n}</span>
           <span className="ml-auto truncate text-board-10-5 text-muted-foreground">
-            {node.stageLabel ?? "No card"}
+            {planGraphNodeStageSlot(node)}
           </span>
         </span>
         <span className="line-clamp-2 text-board-12 leading-board-1-3 font-medium text-foreground">
