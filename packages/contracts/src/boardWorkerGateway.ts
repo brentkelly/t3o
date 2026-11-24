@@ -430,7 +430,7 @@ export type BoardStageAttachmentsResult = typeof BoardStageAttachmentsResult.Typ
 export const BoardShareableFilesMode = Schema.Literals(["scan", "explicit"]);
 export type BoardShareableFilesMode = typeof BoardShareableFilesMode.Type;
 
-export const BOARD_SHAREABLE_REFUSAL_REASONS = [
+const BOARD_SHAREABLE_REFUSAL_REASONS = [
   "outside-allowlist",
   "in-checkout",
   "missing",

@@ -26,8 +26,8 @@ export const SHAREABLE_ITEM_MAX_BYTES = 20 * 1024 * 1024;
 export const SHAREABLE_CALL_MAX_BYTES = 40 * 1024 * 1024;
 export const SHAREABLE_DIRECTORY_MAX_MEMBERS = 200;
 
-export const ATTACHED_FILES_OPEN = "<!-- t3o:attached-files -->";
-export const ATTACHED_FILES_CLOSE = "<!-- /t3o:attached-files -->";
+const ATTACHED_FILES_OPEN = "<!-- t3o:attached-files -->";
+const ATTACHED_FILES_CLOSE = "<!-- /t3o:attached-files -->";
 
 // ── Pure ───────────────────────────────────────────────────────────────
 
@@ -122,7 +122,7 @@ export function extractCitedPaths(text: string): ReadonlyArray<string> {
 }
 
 /** Is `real` strictly under one of `roots`? All realpaths. */
-export function isUnderRoot(path: Path.Path, real: string, roots: ReadonlyArray<string>): boolean {
+function isUnderRoot(path: Path.Path, real: string, roots: ReadonlyArray<string>): boolean {
   return roots.some((root) => {
     const relative = path.relative(root, real);
     return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -131,11 +131,7 @@ export function isUnderRoot(path: Path.Path, real: string, roots: ReadonlyArray<
 
 /** A temp root itself, or a direct child of one (`/tmp/claude-1101` holds every session's
     scratchpad): never archived whole. */
-export function isTempRootOrChild(
-  path: Path.Path,
-  real: string,
-  roots: ReadonlyArray<string>,
-): boolean {
+function isTempRootOrChild(path: Path.Path, real: string, roots: ReadonlyArray<string>): boolean {
   return roots.some((root) => real === root || path.dirname(real) === root);
 }
 
@@ -215,7 +211,7 @@ const sha256 = (bytes: Uint8Array | string): string =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
 /** A directory's hash: its sorted member paths and their contents, never the archive bytes. */
-export function directoryContentHash(members: ReadonlyArray<TarMember>): string {
+function directoryContentHash(members: ReadonlyArray<TarMember>): string {
   const lines = [...members]
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
     .map((member) => `${member.path}\0${sha256(member.bytes)}\n`);
@@ -230,7 +226,7 @@ const TEMP_ROOT_CANDIDATES = (): ReadonlyArray<string> =>
     (root): root is string => root !== undefined && root.length > 0,
   );
 
-export const shareableTempRoots = Effect.fn("shareableFiles.tempRoots")(function* () {
+const shareableTempRoots = Effect.fn("shareableFiles.tempRoots")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const roots: Array<string> = [];
   for (const root of TEMP_ROOT_CANDIDATES()) {
