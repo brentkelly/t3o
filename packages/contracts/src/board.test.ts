@@ -1769,10 +1769,11 @@ describe("cards that need a human (boardCardAttention)", () => {
     });
     const approved = { ...shell, splitApproved: true };
     expect(boardCardAttention({ card: approved, stages: BOARD_SEED_STAGES })).toBeNull();
-    // A planning run that failed or was abandoned never fires the approval: ask again.
+    // A settled planning step raises `held` on success too, just before the approval fires;
+    // that must not re-raise Input needed (the server clears the flag on a failed run).
     expect(
-      boardCardAttention({ card: { ...approved, held: true }, stages: BOARD_SEED_STAGES })?.reason,
-    ).toBe("approval");
+      boardCardAttention({ card: { ...approved, held: true }, stages: BOARD_SEED_STAGES }),
+    ).toBeNull();
     // Only the split reason is skipped: a real question still reads as Input needed.
     expect(
       boardCardAttention({ card: { ...approved, awaitingInput: true }, stages: BOARD_SEED_STAGES })
