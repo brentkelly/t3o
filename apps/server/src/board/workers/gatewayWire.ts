@@ -21,6 +21,10 @@ import {
   type BoardMcpRelayResponse,
   type BoardStageAttachmentsInput,
   type BoardStageAttachmentsResult,
+  type BoardInspectShareableFilesInput,
+  type BoardInspectShareableFilesResult,
+  type BoardReadShareableFileInput,
+  type BoardReadShareableFileResult,
   type BoardWorkerCiProgress,
   type BoardWorkerRunCiInput,
   type BoardWorkerReadCiLogInput,
@@ -116,6 +120,13 @@ export interface WorkerGatewayRpcOf<E> {
   readonly stageAttachments: (
     input: BoardStageAttachmentsInput,
   ) => Effect.Effect<BoardStageAttachmentsResult, E>;
+  /** T3o: the files a plan cites, inspected and read where its thread runs (T3O-138). */
+  readonly inspectShareableFiles: (
+    input: BoardInspectShareableFilesInput,
+  ) => Effect.Effect<BoardInspectShareableFilesResult, E>;
+  readonly readShareableFile: (
+    input: BoardReadShareableFileInput,
+  ) => Effect.Effect<BoardReadShareableFileResult, E>;
   /** Run a card's CI steps in its worktree on the worker. */
   readonly runCi: (input: BoardWorkerRunCiInput) => Stream.Stream<BoardWorkerCiProgress, E>;
   /** Read, and optionally follow, one CI step's log on the worker. */

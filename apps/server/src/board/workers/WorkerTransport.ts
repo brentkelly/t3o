@@ -391,6 +391,10 @@ const makeLiveGatewayRpc = (
       wire(client[M.mcpRelayRespond](response), "The worker didn't take the board's answer."),
     stageAttachments: (input) =>
       wire(client[M.stageAttachments](input), "The worker couldn't stage the card's files."),
+    inspectShareableFiles: (input) =>
+      wire(client[M.inspectShareableFiles](input), "The worker couldn't inspect the plan's files."),
+    readShareableFile: (input) =>
+      wire(client[M.readShareableFile](input), "The worker couldn't read the plan's file."),
     runCi: (input) => wireStream(client[M.runCi](input), "The worker's CI run ended early."),
     readCiLog: (input) =>
       wireStream(client[M.readCiLog](input), "The worker's CI log read failed."),

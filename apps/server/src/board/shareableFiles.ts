@@ -502,9 +502,7 @@ export const inspectShareableFiles = Effect.fn("shareableFiles.inspect")(functio
   for (const cited of paths) {
     collected.push(
       yield* collectOne(cited, context).pipe(
-        Effect.catch(() =>
-          Effect.succeed(refuse(cited, "not-found", `'${cited}' could not be read.`)),
-        ),
+        Effect.orElseSucceed(() => refuse(cited, "not-found", `'${cited}' could not be read.`)),
       ),
     );
   }

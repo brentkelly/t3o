@@ -90,6 +90,15 @@ export const makeBoardMcpRelayClient = Effect.gen(function* () {
           Effect.flatMap((rpc) => stageCardFilesOnWorker({ rpc, fileSystem, digest, staging })),
         );
 
+  const inspectFilesFor =
+    (workerId: EnvironmentId): BoardRelayInvocation["Service"]["inspectFiles"] =>
+    (input) =>
+      connections.get(workerId).pipe(Effect.flatMap((rpc) => rpc.gateway.inspectShareableFiles(input)));
+  const readFileFor =
+    (workerId: EnvironmentId): BoardRelayInvocation["Service"]["readFile"] =>
+    (input) =>
+      connections.get(workerId).pipe(Effect.flatMap((rpc) => rpc.gateway.readShareableFile(input)));
+
   const answer: BoardMcpRelayClientShape["answer"] = Effect.fn("BoardMcpRelayClient.answer")(
     function* (workerId, request) {
       // Claimed before the first yield, so a redelivery can never slip in
@@ -118,6 +127,8 @@ export const makeBoardMcpRelayClient = Effect.gen(function* () {
           request,
           handlers: handlers as never,
           stageCardFiles: stageCardFilesFor(workerId),
+          inspectFiles: inspectFilesFor(workerId),
+          readFile: readFileFor(workerId),
         }).pipe(Effect.provide(context));
         // A transient refusal is not this call's answer: a retry may succeed.
         if (isTransient(outcome)) return outcome;
