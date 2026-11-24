@@ -313,6 +313,34 @@ it.effect("a shared worker lets a board act only on the threads and worktrees it
       }).pipe(Stream.runCollect, onHost, Effect.flip);
       assert.strictEqual(ci._tag, "BoardWorkerGatewayError");
 
+      // Nor read its files: both file RPCs report that as a refusal, not a failure.
+      const fileRefusal = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => ("kind" in error ? String(error.kind) : error._tag)),
+        );
+      assert.strictEqual(
+        yield* fileRefusal(
+          other["boardWorker.inspectShareableFiles"]({
+            threadId,
+            paths: ["/tmp/x"],
+            mode: "scan",
+            checkoutRoot: null,
+          }).pipe(onHost),
+        ),
+        "refused",
+      );
+      assert.strictEqual(
+        yield* fileRefusal(
+          other["boardWorker.readShareableFile"]({
+            threadId,
+            sourcePath: "/tmp/x",
+            mode: "scan",
+          }).pipe(onHost),
+        ),
+        "refused",
+      );
+
       // Nor may it spawn a thread in another board's name, which would take that board's relay.
       const forged = ThreadId.make("thread-forged-for-a");
       assert.strictEqual(

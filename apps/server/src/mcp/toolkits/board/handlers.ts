@@ -1150,11 +1150,13 @@ const scanPlanBodies = Effect.fn("BoardToolkit.scanPlanBodies")(function* (
   onCardKey?: string,
 ) {
   const files = yield* planFilesAttacher(deps, card);
+  const board = yield* readBoardState(deps);
   return yield* scanPlanFiles({
     bodies,
     onCardKey,
     attach: (paths) => files.attach(paths, "scan"),
     readCard: files.readCard,
+    ancestors: boardCardAncestors(board, card),
   });
 });
 

@@ -8,9 +8,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
+  BoardCardAttachmentId,
+  BOARD_CARD_ATTACHMENTS_MAX,
   BoardCardId,
   ProjectId,
   type BoardCard,
+  type BoardCardAttachment,
   type BoardCommand,
   type BoardShareableItem,
 } from "@t3tools/contracts";
@@ -44,9 +47,9 @@ const fileItem = (path: string, sizeBytes: number): BoardShareableItem => ({
 });
 
 /** A card held in memory, updated by the attach commands the loop dispatches. */
-const harness = (source: BoardFileSource) => {
+const harness = (source: BoardFileSource, start: BoardCard = makeCard()) => {
   const stateDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o-plan-files-unit-"));
-  let card = makeCard();
+  let card = start;
   const reads: Array<string> = [];
   const dispatched: Array<BoardCommand["type"]> = [];
   const tracked: BoardFileSource = {
@@ -146,6 +149,97 @@ describe("attachSharedFiles", () => {
       const result = yield* h.attach(["/tmp/s/a"]);
       assert.deepStrictEqual(result.attached, []);
       assert.include(result.refused[0]?.message, "it vanished");
+    }).pipe(Effect.provide(services)),
+  );
+});
+
+const attachment = (name: string, sourcePath?: string): BoardCardAttachment => ({
+  id: BoardCardAttachmentId.make(`att-${name}`),
+  name,
+  type: "file",
+  mimeType: "text/plain",
+  sizeBytes: 1,
+  addedAt: "2026-01-01T00:00:00.000Z",
+  ...(sourcePath === undefined ? {} : { sourcePath, contentHash: `old-${sourcePath}` }),
+});
+
+/** A source where only `existing` paths are files; any other temp path is gone. */
+const sourceOf = (existing: ReadonlyArray<string>): BoardFileSource => ({
+  inspect: (paths) =>
+    Effect.succeed(
+      paths.map((path): BoardShareableItem =>
+        existing.includes(path)
+          ? fileItem(path, 1)
+          : { kind: "refused", path, reason: "missing", message: `'${path}' no longer exists` },
+      ),
+    ),
+  read: (sourcePath) =>
+    Effect.succeed({
+      name: NodePath.basename(sourcePath),
+      mimeType: "text/plain",
+      bytes: new TextEncoder().encode(sourcePath),
+      contentHash: `hash-${sourcePath}`,
+    }),
+});
+
+describe("scanPlanFiles", () => {
+  it.effect("a command or list in backticks attaches its paths, without a false 'gone'", () =>
+    Effect.gen(function* () {
+      using h = harness(sourceOf(["/tmp/s/gen.py", "/tmp/s/a.png", "/tmp/s/b.png"]));
+      const scan = yield* scanPlanFiles({
+        bodies: ["Run `/tmp/s/gen.py --out x`, then see `/tmp/s/a.png and /tmp/s/b.png`."],
+        attach: h.attach,
+        readCard: h.readCard,
+      });
+      assert.deepStrictEqual(
+        scan.attachedFiles.map((file) => file.name),
+        ["gen.py", "a.png", "b.png"],
+      );
+      assert.deepStrictEqual(scan.fileWarnings, []);
+      // When nothing in the span exists, the warning names the path, not the whole command.
+      using gone = harness(sourceOf([]));
+      const missing = yield* scanPlanFiles({
+        bodies: ["Run `/tmp/s/gen.py --out x`."],
+        attach: gone.attach,
+        readCard: gone.readCard,
+      });
+      assert.deepStrictEqual(missing.fileWarnings, ["'/tmp/s/gen.py' no longer exists"]);
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("a file an ancestor still holds keeps its footer line and its silence", () =>
+    Effect.gen(function* () {
+      using h = harness(sourceOf([]));
+      const scan = yield* scanPlanFiles({
+        bodies: ["See `/tmp/s/./mock.html`."],
+        attach: h.attach,
+        readCard: h.readCard,
+        ancestors: [{ key: "T3-0", attachments: [attachment("mock.html", "/tmp/s/mock.html")] }],
+      });
+      assert.deepStrictEqual(scan.fileWarnings, []);
+      assert.include(scan.bodies[0], "- `mock.html` (on T3-0) (from `/tmp/s/./mock.html`)");
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("a changed file on a full card says the old copy stays and why", () =>
+    Effect.gen(function* () {
+      const full = {
+        ...makeCard(),
+        attachments: [
+          attachment("mock.html", "/tmp/s/mock.html"),
+          ...Array.from({ length: BOARD_CARD_ATTACHMENTS_MAX - 1 }, (_, index) =>
+            attachment(`human-${index}.txt`),
+          ),
+        ],
+      } as BoardCard;
+      using h = harness(sourceOf(["/tmp/s/mock.html"]), full);
+      const result = yield* h.attach(["/tmp/s/mock.html"]);
+      assert.deepStrictEqual(
+        result.attached.map((file) => file.name),
+        ["mock.html"],
+      );
+      assert.include(result.refused[0]?.message, "still holds the old copy");
+      assert.notInclude(result.refused[0]?.message, "one directory");
     }).pipe(Effect.provide(services)),
   );
 });

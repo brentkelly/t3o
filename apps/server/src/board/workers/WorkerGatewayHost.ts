@@ -901,16 +901,17 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
             mode: input.mode,
             checkoutRoot: null,
             attachmentsDir: config.attachmentsDir,
-          }),
-        ),
-        Effect.mapError(
-          (error) =>
-            new BoardWorkerGatewayError({
-              kind: "failed",
-              operation: "readShareableFile",
-              threadId: input.threadId as ThreadId,
-              detail: error.message,
-            }),
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new BoardWorkerGatewayError({
+                  kind: "failed",
+                  operation: "readShareableFile",
+                  threadId: input.threadId as ThreadId,
+                  detail: error.message,
+                }),
+            ),
+          ),
         ),
         Effect.flatMap((read) =>
           "bytes" in read

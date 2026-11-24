@@ -30,6 +30,7 @@ import {
   deleteBoardCardAttachmentFile,
 } from "../../../board/attachments.ts";
 import {
+  extractCitedPathGroups,
   extractCitedPaths,
   inspectShareableFiles,
   readShareableItem,
@@ -221,7 +222,10 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
           refused.push({
             path: item.path,
             reason: "card-full",
-            message: `'${item.path}' was not attached: card ${card.key} already has ${BOARD_CARD_ATTACHMENTS_MAX} attachments. Put the files in one directory and cite that instead.`,
+            message:
+              existing === undefined
+                ? `'${item.path}' was not attached: card ${card.key} already has ${BOARD_CARD_ATTACHMENTS_MAX} attachments. Put the files in one directory and cite that instead.`
+                : `'${item.path}' changed since it was attached as \`${existing.name}\`, but card ${card.key} already has ${BOARD_CARD_ATTACHMENTS_MAX} attachments, so the card still holds the old copy. Ask a human to remove an attachment, then re-run board_edit_plan with \`edits: []\`.`,
           });
           if (existing !== undefined) done(existing.name);
           continue;
@@ -336,6 +340,14 @@ export interface PlanFilesScan {
   readonly fileWarnings: ReadonlyArray<string>;
 }
 
+/** A cited path names an attachment's recorded source: the same path once normalised, or for a
+    `~/` path, the same path under some home directory (resolved where the file was). */
+const citesSource = (path: Path.Path, cited: string, sourcePath: string): boolean => {
+  if (cited.startsWith("~/")) return sourcePath.endsWith(path.normalize(cited.slice(1)));
+  const trim = (value: string) => value.replace(/(.)[\\/]+$/, "$1");
+  return trim(sourcePath) === trim(path.normalize(cited));
+};
+
 /**
  * The scan every plan write runs: strip the generated footer, attach the temp-root paths the
  * plans cite, and write a footer listing what carries each one. It never blocks the write.
@@ -348,30 +360,80 @@ export const scanPlanFiles = Effect.fn("BoardPlanFiles.scan")(function* <R>(inpu
     paths: ReadonlyArray<string>,
   ) => Effect.Effect<AttachSharedFilesResult, never, R>;
   readonly readCard: Effect.Effect<BoardCard | null>;
+  /** The card's ancestors, whose files its builder inherits. */
+  readonly ancestors?: ReadonlyArray<Pick<BoardCard, "key" | "attachments">> | undefined;
 }) {
+  const path = yield* Path.Path;
   const stripped = input.bodies.map(stripAttachedFilesFooter);
+  const groups = stripped.map(extractCitedPathGroups);
   const cited = stripped.map(extractCitedPaths);
   const all = [...new Set(cited.flat())];
   const result = yield* input.attach(all);
   const card = yield* input.readCard;
-  const byPath = new Map(result.attached.map((item) => [item.path, item]));
+  const byPath = new Map<string, Array<AttachSharedFilesResult["attached"][number]>>();
+  for (const item of result.attached)
+    byPath.set(item.path, [...(byPath.get(item.path) ?? []), item]);
+  // A span read several ways: once one reading attached, the readings that don't exist are
+  // noise; when none did, the span as a whole is the least likely reading to report.
+  const sole = new Set<string>();
+  const alternative = new Set<string>();
+  for (const group of groups.flat()) {
+    const readings = [...(group.whole === null ? [] : [group.whole]), ...group.tokens];
+    if (readings.length === 1) {
+      sole.add(readings[0] as string);
+    } else if (readings.some((reading) => byPath.has(reading))) {
+      for (const reading of readings) alternative.add(reading);
+    } else {
+      for (const token of group.tokens) sole.add(token);
+      if (group.whole !== null) alternative.add(group.whole);
+    }
+  }
+  const held = [
+    ...(card === null ? [] : [{ key: undefined, attachments: card.attachments }]),
+    ...(input.ancestors ?? []).map((ancestor) => ({
+      key: ancestor.key as string | undefined,
+      attachments: ancestor.attachments,
+    })),
+  ];
+  /** An attachment from an earlier call, here or on an ancestor, that still carries the path. */
+  const heldFor = (citedPath: string): AttachedFileFooterItem | null => {
+    for (const owner of held) {
+      const earlier = owner.attachments.find(
+        (attachment) =>
+          attachment.sourcePath !== undefined &&
+          citesSource(path, citedPath, attachment.sourcePath),
+      );
+      if (earlier !== undefined) {
+        return { name: earlier.name, sourcePath: citedPath, onCardKey: owner.key };
+      }
+    }
+    return null;
+  };
   const fileWarnings = [
     ...(result.unreachable === null ? [] : [result.unreachable]),
     ...result.refused
-      .filter((refusal) => !SILENT_REASONS.has(refusal.reason))
+      .filter(
+        (refusal) =>
+          !SILENT_REASONS.has(refusal.reason) &&
+          !(
+            refusal.reason === "missing" &&
+            ((alternative.has(refusal.path) && !sole.has(refusal.path)) ||
+              heldFor(refusal.path) !== null)
+          ),
+      )
       .map((refusal) => refusal.message),
   ];
   const bodies = stripped.map((body, index) => {
     const items: Array<AttachedFileFooterItem> = [];
-    for (const path of cited[index] ?? []) {
-      const fresh = byPath.get(path);
-      // Unreachable this time: an attachment from an earlier call still carries the path.
-      const earlier =
-        fresh === undefined
-          ? card?.attachments.find((attachment) => attachment.sourcePath === path)
-          : undefined;
-      if (fresh !== undefined) items.push(fresh);
-      else if (earlier !== undefined) items.push({ name: earlier.name, sourcePath: path });
+    for (const citedPath of cited[index] ?? []) {
+      const fresh = byPath.get(citedPath);
+      if (fresh !== undefined) {
+        items.push(...fresh);
+        continue;
+      }
+      // Unreadable this time: an earlier copy still carries the path.
+      const earlier = heldFor(citedPath);
+      if (earlier !== null) items.push(earlier);
     }
     return withAttachedFilesFooter(body, { items, onCardKey: input.onCardKey });
   });

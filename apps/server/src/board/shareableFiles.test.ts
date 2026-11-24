@@ -55,7 +55,19 @@ describe("extractCitedPaths", () => {
     ["markdown link", "[mock](/tmp/s/mock.html)", ["/tmp/s/mock.html"]],
     ["home path", "Use `~/notes/a.md`", ["~/notes/a.md"]],
     ["windows drive", "Use `C:\\Users\\me\\a.txt`", ["C:\\Users\\me\\a.txt"]],
-    ["space inside backticks", "`/tmp/s/my file.txt`", ["/tmp/s/my file.txt"]],
+    ["space inside backticks", "`/tmp/s/my file.txt`", ["/tmp/s/my file.txt", "/tmp/s/my"]],
+    [
+      "a command span offers its path too",
+      "Run `/tmp/s/gen.py --out x`",
+      ["/tmp/s/gen.py --out x", "/tmp/s/gen.py"],
+    ],
+    [
+      "a span listing two paths offers each",
+      "See `/tmp/s/a.png and /tmp/s/b.png`",
+      ["/tmp/s/a.png and /tmp/s/b.png", "/tmp/s/a.png", "/tmp/s/b.png"],
+    ],
+    ["a glob keeps its pattern", "Shots in `/tmp/s/shots/*.png`.", ["/tmp/s/shots/*.png"]],
+    ["emphasis stars are not a glob", "*see /tmp/s/a.md*", ["/tmp/s/a.md"]],
     ["urls and relative paths ignored", "https://x.dev/a and src/a.ts and //cdn", []],
     ["bare root ignored", "the root `/` itself", []],
     ["repeats collapse", "`/tmp/a` then /tmp/a again", ["/tmp/a"]],
@@ -74,6 +86,18 @@ describe("extractCitedPaths", () => {
 });
 
 describe("the footer", () => {
+  it("leaves a body alone that only mentions the marker", () => {
+    const inline =
+      "# Plan\n\nThe footer opens with `<!-- t3o:attached-files -->` in the body.\n\n## Steps\n\n1. do it\n";
+    assert.strictEqual(stripAttachedFilesFooter(inline), inline);
+    // A footer with plan text after it is no generated footer either.
+    const footer = withAttachedFilesFooter("# Plan\n", {
+      items: [{ name: "a.html", sourcePath: "/tmp/s/a.html" }],
+    });
+    const followed = `${footer}\n## More\n`;
+    assert.strictEqual(stripAttachedFilesFooter(followed), followed);
+  });
+
   it("round-trips: stripping a rendered footer gives back the plan", () => {
     const plan = "# Plan\n\nBody `/tmp/s/a.html`.\n";
     const body = withAttachedFilesFooter(plan, {
@@ -223,6 +247,48 @@ describe("inspectShareableFiles", () => {
       assert.deepStrictEqual(again.bytes, read.bytes);
       const tar = NodeZlib.gunzipSync(read.bytes);
       assert.include(tar.subarray(0, 100).toString("utf8"), "site/css/a.css");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("expands a glob in the last segment and reports each match under it", () =>
+    Effect.gen(function* () {
+      using tree = makeRoot();
+      const shots = NodePath.join(tree.root, "s", "shots");
+      write(NodePath.join(shots, "a.png"), "a");
+      write(NodePath.join(shots, "b.png"), "b");
+      write(NodePath.join(shots, "notes.txt"), "n");
+      const glob = NodePath.join(shots, "*.png");
+      const items = yield* inspectShareableFiles(
+        [glob, NodePath.join(shots, "*.gif")],
+        context(tree.root),
+      );
+      assert.deepStrictEqual(
+        items.map((item) => [item.kind, item.path, "name" in item ? item.name : item.reason]),
+        [
+          ["file", glob, "a.png"],
+          ["file", glob, "b.png"],
+          ["refused", NodePath.join(shots, "*.gif"), "not-found"],
+        ],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("names the members an archive can't hold rather than dropping them silently", () =>
+    Effect.gen(function* () {
+      using tree = makeRoot();
+      const site = NodePath.join(tree.root, "s", "site");
+      write(NodePath.join(site, "index.html"), "i");
+      const long = NodePath.join(site, "x".repeat(120));
+      write(long, "l");
+      const items = yield* inspectShareableFiles([site], context(tree.root));
+      assert.deepInclude(items[0], { kind: "directory", memberCount: 1 });
+      assert.deepInclude(items[1], { kind: "refused", path: long, reason: "not-archivable" });
+      const read = yield* readShareableItem(site, context(tree.root));
+      assert.ok("bytes" in read);
+      assert.strictEqual(
+        read.contentHash,
+        items[0]?.kind === "directory" ? items[0].contentHash : "",
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

@@ -442,6 +442,8 @@ const BOARD_SHAREABLE_REFUSAL_REASONS = [
   "too-many-members",
   "inside-cited-directory",
   "not-absolute",
+  /** A member of a cited directory whose path is too long for the archive format. */
+  "not-archivable",
 ] as const;
 export const BoardShareableRefusalReason = Schema.Literals(BOARD_SHAREABLE_REFUSAL_REASONS);
 export type BoardShareableRefusalReason = typeof BoardShareableRefusalReason.Type;

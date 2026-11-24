@@ -31,22 +31,30 @@ const ATTACHED_FILES_CLOSE = "<!-- /t3o:attached-files -->";
 
 // ── Pure ───────────────────────────────────────────────────────────────
 
-/** A generated footer, removed so neither an edit nor a scan ever sees it. */
+/**
+ * A generated footer, removed so neither an edit nor a scan ever sees it. Only a whole footer
+ * at the end counts: the open marker starting a line, the close marker, then nothing but
+ * whitespace. A body that merely mentions a marker is left alone.
+ */
 export function stripAttachedFilesFooter(body: string): string {
-  const open = body.indexOf(ATTACHED_FILES_OPEN);
+  const closeAt = body.lastIndexOf(ATTACHED_FILES_CLOSE);
+  if (closeAt === -1 || body.slice(closeAt + ATTACHED_FILES_CLOSE.length).trim() !== "") {
+    return body;
+  }
+  let open = body.lastIndexOf(ATTACHED_FILES_OPEN, closeAt);
+  while (open > 0 && body[open - 1] !== "\n") {
+    open = body.lastIndexOf(ATTACHED_FILES_OPEN, open - 1);
+  }
   if (open === -1) return body;
-  const close = body.indexOf(ATTACHED_FILES_CLOSE, open);
-  const after = close === -1 ? "" : body.slice(close + ATTACHED_FILES_CLOSE.length);
-  return (body.slice(0, open).replace(/\s+$/, "") + after.replace(/^\s+/, "\n")).replace(
-    /\s+$/,
-    "\n",
-  );
+  return body.slice(0, open).replace(/\s+$/, "\n");
 }
 
 export interface AttachedFileFooterItem {
   readonly name: string;
   readonly sourcePath: string;
   readonly memberCount?: number | undefined;
+  /** The card that holds it, when not the footer's own (an ancestor's file). */
+  readonly onCardKey?: string | undefined;
 }
 
 /** The footer mapping each cited path to the attachment that carries it, or "" for none. */
@@ -56,8 +64,9 @@ export function renderAttachedFilesFooter(input: {
   readonly onCardKey?: string | undefined;
 }): string {
   if (input.items.length === 0) return "";
-  const on = input.onCardKey === undefined ? "" : ` (on ${input.onCardKey})`;
   const lines = input.items.map((item) => {
+    const key = item.onCardKey ?? input.onCardKey;
+    const on = key === undefined ? "" : ` (on ${key})`;
     const archive =
       item.memberCount === undefined
         ? ""
@@ -87,38 +96,64 @@ export function withAttachedFilesFooter(
 }
 
 const PATH_START = /^(?:~\/|\/(?!\/)|[A-Za-z]:[\\/])/;
-const BARE_PATH = /(?:^|[\s("'[<=])((?:~\/|\/(?!\/)|[A-Za-z]:[\\/])[^\s`'"<>()[\]{}|*]+)/g;
+const BARE_PATH = /(?:^|[\s("'[<=])((?:~\/|\/(?!\/)|[A-Za-z]:[\\/])[^\s`'"<>()[\]{}|]+)/g;
 
 function cleanCitedPath(raw: string): string | null {
   let value = raw.trim();
   value = value.replace(/[.,;:!?]+$/, "");
   value = value.replace(/:\d+(?::\d+)?$/, "");
   value = value.replace(/[.,;:!?]+$/, "");
+  // Trailing stars close markdown emphasis; `dir/*` stays a glob.
+  value = value.replace(/([^/\\*])\*+$/, "$1");
   // A bare root ("/", "~/", "C:\") names nothing worth sharing.
   if (!PATH_START.test(value) || /^(?:~\/|\/|[A-Za-z]:[\\/])$/.test(value)) return null;
   return value;
 }
 
 /**
- * Absolute POSIX, `~/` and Windows drive paths a text cites: in backticks (spaces allowed),
- * as a markdown link target, or bare. A trailing `:line[:col]` and punctuation are dropped,
- * and the generated footer is ignored. In order of first mention, without repeats.
+ * One citation's readings. A backtick span that starts with a path may be one path with a
+ * space in it (`whole`) or a command or list of paths (`tokens`); the scan offers every
+ * reading and keeps whichever exists.
  */
-export function extractCitedPaths(text: string): ReadonlyArray<string> {
+interface CitedPathGroup {
+  readonly whole: string | null;
+  readonly tokens: ReadonlyArray<string>;
+}
+
+/**
+ * Absolute POSIX, `~/` and Windows drive paths a text cites: in backticks, as a markdown link
+ * target, or bare. A trailing `:line[:col]` and punctuation are dropped, and the generated
+ * footer is ignored. In order of first mention.
+ */
+export function extractCitedPathGroups(text: string): ReadonlyArray<CitedPathGroup> {
   const body = stripAttachedFilesFooter(text);
-  const found: Array<string> = [];
-  const add = (raw: string) => {
-    const cleaned = cleanCitedPath(raw);
-    if (cleaned !== null && !found.includes(cleaned)) found.push(cleaned);
+  const groups: Array<CitedPathGroup> = [];
+  const tokensOf = (inner: string) => {
+    const tokens: Array<string> = [];
+    for (const match of inner.matchAll(BARE_PATH)) {
+      const cleaned = cleanCitedPath(match[1] ?? "");
+      if (cleaned !== null && !tokens.includes(cleaned)) tokens.push(cleaned);
+    }
+    return tokens;
   };
-  // Fenced blocks and inline code are read span by span, so a path with a space survives.
   const rest = body.replace(/`([^`\n]+)`/g, (_match, inner: string) => {
-    if (PATH_START.test(inner.trim())) add(inner);
-    else for (const match of inner.matchAll(BARE_PATH)) add(match[1] ?? "");
+    const whole = PATH_START.test(inner.trim()) ? cleanCitedPath(inner) : null;
+    const tokens = tokensOf(inner).filter((token) => token !== whole);
+    if (whole !== null || tokens.length > 0) groups.push({ whole, tokens });
     return " ";
   });
-  for (const match of rest.matchAll(BARE_PATH)) add(match[1] ?? "");
-  return found;
+  for (const token of tokensOf(rest)) groups.push({ whole: null, tokens: [token] });
+  return groups;
+}
+
+/** Every reading of every citation, in order of first mention, without repeats. */
+export function extractCitedPaths(text: string): ReadonlyArray<string> {
+  const found = new Set<string>();
+  for (const group of extractCitedPathGroups(text)) {
+    if (group.whole !== null) found.add(group.whole);
+    for (const token of group.tokens) found.add(token);
+  }
+  return [...found];
 }
 
 /** Is `real` strictly under one of `roots`? All realpaths. */
@@ -265,6 +300,8 @@ type Collected =
       readonly name: string;
       readonly members: ReadonlyArray<TarMember>;
       readonly sizeBytes: number;
+      /** Member source paths too long for ustar: left out of the archive and its hash. */
+      readonly skipped: ReadonlyArray<string>;
     }
   | Extract<BoardShareableItem, { readonly kind: "refused" }>;
 
@@ -390,6 +427,7 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
   // rule, and nothing past the member cap.
   const base = path.basename(resolved);
   const members: Array<TarMember> = [];
+  const skipped: Array<string> = [];
   let total = 0;
   let overflow: BoardShareableRefusalReason | null = null;
   const walk: (dir: string, relative: string) => Effect.Effect<void> = Effect.fn(
@@ -419,6 +457,10 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
         continue;
       }
       if (stat.type !== "File") continue;
+      if (splitUstarPath(`${base}/${rel}`) === null) {
+        skipped.push(full);
+        continue;
+      }
       if (members.length >= SHAREABLE_DIRECTORY_MAX_MEMBERS) {
         overflow = "too-many-members";
         return;
@@ -455,6 +497,7 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
     name: `${base}.tar.gz`,
     members,
     sizeBytes: total,
+    skipped,
   } satisfies Collected;
 });
 
@@ -486,8 +529,49 @@ const toItem = (collected: Collected): BoardShareableItem => {
   }
 };
 
+const GLOB = /[*?]/;
+/** Matches one glob may attach; more is a directory's job. */
+const SHAREABLE_GLOB_MAX_MATCHES = 20;
+
+const globPattern = (glob: string): RegExp => {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("^" + escaped.replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + "$");
+};
+
 /**
- * What each cited path is, with its hash, without carrying bytes. A file inside another cited
+ * A cited glob's matches, when only its last segment is a pattern and its directory is under a
+ * temp root (or the chat dir for an explicit attach). Null when it is not one to expand.
+ */
+const expandGlob = Effect.fn("shareableFiles.expandGlob")(function* (
+  cited: string,
+  context: ShareableContext,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const expanded = cited.startsWith("~/") ? path.join(NodeOS.homedir(), cited.slice(2)) : cited;
+  const dir = path.dirname(expanded);
+  const pattern = path.basename(expanded);
+  if (!GLOB.test(pattern) || GLOB.test(dir) || !path.isAbsolute(dir)) return null;
+  const tempRoots = context.tempRoots ?? (yield* shareableTempRoots());
+  const real = yield* fs.realPath(dir).pipe(Effect.option);
+  if (Option.isNone(real)) return null;
+  const roots =
+    context.mode === "explicit" && context.attachmentsDir !== null
+      ? [...tempRoots, context.attachmentsDir]
+      : tempRoots;
+  if (!roots.includes(real.value) && !isUnderRoot(path, real.value, roots)) return null;
+  const matcher = globPattern(pattern);
+  const entries = yield* fs.readDirectory(real.value).pipe(Effect.orElseSucceed(() => []));
+  return [...entries]
+    .filter((entry) => matcher.test(entry))
+    .sort()
+    .map((entry) => path.join(dir, entry));
+});
+
+/**
+ * What each cited path is, with its hash, without carrying bytes: each item is reduced to its
+ * hash as it is read, so one item's bytes are live at a time. A glob in a path's last segment
+ * expands to its matches, each reported under the cited glob. A file inside another cited
  * directory travels in that archive, so it is not offered on its own.
  */
 export const inspectShareableFiles = Effect.fn("shareableFiles.inspect")(function* (
@@ -495,24 +579,64 @@ export const inspectShareableFiles = Effect.fn("shareableFiles.inspect")(functio
   context: ShareableContext,
 ) {
   const path = yield* Path.Path;
-  const collected: Array<Collected> = [];
-  for (const cited of paths) {
-    collected.push(
-      yield* collectOne(cited, context).pipe(
-        Effect.orElseSucceed(() => refuse(cited, "not-found", `'${cited}' could not be read.`)),
-      ),
+  const inspected: Array<{ readonly item: BoardShareableItem; readonly real: string | null }> = [];
+  const collect = (target: string, cited: string) =>
+    collectOne(target, context).pipe(
+      Effect.orElseSucceed(() => refuse(cited, "not-found", `'${cited}' could not be read.`)),
+      Effect.map((collected) => {
+        if (collected.kind === "refused") {
+          inspected.push({ item: { ...collected, path: cited }, real: null });
+          return;
+        }
+        inspected.push({ item: { ...toItem(collected), path: cited }, real: collected.real });
+        if (collected.kind === "directory") {
+          for (const member of collected.skipped) {
+            inspected.push({
+              item: refuse(
+                member,
+                "not-archivable",
+                `'${member}' was left out of ${collected.name}: its path is too long for the archive. Rename it shorter and re-run.`,
+              ),
+              real: null,
+            });
+          }
+        }
+      }),
     );
+  for (const cited of paths) {
+    const matches = yield* expandGlob(cited, context).pipe(Effect.orElseSucceed(() => null));
+    if (matches === null) {
+      yield* collect(cited, cited);
+    } else if (matches.length === 0) {
+      inspected.push({
+        item: refuse(cited, "not-found", `'${cited}' matches no files.`),
+        real: null,
+      });
+    } else if (matches.length > SHAREABLE_GLOB_MAX_MATCHES) {
+      inspected.push({
+        item: refuse(
+          cited,
+          "too-many-members",
+          `'${cited}' matches ${matches.length} files, more than ${SHAREABLE_GLOB_MAX_MATCHES}; put them in one directory and cite that.`,
+        ),
+        real: null,
+      });
+    } else {
+      for (const match of matches) yield* collect(match, cited);
+    }
   }
-  const directories = collected.flatMap((item) => (item.kind === "directory" ? [item.real] : []));
-  return collected.map((item): BoardShareableItem => {
-    if (item.kind === "file" && isUnderRoot(path, item.real, directories)) {
+  const directories = inspected.flatMap((entry) =>
+    entry.item.kind === "directory" && entry.real !== null ? [entry.real] : [],
+  );
+  return inspected.map(({ item, real }): BoardShareableItem => {
+    if (item.kind === "file" && real !== null && isUnderRoot(path, real, directories)) {
       return refuse(
         item.path,
         "inside-cited-directory",
         `'${item.path}' travels inside a cited directory's archive.`,
       );
     }
-    return toItem(item);
+    return item;
   });
 });
 
