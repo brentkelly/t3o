@@ -282,6 +282,11 @@ export interface ShareableContext {
   readonly uid?: number | null | undefined;
 }
 
+interface SkippedMember {
+  readonly path: string;
+  readonly why: string;
+}
+
 type Collected =
   | {
       readonly kind: "file";
@@ -300,8 +305,8 @@ type Collected =
       readonly name: string;
       readonly members: ReadonlyArray<TarMember>;
       readonly sizeBytes: number;
-      /** Member source paths too long for ustar: left out of the archive and its hash. */
-      readonly skipped: ReadonlyArray<string>;
+      /** Members left out of the archive and its hash, with why. */
+      readonly skipped: ReadonlyArray<SkippedMember>;
     }
   | Extract<BoardShareableItem, { readonly kind: "refused" }>;
 
@@ -316,8 +321,21 @@ const refuse = (
   message,
 });
 
+const refuseTempRoot = (cited: string) =>
+  refuse(
+    cited,
+    "temp-root",
+    `'${cited}' is a temp folder itself or one directly inside it, which can hold other sessions' files; cite a directory deeper down.`,
+  );
+
 const COPY_HINT = "copy it into your scratchpad or temp dir, then cite or attach the copy";
 const MIB = 1024 * 1024;
+
+const realAttachmentsDir = (dir: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.realPath(dir)),
+    Effect.orElseSucceed(() => dir),
+  );
 
 const collectOne = Effect.fn("shareableFiles.collect")(function* (
   cited: string,
@@ -371,13 +389,9 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
   }
   const roots =
     context.mode === "explicit" && context.attachmentsDir !== null
-      ? [
-          ...tempRoots,
-          yield* fs
-            .realPath(context.attachmentsDir)
-            .pipe(Effect.orElseSucceed(() => context.attachmentsDir as string)),
-        ]
+      ? [...tempRoots, yield* realAttachmentsDir(context.attachmentsDir)]
       : tempRoots;
+  if (tempRoots.includes(real.value)) return refuseTempRoot(cited);
   if (!isUnderRoot(path, real.value, roots)) {
     return refuse(
       cited,
@@ -416,18 +430,12 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
   if (info.value.type !== "Directory") {
     return refuse(cited, "not-regular", `'${cited}' is not a regular file or directory.`);
   }
-  if (isTempRootOrChild(path, real.value, tempRoots)) {
-    return refuse(
-      cited,
-      "temp-root",
-      `'${cited}' is a temp folder itself or one directly inside it, which can hold other sessions' files; cite a directory deeper down.`,
-    );
-  }
+  if (isTempRootOrChild(path, real.value, tempRoots)) return refuseTempRoot(cited);
   // Walk the tree: regular files only, a symlink kept only when its target passes the same
   // rule, and nothing past the member cap.
   const base = path.basename(resolved);
   const members: Array<TarMember> = [];
-  const skipped: Array<string> = [];
+  const skipped: Array<SkippedMember> = [];
   let total = 0;
   let overflow: BoardShareableRefusalReason | null = null;
   const walk: (dir: string, relative: string) => Effect.Effect<void> = Effect.fn(
@@ -438,27 +446,44 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
       if (overflow !== null) return;
       const full = path.join(dir, entry);
       const rel = relative === "" ? entry : `${relative}/${entry}`;
+      const skip = (why: string) => skipped.push({ path: full, why });
       const link = yield* fs.lstat(full).pipe(Effect.option);
-      if (Option.isNone(link)) continue;
+      if (Option.isNone(link)) {
+        skip("it could not be read");
+        continue;
+      }
       let target = full;
       let stat = link.value;
       if (link.value.type === "SymbolicLink") {
         const linkReal = yield* fs.realPath(full).pipe(Effect.option);
-        if (Option.isNone(linkReal) || !isUnderRoot(path, linkReal.value, tempRoots)) continue;
+        if (Option.isNone(linkReal)) {
+          skip("it is a broken link");
+          continue;
+        }
+        if (!isUnderRoot(path, linkReal.value, tempRoots)) {
+          skip("it links outside the temp folders");
+          continue;
+        }
         const linkStat = yield* fs.stat(linkReal.value).pipe(Effect.option);
         // A linked directory is skipped rather than followed: it could loop.
-        if (Option.isNone(linkStat) || linkStat.value.type !== "File") continue;
+        if (Option.isNone(linkStat) || linkStat.value.type !== "File") {
+          skip("it links to something other than a file, which isn't followed");
+          continue;
+        }
         target = linkReal.value;
         stat = linkStat.value;
       }
-      if (!owned(stat.uid)) continue;
+      if (!owned(stat.uid)) {
+        skip("it belongs to another user");
+        continue;
+      }
       if (stat.type === "Directory") {
         yield* walk(full, rel);
         continue;
       }
       if (stat.type !== "File") continue;
       if (splitUstarPath(`${base}/${rel}`) === null) {
-        skipped.push(full);
+        skip("its path is too long for the archive. Rename it shorter and re-run");
         continue;
       }
       if (members.length >= SHAREABLE_DIRECTORY_MAX_MEMBERS) {
@@ -472,6 +497,7 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
       }
       const bytes = yield* fs.readFile(target).pipe(Effect.option);
       if (Option.isSome(bytes)) members.push({ path: `${base}/${rel}`, bytes: bytes.value });
+      else skip("it could not be read");
     }
   });
   yield* walk(real.value, "");
@@ -529,6 +555,9 @@ const toItem = (collected: Collected): BoardShareableItem => {
   }
 };
 
+/** Left-out members named one by one; past this, one line counts the rest. */
+const SKIPPED_MEMBERS_LISTED = 10;
+
 const GLOB = /[*?]/;
 /** Matches one glob may attach; more is a directory's job. */
 const SHAREABLE_GLOB_MAX_MATCHES = 20;
@@ -557,7 +586,7 @@ const expandGlob = Effect.fn("shareableFiles.expandGlob")(function* (
   if (Option.isNone(real)) return null;
   const roots =
     context.mode === "explicit" && context.attachmentsDir !== null
-      ? [...tempRoots, context.attachmentsDir]
+      ? [...tempRoots, yield* realAttachmentsDir(context.attachmentsDir)]
       : tempRoots;
   if (!roots.includes(real.value) && !isUnderRoot(path, real.value, roots)) return null;
   const matcher = globPattern(pattern);
@@ -590,12 +619,24 @@ export const inspectShareableFiles = Effect.fn("shareableFiles.inspect")(functio
         }
         inspected.push({ item: { ...toItem(collected), path: cited }, real: collected.real });
         if (collected.kind === "directory") {
-          for (const member of collected.skipped) {
+          const listed = collected.skipped.slice(0, SKIPPED_MEMBERS_LISTED);
+          for (const member of listed) {
             inspected.push({
               item: refuse(
-                member,
+                member.path,
                 "not-archivable",
-                `'${member}' was left out of ${collected.name}: its path is too long for the archive. Rename it shorter and re-run.`,
+                `'${member.path}' was left out of ${collected.name}: ${member.why}.`,
+              ),
+              real: null,
+            });
+          }
+          const more = collected.skipped.length - listed.length;
+          if (more > 0) {
+            inspected.push({
+              item: refuse(
+                cited,
+                "not-archivable",
+                `${more} more files under '${cited}' were left out of ${collected.name}.`,
               ),
               real: null,
             });

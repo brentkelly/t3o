@@ -181,7 +181,7 @@ describe("inspectShareableFiles", () => {
         [tree.root, NodePath.join(tree.root, "session")],
         context(tree.root),
       );
-      assert.deepInclude(items[0], { kind: "refused", reason: "outside-allowlist" });
+      assert.deepInclude(items[0], { kind: "refused", reason: "temp-root" });
       assert.deepInclude(items[1], { kind: "refused", reason: "temp-root" });
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -219,6 +219,15 @@ describe("inspectShareableFiles", () => {
         context(tree.root, { mode: "explicit", checkoutRoot: checkout, attachmentsDir: chat }),
       );
       assert.deepInclude(explicit[1], { kind: "file", name: "shot.png" });
+      // A linked chat dir still expands a glob in it.
+      const linkedChat = NodePath.join(tree.outer, "linked-attachments");
+      NodeFS.symlinkSync(chat, linkedChat);
+      const glob = NodePath.join(chat, "t", "*.png");
+      const globbed = yield* inspectShareableFiles(
+        [glob],
+        context(tree.root, { mode: "explicit", attachmentsDir: linkedChat }),
+      );
+      assert.deepInclude(globbed[0], { kind: "file", path: glob, name: "shot.png" });
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -280,9 +289,21 @@ describe("inspectShareableFiles", () => {
       write(NodePath.join(site, "index.html"), "i");
       const long = NodePath.join(site, "x".repeat(120));
       write(long, "l");
+      write(NodePath.join(tree.outer, "secret.txt"), "secret");
+      const escaping = NodePath.join(site, "y-escape");
+      NodeFS.symlinkSync(NodePath.join(tree.outer, "secret.txt"), escaping);
+      const broken = NodePath.join(site, "z-broken");
+      NodeFS.symlinkSync(NodePath.join(site, "gone"), broken);
       const items = yield* inspectShareableFiles([site], context(tree.root));
       assert.deepInclude(items[0], { kind: "directory", memberCount: 1 });
-      assert.deepInclude(items[1], { kind: "refused", path: long, reason: "not-archivable" });
+      assert.deepStrictEqual(
+        items.slice(1).map((item) => [item.path, item.kind === "refused" ? item.reason : ""]),
+        [
+          [long, "not-archivable"],
+          [escaping, "not-archivable"],
+          [broken, "not-archivable"],
+        ],
+      );
       const read = yield* readShareableItem(site, context(tree.root));
       assert.ok("bytes" in read);
       assert.strictEqual(
