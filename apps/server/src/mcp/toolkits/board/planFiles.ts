@@ -168,7 +168,9 @@ export const attachSharedFiles = Effect.fn("BoardPlanFiles.attach")(function* (i
   readonly source: BoardFileSource;
   readonly stateDir: string;
   readonly readCard: Effect.Effect<BoardCard | null>;
-  readonly dispatch: (command: BoardCommand) => Effect.Effect<unknown, { readonly message: string }>;
+  readonly dispatch: (
+    command: BoardCommand,
+  ) => Effect.Effect<unknown, { readonly message: string }>;
 }) {
   if (input.paths.length === 0) {
     return { attached: [], refused: [], unreachable: null } satisfies AttachSharedFilesResult;

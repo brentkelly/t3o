@@ -93,7 +93,9 @@ export const makeBoardMcpRelayClient = Effect.gen(function* () {
   const inspectFilesFor =
     (workerId: EnvironmentId): BoardRelayInvocation["Service"]["inspectFiles"] =>
     (input) =>
-      connections.get(workerId).pipe(Effect.flatMap((rpc) => rpc.gateway.inspectShareableFiles(input)));
+      connections
+        .get(workerId)
+        .pipe(Effect.flatMap((rpc) => rpc.gateway.inspectShareableFiles(input)));
   const readFileFor =
     (workerId: EnvironmentId): BoardRelayInvocation["Service"]["readFile"] =>
     (input) =>

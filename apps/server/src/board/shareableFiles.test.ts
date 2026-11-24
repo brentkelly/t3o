@@ -26,7 +26,9 @@ import {
 
 /** A private temp root, so the tests never depend on the machine's real /tmp. */
 const makeRoot = () => {
-  const outer = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o-share-")));
+  const outer = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o-share-")),
+  );
   const root = NodePath.join(outer, "root");
   NodeFS.mkdirSync(root);
   return { outer, root, [Symbol.dispose]: () => NodeFS.rmSync(outer, { recursive: true }) };
@@ -58,9 +60,9 @@ describe("extractCitedPaths", () => {
     ["bare root ignored", "the root `/` itself", []],
     ["repeats collapse", "`/tmp/a` then /tmp/a again", ["/tmp/a"]],
   ];
-  for (const [name, text, expected] of rows) {
-    it(name, () => assert.deepStrictEqual(extractCitedPaths(text), expected));
-  }
+  it.each(rows)("%s", (_name, text, expected) =>
+    assert.deepStrictEqual(extractCitedPaths(text), expected),
+  );
 
   it("ignores the generated footer", () => {
     const body = withAttachedFilesFooter("Plan cites `/tmp/s/a.html`.", {
@@ -102,7 +104,10 @@ describe("writeTarGz", () => {
     const tar = NodeZlib.gunzipSync(first.bytes);
     const header = (index: number) => tar.subarray(index * 512, index * 512 + 512);
     const text = (block: Buffer, start: number, length: number) =>
-      block.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "");
+      block
+        .subarray(start, start + length)
+        .toString("utf8")
+        .replace(/\0.*$/s, "");
     // Sorted: the long path's `d…` directory sorts before `site/`.
     assert.strictEqual(text(header(0), 0, 100), "file.txt");
     assert.strictEqual(text(header(0), 345, 155), "d".repeat(120));
@@ -159,7 +164,8 @@ describe("inspectShareableFiles", () => {
 
   it.effect("refuses a file another uid owns", () =>
     Effect.gen(function* () {
-      if (process.platform === "win32") return;
+      // No uids on Windows.
+      if (typeof process.getuid !== "function") return;
       using tree = makeRoot();
       write(NodePath.join(tree.root, "s", "a.txt"), "a");
       const items = yield* inspectShareableFiles(
@@ -208,7 +214,10 @@ describe("inspectShareableFiles", () => {
       const read = yield* readShareableItem(site, context(tree.root));
       assert.ok("bytes" in read);
       // Inspect and read agree on the hash, so an unchanged directory is a no-op.
-      assert.strictEqual(read.contentHash, items[0]?.kind === "directory" ? items[0].contentHash : "");
+      assert.strictEqual(
+        read.contentHash,
+        items[0]?.kind === "directory" ? items[0].contentHash : "",
+      );
       const again = yield* readShareableItem(site, context(tree.root));
       assert.ok("bytes" in again);
       assert.deepStrictEqual(again.bytes, read.bytes);

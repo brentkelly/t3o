@@ -1104,8 +1104,7 @@ const planFilesAttacher = Effect.fn("BoardToolkit.planFilesAttacher")(function* 
   const state = yield* deps.threads
     .threadState(deps.scope.thread.threadId)
     .pipe(Effect.orElseSucceed(() => null));
-  const worktree =
-    state !== null && state !== UNKNOWN_THREAD_STATE ? state.worktreePath : null;
+  const worktree = state !== null && state !== UNKNOWN_THREAD_STATE ? state.worktreePath : null;
   const checkoutRoot =
     worktree ??
     (yield* deps.threads.project(card.projectId).pipe(
@@ -1264,9 +1263,11 @@ const rawBoardHandlers = {
         card,
       }),
       inheritedAttachments: fileAncestors.flatMap((ancestor) =>
-        boardCardAttachmentManifest({ path: deps.path, stateDir: deps.stateDir, card: ancestor }).map(
-          (entry) => ({ ...entry, cardKey: ancestor.key }),
-        ),
+        boardCardAttachmentManifest({
+          path: deps.path,
+          stateDir: deps.stateDir,
+          card: ancestor,
+        }).map((entry) => ({ ...entry, cardKey: ancestor.key })),
       ),
       dependencies,
       steps: reviewCaller
@@ -2227,7 +2228,10 @@ const rawBoardHandlers = {
       type: "board.plans.propose",
       commandId: yield* mintCommandId,
       cardId: card.id,
-      plans: input.plans.map((plan, index) => ({ ...plan, body: files.bodies[index] ?? plan.body })),
+      plans: input.plans.map((plan, index) => ({
+        ...plan,
+        body: files.bodies[index] ?? plan.body,
+      })),
       // Optional on the tool, explicit on the command: the
       // decider is the one place that decides whether a split needs one.
       splitRationale: input.splitRationale ?? null,

@@ -6,7 +6,7 @@
  * leave the machine: an allowlist, checked on the realpath, never a denylist.
  */
 import * as NodeCrypto from "node:crypto";
-import * as NodeOs from "node:os";
+import * as NodeOS from "node:os";
 import * as NodeZlib from "node:zlib";
 
 import type {
@@ -226,7 +226,7 @@ export function directoryContentHash(members: ReadonlyArray<TarMember>): string 
 
 /** The temp roots, as realpaths: `os.tmpdir()`, `$TMPDIR`, `/tmp`, `/var/tmp`. */
 const TEMP_ROOT_CANDIDATES = (): ReadonlyArray<string> =>
-  [NodeOs.tmpdir(), process.env.TMPDIR, "/tmp", "/var/tmp"].filter(
+  [NodeOS.tmpdir(), process.env.TMPDIR, "/tmp", "/var/tmp"].filter(
     (root): root is string => root !== undefined && root.length > 0,
   );
 
@@ -299,7 +299,7 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
         ? process.getuid()
         : null
       : context.uid;
-  const sourcePath = cited.startsWith("~/") ? path.join(NodeOs.homedir(), cited.slice(2)) : cited;
+  const sourcePath = cited.startsWith("~/") ? path.join(NodeOS.homedir(), cited.slice(2)) : cited;
   if (!path.isAbsolute(sourcePath)) {
     return refuse(cited, "not-absolute", `'${cited}' is not an absolute path.`);
   }
@@ -396,45 +396,46 @@ const collectOne = Effect.fn("shareableFiles.collect")(function* (
   const members: Array<TarMember> = [];
   let total = 0;
   let overflow: BoardShareableRefusalReason | null = null;
-  const walk = (dir: string, relative: string): Effect.Effect<void, never> =>
-    Effect.gen(function* () {
-      const entries = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
-      for (const entry of [...entries].sort()) {
-        if (overflow !== null) return;
-        const full = path.join(dir, entry);
-        const rel = relative === "" ? entry : `${relative}/${entry}`;
-        const link = yield* fs.lstat(full).pipe(Effect.option);
-        if (Option.isNone(link)) continue;
-        let target = full;
-        let stat = link.value;
-        if (link.value.type === "SymbolicLink") {
-          const linkReal = yield* fs.realPath(full).pipe(Effect.option);
-          if (Option.isNone(linkReal) || !isUnderRoot(path, linkReal.value, tempRoots)) continue;
-          const linkStat = yield* fs.stat(linkReal.value).pipe(Effect.option);
-          // A linked directory is skipped rather than followed: it could loop.
-          if (Option.isNone(linkStat) || linkStat.value.type !== "File") continue;
-          target = linkReal.value;
-          stat = linkStat.value;
-        }
-        if (!owned(stat.uid)) continue;
-        if (stat.type === "Directory") {
-          yield* walk(full, rel);
-          continue;
-        }
-        if (stat.type !== "File") continue;
-        if (members.length >= SHAREABLE_DIRECTORY_MAX_MEMBERS) {
-          overflow = "too-many-members";
-          return;
-        }
-        total += Number(stat.size);
-        if (total > SHAREABLE_ITEM_MAX_BYTES) {
-          overflow = "too-large";
-          return;
-        }
-        const bytes = yield* fs.readFile(target).pipe(Effect.option);
-        if (Option.isSome(bytes)) members.push({ path: `${base}/${rel}`, bytes: bytes.value });
+  const walk: (dir: string, relative: string) => Effect.Effect<void> = Effect.fn(
+    "shareableFiles.walk",
+  )(function* (dir: string, relative: string) {
+    const entries = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
+    for (const entry of [...entries].sort()) {
+      if (overflow !== null) return;
+      const full = path.join(dir, entry);
+      const rel = relative === "" ? entry : `${relative}/${entry}`;
+      const link = yield* fs.lstat(full).pipe(Effect.option);
+      if (Option.isNone(link)) continue;
+      let target = full;
+      let stat = link.value;
+      if (link.value.type === "SymbolicLink") {
+        const linkReal = yield* fs.realPath(full).pipe(Effect.option);
+        if (Option.isNone(linkReal) || !isUnderRoot(path, linkReal.value, tempRoots)) continue;
+        const linkStat = yield* fs.stat(linkReal.value).pipe(Effect.option);
+        // A linked directory is skipped rather than followed: it could loop.
+        if (Option.isNone(linkStat) || linkStat.value.type !== "File") continue;
+        target = linkReal.value;
+        stat = linkStat.value;
       }
-    });
+      if (!owned(stat.uid)) continue;
+      if (stat.type === "Directory") {
+        yield* walk(full, rel);
+        continue;
+      }
+      if (stat.type !== "File") continue;
+      if (members.length >= SHAREABLE_DIRECTORY_MAX_MEMBERS) {
+        overflow = "too-many-members";
+        return;
+      }
+      total += Number(stat.size);
+      if (total > SHAREABLE_ITEM_MAX_BYTES) {
+        overflow = "too-large";
+        return;
+      }
+      const bytes = yield* fs.readFile(target).pipe(Effect.option);
+      if (Option.isSome(bytes)) members.push({ path: `${base}/${rel}`, bytes: bytes.value });
+    }
+  });
   yield* walk(real.value, "");
   if (overflow === "too-many-members") {
     return refuse(

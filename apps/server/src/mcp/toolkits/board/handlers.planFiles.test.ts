@@ -27,6 +27,10 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { BoardQueries } from "../../../board/BoardQueries.ts";
 import { resolveBoardCardAttachmentPath } from "../../../board/attachments.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import {
+  SupervisorReactor,
+  type SupervisorReactorShape,
+} from "../../../board/supervisorReactor.ts";
 import { boardHandlers } from "./handlers.ts";
 import {
   boardStackEngine,
@@ -61,7 +65,7 @@ const fixture = Effect.fn("fixture")(function* (name: string) {
   const cardId = BoardCardId.make(`card-${name}`);
   const thread = ThreadId.make(`thread-${name}`);
   const planId = boardPlanId(cardId, "p");
-    const scope = (threadId: ThreadId) =>
+  const scope = (threadId: ThreadId) =>
     Effect.provideService(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("env-1"),
       requestNamespace: `sess-${threadId}`,
@@ -71,7 +75,7 @@ const fixture = Effect.fn("fixture")(function* (name: string) {
         providerInstanceId: ProviderInstanceId.make("codex"),
       },
       client: undefined,
-      capabilities: new Set(["board"]),
+      capabilities: new Set(["board" as const]),
       issuedAt: 0,
     });
   const withScope = scope(thread);
@@ -129,9 +133,10 @@ const fixture = Effect.fn("fixture")(function* (name: string) {
     const queries = yield* BoardQueries;
     return (yield* queries.boardPlanBody(planId)) ?? "";
   });
-  const attachments = boardHandlers
-    .board_get_card_context()
-    .pipe(withScope, Effect.map((context) => context.attachments));
+  const attachments = boardHandlers.board_get_card_context().pipe(
+    withScope,
+    Effect.map((context) => context.attachments),
+  );
   const onDisk = (fileName: string) =>
     Effect.gen(function* () {
       const config = yield* ServerConfig;
@@ -161,8 +166,10 @@ const fixture = Effect.fn("fixture")(function* (name: string) {
   };
 });
 
+// Size warnings ask the supervisor only when a capacity client exists, and here none does.
 const layer = makeBoardStackTestLayer("t3o-plan-files-test-").pipe(
   Layer.provideMerge(ServerSettings.layerTest()),
+  Layer.provideMerge(Layer.succeed(SupervisorReactor, {} as SupervisorReactorShape)),
 );
 
 it.layer(layer)("plan files (T3O-138)", (it) => {
@@ -367,7 +374,7 @@ it.layer(layer)("plan files (T3O-138)", (it) => {
       assert.deepStrictEqual(context.attachments, []);
       assert.deepInclude(context.inheritedAttachments[0], {
         name: "mock.html",
-        cardKey: parent?.key,
+        cardKey: parent!.key,
         sourcePath: mock,
       });
     }),
