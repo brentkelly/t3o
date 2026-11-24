@@ -144,7 +144,7 @@ const utf8Bytes = (value: unknown): number =>
  * to every card on every reconnect; raise it only for key-optional fields that cost an
  * ordinary card zero (the linear-growth test measures those).
  */
-const BOARD_CARD_SHELL_BYTE_BUDGET = 1488;
+const BOARD_CARD_SHELL_BYTE_BUDGET = 1504;
 
 /** Five UUID-length label ids: a card at exactly `BOARD_CARD_LABELS_MAX`,
     the worst case the shell must lay out for. */
@@ -196,6 +196,7 @@ const fullyPopulatedShell = {
   autoBuildSetting: true,
   autoMergeSetting: true,
   autoPlanPending: true,
+  splitApproved: true,
   // Populated for the same reason: the budget is measured
   // against a card whose merge is held, not only against the absent-key case
   // every healthy card sends.
@@ -702,7 +703,7 @@ describe("board card shell derivation", () => {
   });
 
   it("makeBoardCardShell hardcodes the not-yet-sourced fields to their documented rest values", () => {
-    const shell = makeBoardCardShell({
+    const base = () => ({
       cardId: BoardCardId.make("card-1"),
       key: "T3O-1",
       projectId: ProjectId.make("project-1"),
@@ -715,6 +716,7 @@ describe("board card shell derivation", () => {
       hasBrief: false,
       activeThreadId: null,
     });
+    const shell = makeBoardCardShell(base());
     // No `pullRequest` passed means the card has none: `hasPr` is a real
     // derived false here, not the hardcoded placeholder it used to be.
     expect(shell.hasPr).toBe(false);
@@ -741,6 +743,10 @@ describe("board card shell derivation", () => {
     // would then apply as a real change.
     expect("briefHasImage" in shell).toBe(false);
     expect("planCount" in shell).toBe(false);
+    // Key-optional, so an ordinary card's shell stays byte-identical.
+    expect("splitApproved" in shell).toBe(false);
+    expect("splitApproved" in makeBoardCardShell({ ...base(), splitApproved: false })).toBe(false);
+    expect(makeBoardCardShell({ ...base(), splitApproved: true }).splitApproved).toBe(true);
   });
 
   it("threads real body-derived fields through makeBoardCardShell", () => {
@@ -1697,6 +1703,7 @@ describe("cards that need a human (boardCardAttention)", () => {
     // that ask for a split get one.
     planTotal: 0,
     planDone: 0,
+    splitApproved: false,
     ...overrides,
   });
   /** The base fixture is fully populated, review summary included — strip it
@@ -1762,6 +1769,43 @@ describe("cards that need a human (boardCardAttention)", () => {
     expect(pending?.tone).toBe("attention");
     expect(pending?.label).toBe("Input needed");
     expect(pending?.detail).toContain("Split proposed · 3 cards");
+  });
+
+  it("does not ask for input on a split already approved to take effect after review (T3O-135)", () => {
+    const {
+      planTotal: _none,
+      planDone: _noneDone,
+      ...shell
+    } = card({
+      stage: BOARD_SEED_STAGE_IDS.planning,
+      planCount: 3,
+    });
+    const approved = { ...shell, splitApproved: true };
+    expect(boardCardAttention({ card: approved, stages: BOARD_SEED_STAGES })).toBeNull();
+    // A settled planning step raises `held` on success too, just before the approval fires;
+    // that must not re-raise Input needed (the server clears the flag on a failed run).
+    expect(
+      boardCardAttention({ card: { ...approved, held: true }, stages: BOARD_SEED_STAGES }),
+    ).toBeNull();
+    // Only the split reason is skipped: a real question still reads as Input needed.
+    expect(
+      boardCardAttention({ card: { ...approved, awaitingInput: true }, stages: BOARD_SEED_STAGES })
+        ?.reason,
+    ).toBe("input");
+    // An approved-and-waiting child does not light its parent.
+    const parent = card({ cardId: BoardCardId.make("card-parent"), planTotal: 1, planDone: 0 });
+    const child = { ...approved, cardId: BoardCardId.make("c1"), parentCardId: parent.cardId };
+    const unapproved = { ...child, splitApproved: false };
+    expect(
+      deriveBoardCardChildAttention({ cards: [parent, unapproved], stages: BOARD_SEED_STAGES }).get(
+        parent.cardId,
+      )?.reason,
+    ).toBe("approval");
+    expect(
+      deriveBoardCardChildAttention({ cards: [parent, child], stages: BOARD_SEED_STAGES }).has(
+        parent.cardId,
+      ),
+    ).toBe(false);
   });
 
   it("paints every reading of stalled amber, never red", () => {

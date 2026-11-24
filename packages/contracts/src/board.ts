@@ -4998,6 +4998,7 @@ export function boardCardAttention(input: {
     readonly planTotal?: number | undefined;
     readonly planDone?: number | undefined;
     readonly parentCardId?: BoardCardId | undefined;
+    readonly splitApproved?: boolean | undefined;
     /** The permission wait is a subagent's, for the chip's wording. */
     readonly awaitingSubagent?: boolean | undefined;
     readonly reviewOutcome?: BoardReviewLoopOutcome | undefined;
@@ -5062,7 +5063,9 @@ export function boardCardAttention(input: {
     ...(card.planTotal === undefined ? {} : { planTotal: card.planTotal }),
     ...(card.parentCardId === undefined ? {} : { parentCardId: card.parentCardId }),
   };
-  if (boardCardShellPendingSplit(splitShape, input.stages)) {
+  // An approved split waiting on the plan review needs nothing from the human. The server
+  // refuses the approval when the planning run ends unsuccessfully, which clears the flag.
+  if (boardCardShellPendingSplit(splitShape, input.stages) && card.splitApproved !== true) {
     return {
       reason: "approval",
       tone: ATTENTION_TONES.approval,
@@ -8167,6 +8170,10 @@ export const BoardCardShell = Schema.Struct({
   autoMergeSetting: Schema.optionalKey(Schema.Boolean),
   /** The current planning run is unattended, absent otherwise. */
   autoPlanPending: Schema.optionalKey(Schema.Boolean),
+  /** A proposed split approved to take effect after the plan review (the server's
+      `splitApprovedAfterReview`), absent otherwise. Card-aggregate data like
+      `autoPlanPending`: absent means false, with no absent-means-preserve rule. */
+  splitApproved: Schema.optionalKey(Schema.Boolean),
   /** T3o: an automation gate's last attempt could not act (T3O-115); absent otherwise. */
   gateBlock: Schema.optionalKey(BoardCardGateBlock),
   /** T3o: waiting its turn in its base's merge queue this stay (T3O-128); absent otherwise. */
@@ -8570,6 +8577,7 @@ export function makeBoardCardShell(input: {
   readonly autoBuildSetting?: boolean | null | undefined;
   readonly autoMergeSetting?: boolean | null | undefined;
   readonly autoPlanPending?: boolean | null | undefined;
+  readonly splitApproved?: boolean | null | undefined;
   readonly gateBlock?: BoardCardGateBlock | null | undefined;
   readonly mergeQueued?: boolean | undefined;
   /** The auto-merge hold's shell facts. On the card
@@ -8680,6 +8688,7 @@ export function makeBoardCardShell(input: {
     ...(input.autoBuildSetting == null ? {} : { autoBuildSetting: input.autoBuildSetting }),
     ...(input.autoMergeSetting == null ? {} : { autoMergeSetting: input.autoMergeSetting }),
     ...(input.autoPlanPending === true ? { autoPlanPending: true } : {}),
+    ...(input.splitApproved === true ? { splitApproved: true } : {}),
     ...(input.gateBlock == null ? {} : { gateBlock: input.gateBlock }),
     ...(input.mergeQueued === true ? { mergeQueued: true } : {}),
     // The auto-merge hold: three byte-cheap facts, each omitted
@@ -8801,6 +8810,7 @@ export function boardCardShellFromCard(
     autoBuildSetting: card.autoBuildSetting,
     autoMergeSetting: card.autoMergeSetting,
     autoPlanPending: isBoardCardAutoPlanPending(card),
+    splitApproved: card.pendingSplitApproval !== undefined,
     gateBlock: card.gateBlock ?? null,
     mergeQueued: boardCardMergeStayCounts(card).queuedAt !== null,
     autoMergeHeldSince: card.autoMergeHold?.heldSince ?? null,

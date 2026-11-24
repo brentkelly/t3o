@@ -675,6 +675,7 @@ const BoardCardShellDbRow = Schema.Struct({
   autoBuildSetting: Schema.NullOr(Schema.Int),
   autoMergeSetting: Schema.NullOr(Schema.Int),
   autoPlanPending: Schema.Int,
+  splitApproved: Schema.Int,
   // T3o: the card's last blocked gate attempt (T3O-115), carried as it is stored.
   gateBlock: Schema.NullOr(Schema.fromJsonString(BoardCardGateBlock)),
   /** T3o: queued in its base's merge queue this stay (T3O-128); the JS twin is
@@ -1301,6 +1302,7 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
           WHEN auto_plan IS NOT NULL AND json_extract(auto_plan, '$.endedAt') IS NULL THEN 1
           ELSE 0
         END AS "autoPlanPending",
+        CASE WHEN pending_split_approval IS NOT NULL THEN 1 ELSE 0 END AS "splitApproved",
         gate_block AS "gateBlock",
         -- T3o: the SECOND producer of mergeQueued (T3O-128): only this stay's queue place counts.
         CASE
@@ -1414,6 +1416,7 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
           WHEN auto_plan IS NOT NULL AND json_extract(auto_plan, '$.endedAt') IS NULL THEN 1
           ELSE 0
         END AS "autoPlanPending",
+        CASE WHEN pending_split_approval IS NOT NULL THEN 1 ELSE 0 END AS "splitApproved",
         gate_block AS "gateBlock",
         -- T3o: the SECOND producer of mergeQueued (T3O-128): only this stay's queue place counts.
         CASE
@@ -4474,6 +4477,7 @@ function boardShellCards(
           autoBuildSetting: settingFromInt(row.autoBuildSetting),
           autoMergeSetting: settingFromInt(row.autoMergeSetting),
           autoPlanPending: row.autoPlanPending !== 0,
+          splitApproved: row.splitApproved !== 0,
           gateBlock: row.gateBlock,
           mergeQueued: row.mergeQueued !== 0,
           autoMergeHeldSince: row.autoMergeHeldSince,
@@ -4572,6 +4576,7 @@ function boardArchivedShellCards(
             autoBuildSetting: settingFromInt(row.autoBuildSetting),
             autoMergeSetting: settingFromInt(row.autoMergeSetting),
             autoPlanPending: row.autoPlanPending !== 0,
+            splitApproved: row.splitApproved !== 0,
             gateBlock: row.gateBlock,
             mergeQueued: row.mergeQueued !== 0,
             autoMergeHeldSince: row.autoMergeHeldSince,

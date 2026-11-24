@@ -6373,7 +6373,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
     case "board.card.settle-step": {
       // A card can be settled while archived (an abandonment at archive), so
       // require the card exists but not that it is active.
-      yield* requireBoardCard({ board, command });
+      const settledCard = yield* requireBoardCard({ board, command });
       const current = boardCardStepState(board, command.cardId);
       if (current === null || current.stepId !== command.stepId) {
         return yield* invariant(
@@ -6392,7 +6392,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
             slotHeld: false,
             updatedAt: command.createdAt,
           };
-      return {
+      const settled: PlannedBoardEvent = {
         ...(yield* makeBoardEventBase({
           cardId: command.cardId,
           occurredAt: command.createdAt,
@@ -6401,6 +6401,26 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
         type: "board.card-step-settled",
         payload: { cardId: command.cardId, state },
       };
+      // T3o: a deferred split approval only fires on a successful planning run, so an abandoned
+      // run refuses it and the split gate asks again; a stalled run keeps it for a retry (T3O-135).
+      const approvalStranded =
+        settledCard.pendingSplitApproval !== undefined &&
+        !isBoardTerminalStepStatus(current.status) &&
+        command.outcome !== "succeeded" &&
+        current.stepId === settledCard.stage &&
+        settledCard.stage === boardStageWithRole(board, "plan")?.stageId;
+      if (!approvalStranded) return settled;
+      return [
+        settled,
+        yield* splitApprovalChangedEvent({
+          command,
+          card: settledCard,
+          change: "refused",
+          round: current.planReviewRound,
+          detail:
+            "Planning stopped before it completed, so the split was not created. Approve it again.",
+        }),
+      ];
     }
 
     case "board.card.retune-step": {
