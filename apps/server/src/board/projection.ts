@@ -283,6 +283,9 @@ const BoardCardAttachmentDbRow = Schema.Struct({
   mimeType: BoardCardAttachment.fields.mimeType,
   sizeBytes: BoardCardAttachment.fields.sizeBytes,
   addedAt: BoardCardAttachment.fields.addedAt,
+  // 087_BoardCardAttachmentSource: NULL on human uploads and older rows.
+  sourcePath: Schema.NullOr(Schema.String),
+  contentHash: Schema.NullOr(Schema.String),
 });
 type BoardCardAttachmentDbRow = typeof BoardCardAttachmentDbRow.Type;
 
@@ -854,6 +857,8 @@ function rowToBoardCardAttachment(row: BoardCardAttachmentDbRow): BoardCardAttac
     mimeType: row.mimeType,
     sizeBytes: row.sizeBytes,
     addedAt: row.addedAt,
+    ...(row.sourcePath === null ? {} : { sourcePath: row.sourcePath }),
+    ...(row.contentHash === null ? {} : { contentHash: row.contentHash }),
   };
 }
 
@@ -1675,7 +1680,9 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         type,
         mime_type AS "mimeType",
         size_bytes AS "sizeBytes",
-        added_at AS "addedAt"
+        added_at AS "addedAt",
+        source_path AS "sourcePath",
+        content_hash AS "contentHash"
       FROM board_card_attachments
       WHERE card_id = ${cardId}
     `,
@@ -1694,7 +1701,9 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         type,
         mime_type AS "mimeType",
         size_bytes AS "sizeBytes",
-        added_at AS "addedAt"
+        added_at AS "addedAt",
+        source_path AS "sourcePath",
+        content_hash AS "contentHash"
       FROM board_card_attachments
     `,
   });
@@ -1845,7 +1854,9 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         type,
         mime_type,
         size_bytes,
-        added_at
+        added_at,
+        source_path,
+        content_hash
       )
       VALUES (
         ${row.attachmentId},
@@ -1854,7 +1865,9 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         ${row.type},
         ${row.mimeType},
         ${row.sizeBytes},
-        ${row.addedAt}
+        ${row.addedAt},
+        ${row.sourcePath},
+        ${row.contentHash}
       )
       ON CONFLICT (card_id, attachment_id)
       DO UPDATE SET
@@ -1862,7 +1875,9 @@ function makeBoardCardQueries(sql: SqlClient.SqlClient) {
         type = excluded.type,
         mime_type = excluded.mime_type,
         size_bytes = excluded.size_bytes,
-        added_at = excluded.added_at
+        added_at = excluded.added_at,
+        source_path = excluded.source_path,
+        content_hash = excluded.content_hash
     `,
   });
 
@@ -3033,6 +3048,8 @@ export function makeBoardSqlProjector(sql: SqlClient.SqlClient): BoardSqlProject
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
           addedAt: attachment.addedAt,
+          sourcePath: attachment.sourcePath ?? null,
+          contentHash: attachment.contentHash ?? null,
         });
       }
     },

@@ -521,6 +521,12 @@ export const BoardCardAttachment = Schema.Struct({
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
   sizeBytes: NonNegativeInt,
   addedAt: IsoDateTime,
+  /** The path an agent attached it from (T3O-138), so a later plan write that cites the same
+      path replaces it instead of adding a copy. Absent on human uploads. */
+  sourcePath: Schema.optionalKey(Schema.String),
+  /** sha256 of what was read from `sourcePath`: a file's bytes, or a directory's member list
+      and contents. Absent on human uploads. */
+  contentHash: Schema.optionalKey(Schema.String),
 });
 export type BoardCardAttachment = typeof BoardCardAttachment.Type;
 

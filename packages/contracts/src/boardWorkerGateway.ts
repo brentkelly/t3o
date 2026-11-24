@@ -419,6 +419,97 @@ export const BoardStageAttachmentsResult = Schema.Struct({
 });
 export type BoardStageAttachmentsResult = typeof BoardStageAttachmentsResult.Type;
 
+// ── Shareable files (T3O-138) ──────────────────────────────────────────
+
+/**
+ * Files an agent's plan cites, read where the agent runs. Hash-first like staging: an inspect
+ * answers what each path is and its hash, and a read carries one item's bytes. `scan` is a plan
+ * write's automatic pass; `explicit` is `board_attach_files`, which also accepts the chat
+ * attachments directory.
+ */
+export const BoardShareableFilesMode = Schema.Literals(["scan", "explicit"]);
+export type BoardShareableFilesMode = typeof BoardShareableFilesMode.Type;
+
+export const BOARD_SHAREABLE_REFUSAL_REASONS = [
+  "outside-allowlist",
+  "in-checkout",
+  "missing",
+  "not-found",
+  "not-regular",
+  "not-owned",
+  "temp-root",
+  "too-large",
+  "too-many-members",
+  "inside-cited-directory",
+  "not-absolute",
+] as const;
+export const BoardShareableRefusalReason = Schema.Literals(BOARD_SHAREABLE_REFUSAL_REASONS);
+export type BoardShareableRefusalReason = typeof BoardShareableRefusalReason.Type;
+
+export const BoardShareableItem = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("file"),
+    /** The path as cited. */
+    path: Schema.String,
+    /** The cited path, `~/` expanded: what the attachment records. */
+    sourcePath: Schema.String,
+    name: TrimmedNonEmptyString,
+    mimeType: TrimmedNonEmptyString,
+    sizeBytes: NonNegativeInt,
+    contentHash: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("directory"),
+    path: Schema.String,
+    sourcePath: Schema.String,
+    /** `<dirname>.tar.gz`. */
+    name: TrimmedNonEmptyString,
+    mimeType: TrimmedNonEmptyString,
+    /** The members' total size, before archiving. */
+    sizeBytes: NonNegativeInt,
+    memberCount: NonNegativeInt,
+    contentHash: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("refused"),
+    path: Schema.String,
+    reason: BoardShareableRefusalReason,
+    message: Schema.String,
+  }),
+]);
+export type BoardShareableItem = typeof BoardShareableItem.Type;
+
+export const BoardInspectShareableFilesInput = Schema.Struct({
+  threadId: TrimmedNonEmptyString,
+  paths: Schema.Array(Schema.String),
+  mode: BoardShareableFilesMode,
+  /** The calling thread's checkout: paths under it are skipped silently. */
+  checkoutRoot: Schema.NullOr(Schema.String),
+});
+export type BoardInspectShareableFilesInput = typeof BoardInspectShareableFilesInput.Type;
+
+export const BoardInspectShareableFilesResult = Schema.Struct({
+  items: Schema.Array(BoardShareableItem),
+});
+export type BoardInspectShareableFilesResult = typeof BoardInspectShareableFilesResult.Type;
+
+export const BoardReadShareableFileInput = Schema.Struct({
+  threadId: TrimmedNonEmptyString,
+  sourcePath: Schema.String,
+  mode: BoardShareableFilesMode,
+});
+export type BoardReadShareableFileInput = typeof BoardReadShareableFileInput.Type;
+
+export const BoardReadShareableFileResult = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  mimeType: TrimmedNonEmptyString,
+  contentBase64: Schema.String,
+  /** Recomputed from what was read, by the inspect's definition. */
+  contentHash: TrimmedNonEmptyString,
+  memberCount: Schema.optionalKey(NonNegativeInt),
+});
+export type BoardReadShareableFileResult = typeof BoardReadShareableFileResult.Type;
+
 // ── RPCs ───────────────────────────────────────────────────────────────
 
 /**
@@ -686,6 +777,9 @@ export const BOARD_WORKER_GATEWAY_WS_METHODS = {
   subscribeMcpRelay: "boardWorker.subscribeMcpRelay",
   mcpRelayRespond: "boardWorker.mcpRelayRespond",
   stageAttachments: "boardWorker.stageAttachments",
+  /** T3o: what the files a plan cites are, and one of them read, on the worker (T3O-138). */
+  inspectShareableFiles: "boardWorker.inspectShareableFiles",
+  readShareableFile: "boardWorker.readShareableFile",
   /** Run a card's CI steps in its worktree, streaming progress. */
   runCi: "boardWorker.gateway.runCi",
   /** Read, and optionally follow, one CI step's log. */
@@ -741,6 +835,16 @@ export const BOARD_WORKER_GATEWAY_RPCS = [
     success: BoardStageAttachmentsResult,
     error: failure,
   }),
+  Rpc.make(M.inspectShareableFiles, {
+    payload: BoardInspectShareableFilesInput,
+    success: BoardInspectShareableFilesResult,
+    error: failure,
+  }),
+  Rpc.make(M.readShareableFile, {
+    payload: BoardReadShareableFileInput,
+    success: BoardReadShareableFileResult,
+    error: failure,
+  }),
   Rpc.make(M.runCi, {
     payload: BoardWorkerRunCiInput,
     success: BoardWorkerCiProgress,
@@ -779,6 +883,9 @@ export const BOARD_WORKER_GATEWAY_RPC_SCOPES = {
   [M.subscribeMcpRelay]: AuthOrchestrationOperateScope,
   [M.mcpRelayRespond]: AuthOrchestrationOperateScope,
   [M.stageAttachments]: AuthOrchestrationOperateScope,
+  // Hands a thread's own temp files to the board, the reverse of staging.
+  [M.inspectShareableFiles]: AuthOrchestrationOperateScope,
+  [M.readShareableFile]: AuthOrchestrationOperateScope,
   // Runs the project's own commands in a worktree, like a build agent would.
   [M.runCi]: AuthOrchestrationOperateScope,
   // Reads a step's output, like the card's own CI log viewer does.
