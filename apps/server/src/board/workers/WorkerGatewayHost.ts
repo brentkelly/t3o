@@ -365,6 +365,18 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
                 ),
           ),
         );
+  /** A thread's checkout as this machine knows it: its worktree, else its project's root here.
+      The central's guess (its own project root) is used only when this server can't say. */
+  const threadCheckoutRoot = Effect.fn("WorkerGatewayHost.threadCheckoutRoot")(function* (
+    threadId: ThreadId,
+    centralGuess: string | null,
+  ) {
+    const state = yield* local.threadState(threadId).pipe(Effect.orElseSucceed(() => null));
+    if (state === null) return centralGuess;
+    if (state.worktreePath !== null) return state.worktreePath;
+    const project = yield* local.project(state.projectId).pipe(Effect.orElseSucceed(() => null));
+    return project?.workspaceRoot ?? centralGuess;
+  });
   const holdsWorktree = (caller: GatewayCaller, worktreePath: string) =>
     caller.boardId === null || Option.isNone(capacity)
       ? Effect.succeed(false)
@@ -883,10 +895,11 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
     // and uid check run here, on the machine the files are on.
     inspectShareableFiles: (input, caller) =>
       ownThread("inspectShareableFiles", caller, input.threadId as ThreadId).pipe(
-        Effect.andThen(
+        Effect.andThen(threadCheckoutRoot(input.threadId as ThreadId, input.checkoutRoot)),
+        Effect.flatMap((checkoutRoot) =>
           inspectShareableFiles(input.paths, {
             mode: input.mode,
-            checkoutRoot: input.checkoutRoot,
+            checkoutRoot,
             attachmentsDir: config.attachmentsDir,
           }),
         ),

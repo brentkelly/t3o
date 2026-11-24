@@ -29,7 +29,7 @@ import { TestClock } from "effect/testing";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { aliveThread, fakeThreadState } from "../threadGateway.testkit.ts";
-import { makeInProcessWorker, WORKER_PROJECT_ID } from "./distributed.testkit.ts";
+import { makeInProcessWorker, WORKER_PROJECT_ID, WORKER_ROOT } from "./distributed.testkit.ts";
 import { scheduleRunBranchOf } from "../schedules/scheduleLogic.ts";
 import { decodeGatewayCallResult } from "./gatewayWire.ts";
 import { makeMcpRelayHost, type McpRelayHostShape } from "./McpRelayHost.ts";
@@ -339,6 +339,23 @@ it.effect("a shared worker lets a board act only on the threads and worktrees it
           }).pipe(onHost),
         ),
         "refused",
+      );
+
+      // The owner's inspect skips the worker's own checkout, not the central's guess at it.
+      const planner = ThreadId.make("thread-board-a-planner");
+      yield* Ref.update(env.threads.states, (states) =>
+        new Map(states).set(planner, aliveThread(planner, { projectId: WORKER_PROJECT_ID })),
+      );
+      yield* env.relayStore.store.recordRelayedThread(planner, CENTRAL);
+      const inspected = yield* owner["boardWorker.inspectShareableFiles"]({
+        threadId: planner,
+        paths: [`${WORKER_ROOT}/src/index.ts`],
+        mode: "scan",
+        checkoutRoot: "/home/central/repo",
+      }).pipe(onHost);
+      assert.deepStrictEqual(
+        inspected.items.map((item) => (item.kind === "refused" ? item.reason : item.kind)),
+        ["in-checkout"],
       );
 
       // Nor may it spawn a thread in another board's name, which would take that board's relay.
