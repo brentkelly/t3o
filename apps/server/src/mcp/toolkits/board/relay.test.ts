@@ -752,6 +752,48 @@ describe("the board MCP relay", () => {
       }),
     ),
   );
+  it.effect("a plan cites a worker's temp file: the worker reads it, central stores it (T3O-138)", () =>
+    inCentral(
+      Effect.gen(function* () {
+        const world = yield* setup();
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig.ServerConfig;
+        const cardId = BoardCardId.make("card-plan-files");
+        const threadId = ThreadId.make("thread-plan-files");
+        yield* seedCard(world, { cardId, threadId }).pipe(Effect.provide(world.runtime));
+        // The planner's scratchpad, on the worker's machine.
+        const outer = yield* fs.makeTempDirectoryScoped({ prefix: "t3o-relay-files-" });
+        const pad = path.join(yield* fs.realPath(outer), "scratchpad");
+        yield* fs.makeDirectory(pad, { recursive: true });
+        const mock = path.join(pad, "mock.html");
+        yield* fs.writeFileString(mock, "<p>from the worker</p>");
+
+        const propose = relayable("board_propose_plans", boardHandlers.board_propose_plans);
+        const plans = [
+          { key: "p", title: "Plan", summary: "s", dependsOn: [], body: `See \`${mock}\`.` },
+        ];
+        const result = yield* onWorker(world, threadId, propose({ plans }));
+        assert.deepStrictEqual(result.attachedFiles, [{ name: "mock.html", sourcePath: mock }]);
+
+        // Stored on central, under central's state dir.
+        const stored = path.join(config.stateDir, "board", "attachments", cardId, "mock.html");
+        assert.strictEqual(yield* fs.readFileString(stored), "<p>from the worker</p>");
+        // Handed back to the worker's agent at a path on the worker.
+        const context = yield* onWorker(world, threadId, getContext(undefined));
+        assert.deepInclude(context.attachments[0], {
+          name: "mock.html",
+          sourcePath: mock,
+          path: path.join(world.workerStateDir, "board", "attachments", cardId, "mock.html"),
+        });
+        // Unchanged: the second proposal reads no bytes and adds nothing.
+        yield* onWorker(world, threadId, propose({ plans }));
+        const again = yield* onWorker(world, threadId, getContext(undefined));
+        assert.strictEqual(again.attachments.length, 1);
+      }),
+    ),
+  );
+
   it.effect("a call whose delivering stream drops mid-run is still answered when redelivered", () =>
     inCentral(
       Effect.gen(function* () {

@@ -2332,7 +2332,12 @@ const rawBoardHandlers = {
       .boardPlanBody(input.planId)
       .pipe(Effect.mapError(internalError));
     // T3o: edits never see the generated footer, so a section edit can't cut it (T3O-138).
-    const edited = applyBoardPlanEdits(stripAttachedFilesFooter(current ?? ""), input.edits);
+    // `edits: []` only rescans the cited files.
+    const stored = stripAttachedFilesFooter(current ?? "");
+    const edited =
+      input.edits.length === 0
+        ? ({ ok: true, body: stored } as const)
+        : applyBoardPlanEdits(stored, input.edits);
     if (!edited.ok) {
       return yield* new BoardToolError({ code: "invalid-input", message: edited.message });
     }
