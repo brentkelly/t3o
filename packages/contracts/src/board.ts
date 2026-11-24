@@ -4677,8 +4677,11 @@ export function boardCardAttention(input: {
     ...(card.planTotal === undefined ? {} : { planTotal: card.planTotal }),
     ...(card.parentCardId === undefined ? {} : { parentCardId: card.parentCardId }),
   };
-  // An approved split waiting on the plan review needs nothing from the human.
-  if (boardCardShellPendingSplit(splitShape, input.stages) && card.splitApproved !== true) {
+  // An approved split waiting on the plan review needs nothing from the human. Once the
+  // planning step has settled (`held`) the approval only fires on success, so a failed or
+  // abandoned run leaves the split for the human again.
+  const splitAwaitsReview = card.splitApproved === true && !card.held;
+  if (boardCardShellPendingSplit(splitShape, input.stages) && !splitAwaitsReview) {
     return {
       reason: "approval",
       tone: ATTENTION_TONES.approval,
