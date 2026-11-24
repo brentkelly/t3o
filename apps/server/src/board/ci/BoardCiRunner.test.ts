@@ -424,7 +424,7 @@ live("reads the step's result file, which adds detail and never overrides the ex
 );
 
 // T3O-126: a step that failed only on flakes passes, with the flakes on its row.
-it.live("a step whose every failure is flaky passes over them; a real one beside them fails", () =>
+live("a step whose every failure is flaky passes over them; a real one beside them fails", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -453,7 +453,7 @@ it.live("a step whose every failure is flaky passes over them; a real one beside
 );
 
 // A failure the result parser couldn't keep is still a failure: the step never passes as all-flaky.
-it.live("a flaky step with a reported failure the parser dropped still fails", () =>
+live("a flaky step with a reported failure the parser dropped still fails", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -469,7 +469,7 @@ it.live("a flaky step with a reported failure the parser dropped still fails", (
   }),
 );
 
-it.live("a test already ruled flaky passes unflagged, except on its own flake card", () =>
+live("a test already ruled flaky passes unflagged, except on its own flake card", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const write = (titles: string) =>
@@ -524,7 +524,7 @@ it.live("a test already ruled flaky passes unflagged, except on its own flake ca
   }),
 );
 
-it.live("a ::t3o-failure:: line can say a step failed only on a flake", () =>
+live("a ::t3o-failure:: line can say a step failed only on a flake", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -893,7 +893,7 @@ live("a passing step carries no headline", () =>
 );
 
 // T3o (T3O-127): the board tells each step the host's load.
-it.live("tells each step the host's CPU pressure, and whether that is under load", () =>
+live("tells each step the host's CPU pressure, and whether that is under load", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const step = {
@@ -945,7 +945,7 @@ it.live("tells each step the host's CPU pressure, and whether that is under load
   }),
 );
 
-it.live("reads the pressure once per step group, before the group starts", () =>
+live("reads the pressure once per step group, before the group starts", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -977,7 +977,7 @@ it.live("reads the pressure once per step group, before the group starts", () =>
 );
 
 // T3o (T3O-129): deferred tests, and T3O-127's ignored mark.
-it.live("moves a step's deferred tests onto it, and says the old mark is ignored", () =>
+live("moves a step's deferred tests onto it, and says the old mark is ignored", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -998,7 +998,7 @@ it.live("moves a step's deferred tests onto it, and says the old mark is ignored
   }),
 );
 
-it.live("a step that defers tests on a calm machine still shows them, and is told so", () =>
+live("a step that defers tests on a calm machine still shows them, and is told so", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const { events, emit } = collect();
@@ -1010,7 +1010,7 @@ it.live("a step that defers tests on a calm machine still shows them, and is tol
   }),
 );
 
-it.live("writes the run's load-sensitive list once, and names it to every step", () =>
+live("writes the run's load-sensitive list once, and names it to every step", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const step = {
@@ -1050,7 +1050,7 @@ it.live("writes the run's load-sensitive list once, and names it to every step",
   }),
 );
 
-it.live("a list it can't write sets no variable and says so", () =>
+live("a list it can't write sets no variable and says so", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const logDir = NodePath.join(cwd, ".t3", "ci", "run-1");
@@ -1069,7 +1069,7 @@ it.live("a list it can't write sets no variable and says so", () =>
   }),
 );
 
-it.live("a flake card's own test is inconclusive under load only where a human merges", () =>
+live("a flake card's own test is inconclusive under load only where a human merges", () =>
   Effect.gen(function* () {
     const cwd = workdir();
     const command = `printf '%s' '{"failures":[{"title":"adds","file":"a.test.ts","flaky":true}]}' > "$T3O_CI_RESULT"; exit 1`;

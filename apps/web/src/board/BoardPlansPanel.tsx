@@ -114,9 +114,7 @@ function PlanRow({
   const openable = cardId !== null && onOpenChild !== undefined;
   // The plan's place in the order, then its card's pull request if it has one.
   const meta = [
-    row.dependsOnNumbers.length === 0
-      ? "no dependencies"
-      : `after ${row.dependsOnNumbers.map((n) => `#${n}`).join(", ")}`,
+    row.dependencyNote,
     row.live?.prNumber === undefined ? null : `PR #${row.live.prNumber}`,
     row.state === "archived" ? "archived" : row.state === "missing" ? "no card" : null,
   ].filter((part): part is string => part !== null);
@@ -169,11 +167,17 @@ function PlanRow({
           <span className="truncate text-board-10-5 text-muted-foreground max-sm:col-start-3 max-sm:row-start-2">
             {meta.join("  ·  ")}
           </span>
-          {row.blockers.length > 0 && !row.done ? (
-            <span className="inline-flex items-center gap-1 text-board-10-5 font-medium text-warning-foreground max-sm:col-span-2 max-sm:col-start-3 max-sm:row-start-3">
+          {/* Amber only when the server holds the card; a pre-build wait is muted. */}
+          {row.blockers.length > 0 ? (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 text-board-10-5 font-medium max-sm:col-span-2 max-sm:col-start-3 max-sm:row-start-3",
+                row.tone === "blocked" ? "text-warning-foreground" : "text-muted-foreground",
+              )}
+            >
               <LockIcon className="size-2.5 shrink-0" />
               Waiting on{" "}
-              {row.blockers.map((blocker) => `#${blocker.n} · ${blocker.stageLabel}`).join(", ")}
+              {row.blockers.map((blocker) => `${blocker.label} · ${blocker.stageLabel}`).join(", ")}
             </span>
           ) : null}
         </span>

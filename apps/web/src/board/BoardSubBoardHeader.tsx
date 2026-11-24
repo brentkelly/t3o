@@ -28,6 +28,7 @@ import {
   boardGroupTargetLabel,
   boardShellGroup,
 } from "./boardGroups";
+import { boardPlanChartAvailable } from "./boardPlanRows";
 
 export function BoardSubBoardHeader({
   environmentId,
@@ -135,9 +136,9 @@ export function BoardSubBoardHeader({
         variant="header"
       />
       <span className="flex-1" />
-      {/* The chart is drawn from the group's PLANS, so the toggle
-          only exists once there are some. */}
-      {(detail?.plans.length ?? 0) > 0 ? (
+      {/* The chart draws the group's plans and live children, so the
+          toggle exists whenever there is either. */}
+      {detail != null && boardPlanChartAvailable(detail) ? (
         <button className={boardHeaderButtonClass(chartOpen)} onClick={onToggleChart} type="button">
           <Link2Icon />
           {chartOpen ? "Hide chart" : "Dependency chart"}

@@ -1757,7 +1757,7 @@ export function BoardCardDetail({
         onOpenSubBoard === undefined ? undefined : (childId) => onOpenSubBoard(card.id, childId)
       }
       onOpenOwnSubBoard={onOpenSubBoard === undefined ? undefined : () => onOpenSubBoard(card.id)}
-      childShells={childShells}
+      allShells={shells}
     />
   );
 

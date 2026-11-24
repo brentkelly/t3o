@@ -760,9 +760,9 @@ export interface BoardCardDetailViewProps {
   /** Navigate into THIS card's sub-board with no sheet — the Plans panel's
       Board button. */
   readonly onOpenOwnSubBoard?: (() => void) | undefined;
-  /** The children's shells, for the Plans panel's live per-child state.
-      Empty on every card without a split. */
-  readonly childShells?: ReadonlyArray<BoardCardShell> | undefined;
+  /** Every shell the client holds: the Plans panel's live per-child state,
+      and the cards outside the group a child depends on. */
+  readonly allShells?: ReadonlyArray<BoardCardShell> | undefined;
   /** The group popup, or null for a leaf: Open board instead of the
       stage's actions, Automation instead of the Stage ladder, and the
       archive confirmation instead of a one-click archive. */
@@ -2847,7 +2847,7 @@ export function BoardCardDetailPanel(props: BoardCardDetailPanelProps) {
     ? deriveBoardPlanRows({
         plans: props.detail.plans,
         children: props.detail.children,
-        cards: props.childShells ?? [],
+        cards: props.allShells ?? [],
         stages: props.stages,
       })
     : null;

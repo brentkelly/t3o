@@ -30,6 +30,8 @@ function row(key: string, n: number, dependsOn: ReadonlyArray<string> = []): Boa
     live: null,
     dependsOn: dependsOn.map((dependency) => `plan:${planIdOf(dependency)}`),
     dependsOnNumbers: [],
+    dependencyNote: "no dependencies",
+    waitsOnOutside: [],
     blockers: [],
   };
 }

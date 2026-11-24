@@ -77,7 +77,7 @@ function GroupDialog() {
   return (
     <BoardCardDetailPanel
       {...baseProps}
-      childShells={splitShells(1)}
+      allShells={splitShells(1)}
       detail={{
         ...detail({
           stage: BOARD_SEED_STAGE_IDS.building,
@@ -153,7 +153,7 @@ function OwnGroupDialog(props: {
   return (
     <BoardCardDetailPanel
       {...baseProps}
-      childShells={splitShells(1)}
+      allShells={splitShells(1)}
       detail={detail({ stage: props.stage, pullRequest })}
       group={{
         ...group,
@@ -209,7 +209,7 @@ describe("a group's forward move before Building", () => {
     await using screen = await render(
       <BoardCardDetailPanel
         {...baseProps}
-        childShells={splitShells(1)}
+        allShells={splitShells(1)}
         detail={detail({ stage: BOARD_SEED_STAGE_IDS.planning })}
         group={{ ...group, onOpenBoard: noop }}
         onMoveStage={onMoveStage}

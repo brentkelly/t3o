@@ -19,6 +19,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  boardPlanChartAvailable,
   boardPlanFinalReview,
   boardPlanGraphLayout,
   deriveBoardPlanRows,
@@ -108,6 +109,11 @@ function shell(cardId: string, stage: BoardStageId, overrides?: Partial<BoardCar
   } satisfies BoardCardShell;
 }
 
+/** A card in another group, which a child may depend on. */
+function outsideShell(cardId: string, stage: BoardStageId) {
+  return shell(cardId, stage, { parentCardId: BoardCardId.make("other-group") });
+}
+
 /** The worked example the panel was built against: #1 with no dependencies,
     #2 and #4 after #1, #3 after #2 — two waves wide at its widest. */
 const PLANS = [plan("a", 0), plan("b", 1, ["a"]), plan("c", 2, ["b"]), plan("d", 3, ["a"])];
@@ -147,25 +153,33 @@ describe("deriveBoardPlanRows", () => {
         child("b", "c2", BOARD_SEED_STAGE_IDS.review, null, SPLIT_DEPS.b),
         child("c", "c3", BOARD_SEED_STAGE_IDS.ready, null, SPLIT_DEPS.c),
         child("d", "c4", BOARD_SEED_STAGE_IDS.ready, null, SPLIT_DEPS.d),
+        child("e", "c5", BOARD_SEED_STAGE_IDS.building, null, ["c2"]),
       ],
       cards: [
         shell("c1", BOARD_SEED_STAGE_IDS.done),
         shell("c2", BOARD_SEED_STAGE_IDS.review),
         shell("c3", BOARD_SEED_STAGE_IDS.ready),
         shell("c4", BOARD_SEED_STAGE_IDS.ready),
+        // The server's gate holds this one: it is in build with #2 unmet.
+        shell("c5", BOARD_SEED_STAGE_IDS.building, { blocked: true }),
       ],
       stages: BOARD_SEED_STAGES,
     });
     // #2 comes after #1, which is done — nothing holds it up.
     expect(rows[1]!.blockers).toEqual([]);
     expect(rows[1]!.tone).toBe("active");
-    // #3 comes after #2, which is in review.
-    expect(rows[2]!.blockers).toEqual([{ n: 2, key: "T3-c2", stageLabel: "code review" }]);
-    expect(rows[2]!.tone).toBe("blocked");
+    expect(rows[1]!.dependencyNote).toBe("after #1");
+    // #3 comes after #2, which is in review. It waits, but the server only
+    // blocks from the build stage onward, so its dot stays idle like its face.
+    expect(rows[2]!.blockers).toEqual([{ label: "#2", stageLabel: "code review" }]);
+    expect(rows[2]!.tone).toBe("idle");
     // #4 comes after #1 (done) and has not started.
     expect(rows[3]!.blockers).toEqual([]);
     expect(rows[3]!.tone).toBe("idle");
-    expect({ liveTotal, liveDone }).toEqual({ liveTotal: 4, liveDone: 1 });
+    // The tone is the server's flag, which outranks a started card's blue.
+    expect(rows[4]!.live?.blocked).toBe(true);
+    expect(rows[4]!.tone).toBe("blocked");
+    expect({ liveTotal, liveDone }).toEqual({ liveTotal: 5, liveDone: 1 });
   });
 
   it("does not count an archived or deleted sibling as a blocker", () => {
@@ -254,6 +268,7 @@ describe("deriveBoardPlanRows", () => {
       awaitingPermission: false,
       queued: false,
       stalled: false,
+      blocked: false,
     });
     expect(rows[1]!.live?.awaitingInput).toBe(true);
     expect(rows[1]!.live?.awaitingPermission).toBe(false);
@@ -297,7 +312,7 @@ describe("deriveBoardPlanRows", () => {
     expect(rows.every((row) => row.state === "live" && row.planId === null)).toBe(true);
     expect(rows[2]!.dependsOn).toEqual(["card:c3"]);
     expect(rows[2]!.dependsOnNumbers).toEqual([2]);
-    expect(rows[2]!.blockers).toEqual([{ n: 2, key: "T3-c3", stageLabel: "building" }]);
+    expect(rows[2]!.blockers).toEqual([{ label: "#2", stageLabel: "building" }]);
     expect({ liveTotal, liveDone }).toEqual({ liveTotal: 3, liveDone: 1 });
   });
 
@@ -369,20 +384,83 @@ describe("deriveBoardPlanRows", () => {
     expect(rows.map((row) => row.rowId)).toEqual(["card:c3", "card:c1", "card:c2"]);
   });
 
-  it("ignores a child's dependency on a card outside the group", () => {
-    const { rows } = deriveBoardPlanRows({
+  it("names a child's unfinished dependency on a card outside the group", () => {
+    // WAL-128's shape: a phase's child waits on a card in the earlier phase.
+    // The outside card is never a row, so the numbering is the group's own.
+    const { rows, liveTotal } = deriveBoardPlanRows({
       plans: [],
-      children: [handChild("c1", BOARD_SEED_STAGE_IDS.ready, ["elsewhere"])],
-      cards: [],
+      children: [
+        // An archived card leaves the snapshot: no shell, so it is met.
+        handChild("c1", BOARD_SEED_STAGE_IDS.backlog, ["gone"]),
+        handChild("c2", BOARD_SEED_STAGE_IDS.backlog, ["x1", "c1", "x1"]),
+        handChild("c3", BOARD_SEED_STAGE_IDS.backlog, ["x2", "x3"]),
+        handChild("c4", BOARD_SEED_STAGE_IDS.done, ["x1"]),
+        { ...handChild("c5", BOARD_SEED_STAGE_IDS.backlog, ["x1"]), archivedAt: NOW },
+      ],
+      cards: [
+        shell("c1", BOARD_SEED_STAGE_IDS.backlog),
+        shell("c2", BOARD_SEED_STAGE_IDS.backlog),
+        shell("c3", BOARD_SEED_STAGE_IDS.backlog),
+        shell("c4", BOARD_SEED_STAGE_IDS.done),
+        outsideShell("x1", BOARD_SEED_STAGE_IDS.backlog),
+        outsideShell("x2", BOARD_SEED_STAGE_IDS.done),
+        // An archived shell still in the list is met, as the server counts it.
+        { ...outsideShell("x3", BOARD_SEED_STAGE_IDS.backlog), archivedAt: NOW },
+      ],
       stages: BOARD_SEED_STAGES,
     });
-    expect(rows[0]!.dependsOn).toEqual([]);
+    const byKey = (key: string) => rows.find((row) => row.key === key)!;
+    expect(rows).toHaveLength(5);
+    expect(liveTotal).toBe(4);
+
+    expect(byKey("T3-c1").dependsOn).toEqual([]);
+    expect(byKey("T3-c1").dependencyNote).toBe("no dependencies");
+
+    const waiting = byKey("T3-c2");
+    expect(waiting.dependencyNote).toBe(`after #${byKey("T3-c1").n}, T3-x1`);
+    expect(waiting.waitsOnOutside).toEqual(["T3-x1"]);
+    // Siblings first, then outside cards.
+    expect(waiting.blockers).toEqual([
+      { label: `#${byKey("T3-c1").n}`, stageLabel: "backlog" },
+      { label: "T3-x1", stageLabel: "backlog" },
+    ]);
+    // Waiting before build is not blocked: the server's flag is false.
+    expect(waiting.tone).toBe("idle");
+
+    // A done or archived outside card is nothing to act on.
+    expect(byKey("T3-c3").blockers).toEqual([]);
+    expect(byKey("T3-c3").waitsOnOutside).toEqual([]);
+    expect(byKey("T3-c3").dependencyNote).toBe("no dependencies");
+
+    // Neither a finished nor an archived row claims to wait.
+    for (const key of ["T3-c4", "T3-c5"]) {
+      expect(byKey(key).blockers).toEqual([]);
+      expect(byKey(key).dependencyNote).toBe("no dependencies");
+      expect(byKey(key).waitsOnOutside).toEqual([]);
+    }
   });
 
   it("returns nothing for a card with no plans and no children", () => {
     expect(
       deriveBoardPlanRows({ plans: [], children: [], cards: [], stages: BOARD_SEED_STAGES }),
     ).toEqual({ rows: [], liveTotal: 0, liveDone: 0 });
+    // The sub-board's chart toggle follows the same rows: nothing to draw.
+    expect(boardPlanChartAvailable({ plans: [], children: [] })).toBe(false);
+    expect(boardPlanChartAvailable({ plans: [plan("a", 0)], children: [] })).toBe(true);
+    // WAL-118: a phase group of hand-made children and no plans.
+    expect(
+      boardPlanChartAvailable({
+        plans: [],
+        children: [handChild("c1", BOARD_SEED_STAGE_IDS.ready)],
+      }),
+    ).toBe(true);
+    // Only archived children: a chart of gone nodes is not worth a button.
+    expect(
+      boardPlanChartAvailable({
+        plans: [],
+        children: [{ ...handChild("c1", BOARD_SEED_STAGE_IDS.ready), archivedAt: NOW }],
+      }),
+    ).toBe(false);
   });
 });
 
@@ -500,6 +578,40 @@ describe("boardPlanGraphLayout", () => {
     const layout = boardPlanGraphLayout(rows)!;
     expect(layout.nodes.map((node) => node.cardId)).toEqual(["c1", "c2", "c3"]);
     expect(layout.edges.map((edge) => edge.id)).toEqual(["card:c1->card:c2", "card:c1->card:c3"]);
+    expect(layout.nodes.every((node) => node.waitsOnOutside.length === 0)).toBe(true);
+
+    // The same group with outside dependencies: c2 waits on x1, while the
+    // done c3 and the archived c4 do not claim to. No node or edge is added.
+    const outside = boardPlanGraphLayout(
+      deriveBoardPlanRows({
+        plans: [],
+        children: [
+          handChild("c1", BOARD_SEED_STAGE_IDS.ready),
+          handChild("c2", BOARD_SEED_STAGE_IDS.ready, ["c1", "x1"]),
+          handChild("c3", BOARD_SEED_STAGE_IDS.done, ["c1", "x1"]),
+          { ...handChild("c4", BOARD_SEED_STAGE_IDS.ready, ["x1"]), archivedAt: NOW },
+        ],
+        cards: [
+          shell("c1", BOARD_SEED_STAGE_IDS.ready),
+          shell("c2", BOARD_SEED_STAGE_IDS.ready),
+          shell("c3", BOARD_SEED_STAGE_IDS.done),
+          outsideShell("x1", BOARD_SEED_STAGE_IDS.backlog),
+        ],
+        stages: BOARD_SEED_STAGES,
+      }).rows,
+    )!;
+    const waits = (rowId: string) =>
+      outside.nodes.find((node) => node.rowId === rowId)!.waitsOnOutside;
+    expect(waits("card:c2")).toEqual(["T3-x1"]);
+    expect(waits("card:c3")).toEqual([]);
+    expect(waits("card:c4")).toEqual([]);
+    expect(outside.edges).toHaveLength(2);
+    const at = (nodes: typeof layout.nodes, rowId: string) => {
+      const node = nodes.find((entry) => entry.rowId === rowId)!;
+      return { x: node.x, y: node.y };
+    };
+    expect(at(outside.nodes, "card:c1")).toEqual(at(layout.nodes, "card:c1"));
+    expect(at(outside.nodes, "card:c2")).toEqual(at(layout.nodes, "card:c2"));
   });
 
   it("draws a card-less plan as a gone node with nothing to open", () => {
