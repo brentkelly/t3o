@@ -1148,3 +1148,40 @@ it.layer(makeTestLayer("t3o-card-meta-usage-"))("usage, snapshot vs delta", (it)
     }),
   );
 });
+
+it.layer(makeTestLayer("t3o-card-meta-split-approved-"))(
+  "split approved after review, snapshot vs delta (T3O-135)",
+  (it) => {
+    it.effect(
+      "both producers carry splitApproved while the approval stands, and drop it after",
+      () =>
+        Effect.gen(function* () {
+          yield* seedCard();
+          const sql = yield* SqlClient.SqlClient;
+          const snapshotQuery = yield* boardStackSnapshotQuery;
+          const deltaShell = Effect.gen(function* () {
+            const model = yield* snapshotQuery.getCommandReadModel();
+            const aggregate = model.board?.cards.find((entry) => entry.id === cardId);
+            assert.isDefined(aggregate);
+            return boardCardShellFromCard(aggregate!);
+          });
+          assert.isFalse("splitApproved" in ((yield* shellCard) ?? {}));
+          assert.isFalse("splitApproved" in (yield* deltaShell));
+
+          const approval = JSON.stringify({
+            autoBuild: true,
+            mergeTarget: "inherit",
+            fingerprint: "plans",
+            approvedAt: createdAt,
+          });
+          yield* sql`UPDATE boards.board_cards SET pending_split_approval = ${approval} WHERE card_id = ${cardId}`;
+          assert.strictEqual((yield* shellCard)?.splitApproved, true);
+          assert.strictEqual((yield* deltaShell).splitApproved, true);
+
+          yield* sql`UPDATE boards.board_cards SET pending_split_approval = NULL WHERE card_id = ${cardId}`;
+          assert.isFalse("splitApproved" in ((yield* shellCard) ?? {}));
+          assert.isFalse("splitApproved" in (yield* deltaShell));
+        }),
+    );
+  },
+);

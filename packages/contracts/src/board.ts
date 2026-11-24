@@ -4612,6 +4612,7 @@ export function boardCardAttention(input: {
     readonly planTotal?: number | undefined;
     readonly planDone?: number | undefined;
     readonly parentCardId?: BoardCardId | undefined;
+    readonly splitApproved?: boolean | undefined;
     /** The permission wait is a subagent's, for the chip's wording. */
     readonly awaitingSubagent?: boolean | undefined;
     readonly reviewOutcome?: BoardReviewLoopOutcome | undefined;
@@ -4676,7 +4677,8 @@ export function boardCardAttention(input: {
     ...(card.planTotal === undefined ? {} : { planTotal: card.planTotal }),
     ...(card.parentCardId === undefined ? {} : { parentCardId: card.parentCardId }),
   };
-  if (boardCardShellPendingSplit(splitShape, input.stages)) {
+  // An approved split waiting on the plan review needs nothing from the human.
+  if (boardCardShellPendingSplit(splitShape, input.stages) && card.splitApproved !== true) {
     return {
       reason: "approval",
       tone: ATTENTION_TONES.approval,
@@ -7684,6 +7686,10 @@ export const BoardCardShell = Schema.Struct({
   autoMergeSetting: Schema.optionalKey(Schema.Boolean),
   /** The current planning run is unattended, absent otherwise. */
   autoPlanPending: Schema.optionalKey(Schema.Boolean),
+  /** A proposed split approved to take effect after the plan review (the server's
+      `splitApprovedAfterReview`), absent otherwise. Card-aggregate data like
+      `autoPlanPending`: absent means false, with no absent-means-preserve rule. */
+  splitApproved: Schema.optionalKey(Schema.Boolean),
   /** When auto-merge was first refused, absent when nothing is held (key-optional for the
       byte budget). The pill's elapsed clock measures from here, so it shows the whole wait,
       not the time since the last retry. */
@@ -8072,6 +8078,7 @@ export function makeBoardCardShell(input: {
   readonly autoBuildSetting?: boolean | null | undefined;
   readonly autoMergeSetting?: boolean | null | undefined;
   readonly autoPlanPending?: boolean | null | undefined;
+  readonly splitApproved?: boolean | null | undefined;
   /** The auto-merge hold's shell facts. On the card
       aggregate, so BOTH producers — the SQL snapshot query
       and the JS delta derivation — must carry them or a held card's pill
@@ -8180,6 +8187,7 @@ export function makeBoardCardShell(input: {
     ...(input.autoBuildSetting == null ? {} : { autoBuildSetting: input.autoBuildSetting }),
     ...(input.autoMergeSetting == null ? {} : { autoMergeSetting: input.autoMergeSetting }),
     ...(input.autoPlanPending === true ? { autoPlanPending: true } : {}),
+    ...(input.splitApproved === true ? { splitApproved: true } : {}),
     // The auto-merge hold: three byte-cheap facts, each omitted
     // when it has nothing to say, so a board that has never held a merge is
     // byte-identical to an older payload.
@@ -8299,6 +8307,7 @@ export function boardCardShellFromCard(
     autoBuildSetting: card.autoBuildSetting,
     autoMergeSetting: card.autoMergeSetting,
     autoPlanPending: isBoardCardAutoPlanPending(card),
+    splitApproved: card.pendingSplitApproval !== undefined,
     autoMergeHeldSince: card.autoMergeHold?.heldSince ?? null,
     autoMergeGaveUp: boardCardAutoMergeGaveUp(card.autoMergeHold),
     prDraft: boardCardPullRequestIsOpenDraft(card.pullRequest),

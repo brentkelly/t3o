@@ -276,6 +276,33 @@ describe("board projector", () => {
     }),
   );
 
+  // T3O-135: an approved-after-review split is not a human wait; every other change clears it.
+  it("carries splitApproved on the split-approval delta only while the approval stands", () => {
+    const shellOf = (card: BoardCard, change: "approved" | "undone" | "dropped" | "refused") => {
+      const delta = Option.getOrNull(
+        boardShellStreamEvent({
+          ...eventBase,
+          type: "board.split-approval-changed",
+          payload: { cardId, card, change },
+        } as unknown as BoardEvent),
+      );
+      assert.strictEqual(delta?.kind, "card-upserted");
+      return delta?.kind === "card-upserted" ? delta.card : undefined;
+    };
+    const approved = makeCard({
+      pendingSplitApproval: {
+        autoBuild: true,
+        mergeTarget: "inherit",
+        fingerprint: "plans",
+        approvedAt: NOW,
+      },
+    });
+    assert.strictEqual(shellOf(approved, "approved")?.splitApproved, true);
+    for (const change of ["undone", "dropped", "refused"] as const) {
+      assert.isFalse("splitApproved" in (shellOf(makeCard({}), change) ?? {}));
+    }
+  });
+
   // The footer's image indicator. The brief BODY is not on the card
   // aggregate, so the flag can only be decided by the two events that
   // carry a brief; every other card delta has to leave it alone, or a drag
