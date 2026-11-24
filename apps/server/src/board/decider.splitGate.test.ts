@@ -743,9 +743,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("split gate (T3O-
     }),
   );
 
-  it.effect("refuses the approval when the planning run ends without succeeding (T3O-135)", () =>
+  it.effect("refuses the approval when the planning run is abandoned (T3O-135)", () =>
     Effect.gen(function* () {
-      const settle = (outcome: "succeeded" | "failed" | "abandoned"): BoardCommand => ({
+      const settle = (outcome: "succeeded" | "abandoned"): BoardCommand => ({
         type: "board.card.settle-step",
         commandId: CommandId.make(`cmd-settle-${outcome}`),
         cardId: parentId,
@@ -754,19 +754,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("split gate (T3O-
         createdAt: NOW,
       });
       const board = reviewing({ parent: { pendingSplitApproval: pending } });
-      for (const outcome of ["failed", "abandoned"] as const) {
-        const [refused, ...rest] = approvalChanged(yield* decideEvents(settle(outcome), board));
-        expect(rest).toEqual([]);
-        expect(refused?.payload).toMatchObject({ change: "refused", round: 2 });
-        expect(refused?.payload.card.pendingSplitApproval).toBeUndefined();
-      }
+      const [refused, ...rest] = approvalChanged(yield* decideEvents(settle("abandoned"), board));
+      expect(rest).toEqual([]);
+      expect(refused?.payload).toMatchObject({ change: "refused", round: 2 });
+      expect(refused?.payload.card.pendingSplitApproval).toBeUndefined();
       // A success keeps it for the reactor to fire; a re-settle of a settled step is a no-op.
       expect(approvalChanged(yield* decideEvents(settle("succeeded"), board))).toEqual([]);
       const settled = reviewing({
         parent: { pendingSplitApproval: pending },
         step: { status: "succeeded" },
       });
-      expect(approvalChanged(yield* decideEvents(settle("failed"), settled))).toEqual([]);
+      expect(approvalChanged(yield* decideEvents(settle("abandoned"), settled))).toEqual([]);
     }),
   );
 

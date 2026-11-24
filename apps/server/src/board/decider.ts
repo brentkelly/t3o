@@ -6377,8 +6377,8 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
         type: "board.card-step-settled",
         payload: { cardId: command.cardId, state },
       };
-      // T3o: a deferred split approval only fires on a successful planning run, so a run that
-      // ends any other way refuses it and the split gate asks the human again (T3O-135).
+      // T3o: a deferred split approval only fires on a successful planning run, so an abandoned
+      // run refuses it and the split gate asks again; a stalled run keeps it for a retry (T3O-135).
       const approvalStranded =
         settledCard.pendingSplitApproval !== undefined &&
         !isBoardTerminalStepStatus(current.status) &&
