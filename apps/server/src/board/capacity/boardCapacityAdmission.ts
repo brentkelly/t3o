@@ -32,6 +32,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { BoardCapacityClientShape, BoardClaimAnswer } from "./BoardCapacityClient.ts";
 import { SNAPSHOT_INTERVAL_MS, SNAPSHOT_SETTLE_MS } from "./BoardWorkerCapacity.ts";
+import type { PlacementWait } from "../placement/placementRanking.ts";
 
 /** After a claim goes unanswered, the worker's other claims skip it this long. */
 export const UNREACHABLE_BACKOFF_MS = 30_000;
@@ -218,6 +219,66 @@ export function holdForDenial(
         },
         blocksWorker: kind === "placement" && answer.reason === "capacity",
       };
+  }
+}
+
+/** T3o: the hold a card's step takes when no worker can be placed on now (T3O-87). */
+export function placementHold(
+  wait: PlacementWait,
+  providerInstanceId: string | null,
+): CapacityHold {
+  if (wait.kind === "no-ready-worker") {
+    return { queuedBy: "no-ready-worker", detail: null, blocksWorker: false };
+  }
+  if (wait.kind === "too-big") {
+    return {
+      queuedBy: "capacity",
+      detail: {
+        ...(wait.workerId === null ? {} : { workerId: wait.workerId }),
+        dimension: wait.dimension,
+        tooBig: true,
+      },
+      blocksWorker: false,
+    };
+  }
+  const worker = wait.workerId === null ? {} : { workerId: wait.workerId };
+  switch (wait.reason) {
+    case "capacity":
+    case "closed":
+      return {
+        queuedBy: wait.reason === "closed" ? "reserved" : "capacity",
+        detail: {
+          ...worker,
+          ...(wait.dimension === undefined ? {} : { dimension: wait.dimension }),
+        },
+        blocksWorker: false,
+      };
+    case "quota":
+      return {
+        queuedBy: "quota",
+        detail: { ...worker, ...(providerInstanceId === null ? {} : { providerInstanceId }) },
+        blocksWorker: false,
+      };
+    case "setting-up":
+      return { queuedBy: "setup", detail: worker, blocksWorker: false };
+    case "not-ready":
+      return {
+        queuedBy: "setup",
+        detail: { ...worker, setupCause: "not-ready" },
+        blocksWorker: false,
+      };
+    case "no-checkout":
+      return {
+        queuedBy: "setup",
+        detail: { ...worker, setupCause: "not-set-up" },
+        blocksWorker: false,
+      };
+    case "needs-update":
+      return { queuedBy: "needs-update", detail: worker, blocksWorker: false };
+    case "offline":
+      return { queuedBy: "worker-offline", detail: worker, blocksWorker: false };
+    case "provider":
+      return { queuedBy: "no-ready-worker", detail: null, blocksWorker: false };
   }
 }
 

@@ -1,7 +1,8 @@
 /**
  * T3o: what each worker offers this board (T3O-86), from `board.workers.subscribeCapacity`.
- * Opened only by the Workers page, the pin picker, the Resources tab and a queued card's
- * detail, never by every card: capacity changes far more often than the board does.
+ * Opened by the Workers page, the pin picker, the Resources tab, a queued card's detail and
+ * the board itself, which reads only the quota slice (`boardQuotaView`) for its banner. Never
+ * read per card: capacity changes far more often than the board does.
  */
 import {
   BOARD_WORKERS_WS_METHODS,

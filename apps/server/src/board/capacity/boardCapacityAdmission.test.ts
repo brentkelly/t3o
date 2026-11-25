@@ -31,6 +31,7 @@ import {
   desiredHeavy,
   HEAVY_TAIL_MS,
   holdForDenial,
+  placementHold,
   makeBoardCapacityAdmission,
   SETTLE_AFTER_MS,
   syncEntriesFor,
@@ -774,6 +775,15 @@ it("a denial's hold: capacity blocks the worker for placements only", () => {
   assert.deepStrictEqual(
     holdForDenial({ reason: "quota", providerInstanceId: "claude" }, W1, "placement").detail,
     { workerId: W1, providerInstanceId: "claude" },
+  );
+  // The placement pass is the usual way into a quota hold; the web names the provider from it.
+  assert.deepStrictEqual(
+    placementHold({ kind: "queued", reason: "quota", workerId: W1 }, "claude").detail,
+    { workerId: W1, providerInstanceId: "claude" },
+  );
+  assert.deepStrictEqual(
+    placementHold({ kind: "queued", reason: "quota", workerId: W1 }, null).detail,
+    { workerId: W1 },
   );
   assert.strictEqual(holdForDenial({ reason: "not-ready" }, W1, "placement").queuedBy, "setup");
   // A failing readiness check needs a human; a check still running ends by itself.

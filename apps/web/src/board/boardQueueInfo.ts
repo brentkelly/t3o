@@ -21,7 +21,8 @@ export interface BoardQueueInfo {
   readonly detail: string;
   /** Waiting for its worker's checkout: no limit to start past. */
   readonly waitingForCheckout?: boolean;
-  /** Held for good until a human acts (Too big): amber, not a wait. */
+  /** Amber, not a blue wait: held until a human acts (Too big), or on something outside the
+      board such as a provider's quota reset. */
   readonly blocked?: boolean;
   /** Waiting on a human to sign in somewhere: violet (`--attention`). */
   readonly attention?: boolean;

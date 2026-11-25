@@ -231,6 +231,7 @@ import { runBoardCapacityUpgrade } from "./capacity/boardCapacityUpgrade.ts";
 import { makeBoardCardSetup } from "./capacity/boardCardSetup.ts";
 import {
   makeBoardCapacityAdmission,
+  placementHold,
   requestedProfileOf,
   type CapacityHold,
 } from "./capacity/boardCapacityAdmission.ts";
@@ -273,7 +274,6 @@ import {
   placementWait,
   rankPlacement,
   warmWorkers,
-  type PlacementWait,
   type PlacementWorkerFacts,
 } from "./placement/placementRanking.ts";
 import {
@@ -514,63 +514,6 @@ interface PlacementPass {
 }
 const CI_CLAIM = { providerInstanceId: null, force: false, noHolds: true } as const;
 const freshPlacementPass = (): PlacementPass => ({ grants: new Map(), ahead: null });
-
-/** T3o: the hold a card's step takes when no worker can be placed on now (T3O-87). */
-function placementHold(wait: PlacementWait, providerInstanceId: string | null): CapacityHold {
-  if (wait.kind === "no-ready-worker") {
-    return { queuedBy: "no-ready-worker", detail: null, blocksWorker: false };
-  }
-  if (wait.kind === "too-big") {
-    return {
-      queuedBy: "capacity",
-      detail: {
-        ...(wait.workerId === null ? {} : { workerId: wait.workerId }),
-        dimension: wait.dimension,
-        tooBig: true,
-      },
-      blocksWorker: false,
-    };
-  }
-  const worker = wait.workerId === null ? {} : { workerId: wait.workerId };
-  switch (wait.reason) {
-    case "capacity":
-    case "closed":
-      return {
-        queuedBy: wait.reason === "closed" ? "reserved" : "capacity",
-        detail: {
-          ...worker,
-          ...(wait.dimension === undefined ? {} : { dimension: wait.dimension }),
-        },
-        blocksWorker: false,
-      };
-    case "quota":
-      return {
-        queuedBy: "quota",
-        detail: { ...worker, ...(providerInstanceId === null ? {} : { providerInstanceId }) },
-        blocksWorker: false,
-      };
-    case "setting-up":
-      return { queuedBy: "setup", detail: worker, blocksWorker: false };
-    case "not-ready":
-      return {
-        queuedBy: "setup",
-        detail: { ...worker, setupCause: "not-ready" },
-        blocksWorker: false,
-      };
-    case "no-checkout":
-      return {
-        queuedBy: "setup",
-        detail: { ...worker, setupCause: "not-set-up" },
-        blocksWorker: false,
-      };
-    case "needs-update":
-      return { queuedBy: "needs-update", detail: worker, blocksWorker: false };
-    case "offline":
-      return { queuedBy: "worker-offline", detail: worker, blocksWorker: false };
-    case "provider":
-      return { queuedBy: "no-ready-worker", detail: null, blocksWorker: false };
-  }
-}
 
 type WorktreeOutcome =
   | { readonly kind: "ready"; readonly path: string }
