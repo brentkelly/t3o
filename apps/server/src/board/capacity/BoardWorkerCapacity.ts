@@ -93,9 +93,10 @@ const QUOTA_REFRESH_MS = 10 * 60_000;
 /** A provider at its limit, whose probe failed, or whose account went unknown is re-probed
     this often, so a re-login on a headless worker reaches the board within minutes (T3O-140). */
 const QUOTA_ATTENTION_REFRESH_MS = 5 * 60_000;
-/** A signed-out provider backs off from that, doubling per probe up to this, so one that is
-    installed but never signed in isn't probed every five minutes forever. */
-const SIGNED_OUT_REFRESH_MAX_MS = 60 * 60_000;
+/** A provider in trouble (signed out, probe failed, account gone) backs off from that, doubling
+    per probe up to this, so one that never recovers isn't probed every five minutes forever. A
+    provider only at its limit keeps the five minutes: its limit resets on its own. */
+const TROUBLE_REFRESH_MAX_MS = 60 * 60_000;
 const QUOTA_ATTENTION_TICK_MS = 60_000;
 /** A claim waits this long for a stale usage reading, then decides on what it has. */
 const CLAIM_QUOTA_REFRESH_TIMEOUT_MS = 2_000;
@@ -408,8 +409,8 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
     Effect.catchCause(() => Effect.succeed(EMPTY_CAPACITY_STATE)),
   );
   let quotaRefreshedAt = new Map<string, number>();
-  /** Consecutive background probes that found each provider signed out. */
-  let signedOutProbes = new Map<string, number>();
+  /** Consecutive background probes that found each provider in trouble. */
+  let troubleProbes = new Map<string, number>();
 
   const persistBoard = (boardId: string) =>
     ports.store.saveBoard(
@@ -1086,8 +1087,8 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
 
   /** Upstream refreshes usage only while a UI client is connected, which a headless worker
       never has: a provider at its limit, whose probe failed, that is signed out (a re-probe
-      between /logout and /login, backing off to hourly) or that lost its account is re-probed
-      every five minutes. */
+      between /logout and /login) or that lost its account is re-probed every five minutes; all
+      but the one at its limit back off to hourly while the trouble lasts. */
   const refreshQuota = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const settings = yield* ports.settings;
@@ -1097,30 +1098,29 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
           hadAccount = new Set(hadAccount).add(provider.instanceId);
         }
       }
-      const signedOut = provider.auth.status === "unauthenticated";
-      if (!signedOut && signedOutProbes.has(provider.instanceId)) {
-        signedOutProbes = new Map(signedOutProbes);
-        signedOutProbes.delete(provider.instanceId);
+      const trouble =
+        provider.usageLimits?.unavailable?.reason === "probeFailed" ||
+        provider.auth.status === "unauthenticated" ||
+        (provider.auth.status === "unknown" && hadAccount.has(provider.instanceId));
+      if (!trouble && troubleProbes.has(provider.instanceId)) {
+        troubleProbes = new Map(troubleProbes);
+        troubleProbes.delete(provider.instanceId);
       }
       if (!provider.enabled || !provider.installed) continue;
-      const due =
-        providerQuota(provider, quotaThresholdsOf(settings), now).exhausted ||
-        provider.usageLimits?.unavailable?.reason === "probeFailed" ||
-        signedOut ||
-        (provider.auth.status === "unknown" && hadAccount.has(provider.instanceId));
-      if (!due) continue;
+      if (!trouble && !providerQuota(provider, quotaThresholdsOf(settings), now).exhausted) {
+        continue;
+      }
       const last = quotaRefreshedAt.get(provider.instanceId);
-      const probes = signedOutProbes.get(provider.instanceId) ?? 0;
-      const interval = signedOut
+      const probes = troubleProbes.get(provider.instanceId) ?? 0;
+      const interval = trouble
         ? Math.min(
             QUOTA_ATTENTION_REFRESH_MS * 2 ** Math.max(probes - 1, 0),
-            SIGNED_OUT_REFRESH_MAX_MS,
+            TROUBLE_REFRESH_MAX_MS,
           )
         : QUOTA_ATTENTION_REFRESH_MS;
       if (last !== undefined && now - last < interval) continue;
       quotaRefreshedAt = new Map(quotaRefreshedAt).set(provider.instanceId, now);
-      if (signedOut)
-        signedOutProbes = new Map(signedOutProbes).set(provider.instanceId, probes + 1);
+      if (trouble) troubleProbes = new Map(troubleProbes).set(provider.instanceId, probes + 1);
       yield* ports.refreshProviderAccount(provider.instanceId).pipe(Effect.ignore);
     }
   });

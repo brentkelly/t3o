@@ -406,10 +406,15 @@ it.effect("the background refresh re-probes a provider in trouble every five min
       "lost-account",
     ]);
 
-    // Still signed out: it backs off, probed at 15, 35, 75 and 135 minutes, then hourly.
+    // Still in trouble: each backs off, probed 4 times in the next 174 minutes, then hourly.
+    // At its limit, it keeps every five minutes: the limit resets on its own.
     fakes.refreshed.length = 0;
     yield* TestClock.adjust(174 * 60_000);
-    assert.strictEqual(fakes.refreshed.filter((id) => id === "signed-out").length, 4);
+    const probesOf = (id: string) => fakes.refreshed.filter((refreshed) => refreshed === id).length;
+    assert.strictEqual(probesOf("signed-out"), 4);
+    assert.strictEqual(probesOf("probe-failed"), 4);
+    assert.strictEqual(probesOf("lost-account"), 4);
+    assert.isAbove(probesOf("exhausted"), 30);
     yield* Fiber.interrupt(fiber);
   }).pipe(withMachine(fakes), Effect.provide(TestClock.layer()));
 });
