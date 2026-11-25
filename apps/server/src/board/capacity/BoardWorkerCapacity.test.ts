@@ -405,6 +405,11 @@ it.effect("the background refresh re-probes a provider in trouble every five min
       "signed-out",
       "lost-account",
     ]);
+
+    // Still signed out: it backs off, probed at 15, 35, 75 and 135 minutes, then hourly.
+    fakes.refreshed.length = 0;
+    yield* TestClock.adjust(174 * 60_000);
+    assert.strictEqual(fakes.refreshed.filter((id) => id === "signed-out").length, 4);
     yield* Fiber.interrupt(fiber);
   }).pipe(withMachine(fakes), Effect.provide(TestClock.layer()));
 });

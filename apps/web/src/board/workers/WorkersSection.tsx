@@ -622,17 +622,30 @@ function WorkerMenu(props: {
   const refreshAccounts = useAtomCommand(boardEnvironment.refreshAccounts, {
     reportFailure: false,
   });
+  // A refresh re-probes every provider on the worker and can take up to a minute.
+  const [refreshing, setRefreshing] = useState(false);
   const runRefreshAccounts = async () => {
+    setRefreshing(true);
+    const toastId = toastManager.add({
+      type: "loading",
+      title: `${props.label} is re-reading its accounts…`,
+      timeout: 0,
+    });
     const result = await refreshAccounts({
       environmentId: props.environmentId,
       input: { workerId: props.workerId },
-    });
+    }).finally(() => setRefreshing(false));
     if (result._tag !== "Success") {
-      toastManager.add({ type: "error", title: describeBoardCommandFailure(result) });
+      toastManager.update(toastId, {
+        type: "error",
+        title: describeBoardCommandFailure(result),
+        timeout: 8_000,
+      });
       return;
     }
     const lines = refreshAccountsLines(result.value);
-    toastManager.add({
+    toastManager.update(toastId, {
+      timeout: 8_000,
       type: "success",
       title: `${props.label} re-read its accounts`,
       description:
@@ -671,11 +684,11 @@ function WorkerMenu(props: {
           Re-check all projects
         </MenuItem>
         <MenuItem
-          disabled={props.refreshAccountsBlocked !== null}
+          disabled={refreshing || props.refreshAccountsBlocked !== null}
           onClick={() => void runRefreshAccounts()}
         >
           Refresh accounts
-          {props.refreshAccountsBlocked === null ? null : (
+          {refreshing || props.refreshAccountsBlocked === null ? null : (
             <span className="ms-auto text-muted-foreground text-xs">
               {props.refreshAccountsBlocked}
             </span>
