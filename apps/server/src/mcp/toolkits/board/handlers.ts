@@ -104,6 +104,7 @@ import {
   type ThreadGatewayShape,
 } from "../../../board/ThreadGateway.ts";
 import { BoardCapacityClient } from "../../../board/capacity/BoardCapacityClient.ts";
+import { BoardWorkers, resolveBoardWorkerRef } from "../../../board/workers/BoardWorkers.ts";
 import { BoardEngine, type BoardEngineShape } from "../../../board/BoardEngine.ts";
 import { boardPlansProposalProblem } from "../../../board/decider.ts";
 import { BoardQueries } from "../../../board/BoardQueries.ts";
@@ -2090,6 +2091,32 @@ const rawBoardHandlers = {
     return { cardId: card.id, key: card.key };
   }),
 
+  board_refresh_worker_accounts: Effect.fn("BoardToolkit.board_refresh_worker_accounts")(
+    function* (input) {
+      const workers = yield* Effect.serviceOption(BoardWorkers);
+      const client = yield* Effect.serviceOption(BoardCapacityClient);
+      if (Option.isNone(workers) || Option.isNone(client)) {
+        return yield* new BoardToolError({
+          code: "internal",
+          message: "This server hosts no board workers.",
+        });
+      }
+      const resolved = resolveBoardWorkerRef(yield* workers.value.state, input.workerId);
+      if (!resolved.found) {
+        return yield* new BoardToolError({ code: "invalid-input", message: resolved.message });
+      }
+      return yield* client.value.refreshAccounts(resolved.workerId).pipe(
+        Effect.mapError(
+          (error) =>
+            new BoardToolError({
+              code: "rejected",
+              message: `${resolved.label}: ${error.message}`,
+            }),
+        ),
+      );
+    },
+  ),
+
   board_delete_card: Effect.fn("BoardToolkit.board_delete_card")(function* (input) {
     const deps = yield* boardToolDeps;
     const board = yield* readBoardState(deps);
@@ -2717,6 +2744,9 @@ export const BoardToolkitHandlersLive = McpToolAccess.toLayer(BoardToolkit, {
   ),
   board_delete_card: McpToolAccess.writesWithCapability(
     relayable("board_delete_card", boardHandlers.board_delete_card),
+  ),
+  board_refresh_worker_accounts: McpToolAccess.writesWithCapability(
+    relayable("board_refresh_worker_accounts", boardHandlers.board_refresh_worker_accounts),
   ),
   board_indent_cards: McpToolAccess.writesWithCapability(
     relayable("board_indent_cards", boardHandlers.board_indent_cards),

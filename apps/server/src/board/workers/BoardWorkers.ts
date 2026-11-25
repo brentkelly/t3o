@@ -145,6 +145,29 @@ const setupKey = (workerId: EnvironmentId, projectId: ProjectId) => `${workerId}
 const actionError = (code: BoardWorkerActionError["code"], message: string) =>
   new BoardWorkerActionError({ code, message });
 
+/** T3o: a worker named by id, label, or `local` / the board server's own label (T3O-140). */
+export function resolveBoardWorkerRef(
+  state: Pick<BoardWorkersState, "workers" | "localLabel">,
+  ref: string,
+):
+  | { readonly found: true; readonly workerId: BoardWorkerId; readonly label: string }
+  | { readonly found: false; readonly message: string } {
+  const wanted = ref.trim().toLowerCase();
+  const localLabel = state.localLabel ?? "this server";
+  if (wanted === BOARD_LOCAL_WORKER_ID || wanted === localLabel.toLowerCase()) {
+    return { found: true, workerId: BOARD_LOCAL_WORKER_ID, label: localLabel };
+  }
+  const worker = state.workers.find(
+    (candidate) => candidate.id === ref.trim() || candidate.label.toLowerCase() === wanted,
+  );
+  if (worker !== undefined) return { found: true, workerId: worker.id, label: worker.label };
+  const known = [
+    `${localLabel} (${BOARD_LOCAL_WORKER_ID})`,
+    ...state.workers.map((candidate) => `${candidate.label} (${candidate.id})`),
+  ];
+  return { found: false, message: `No worker "${ref}". Workers: ${known.join(", ")}.` };
+}
+
 /**
  * T3o: one worktree's fate when its worker is removed (T3O-87): pushed where the remote lacks
  * commits, then `reclaimed` (branch kept) or `fresh` (nothing beyond its base, no remote
