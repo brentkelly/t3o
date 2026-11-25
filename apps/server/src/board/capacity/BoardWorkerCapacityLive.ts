@@ -14,6 +14,7 @@ import * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as DateTime from "effect/DateTime";
@@ -27,6 +28,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../../config.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { BoardActualsMeter } from "../actuals/BoardActualsMeter.ts";
@@ -115,6 +117,42 @@ const makeBoardWorkerCapacityLive = Effect.gen(function* () {
   const path = yield* Path.Path;
   const ownBoardId = yield* Effect.flatMap(ServerEnvironment, (env) => env.getEnvironmentId);
   const registry = yield* Effect.serviceOption(ProviderRegistry);
+  const instances = yield* Effect.serviceOption(ProviderInstanceRegistry);
+  /** The account each provider last read, so the log names it only when it changes. */
+  let accountsRead = new Map<string, string>();
+  // Logged beside the account so a login made as another user or home diagnoses itself.
+  const accountHome = {
+    HOME: Option.getOrNull(yield* Config.String("HOME").pipe(Config.option)),
+    CLAUDE_CONFIG_DIR: Option.getOrNull(
+      yield* Config.String("CLAUDE_CONFIG_DIR").pipe(Config.option),
+    ),
+  };
+
+  /** Invalidating first is what makes a re-login show: Claude's probe cache outlives it. */
+  const refreshProviderAccount: WorkerCapacityPorts["refreshProviderAccount"] = (
+    instanceId,
+    options,
+  ) =>
+    Option.match(registry, {
+      onNone: () => Effect.void,
+      onSome: Effect.fn("BoardWorkerCapacity.refreshProviderAccount")(function* (service) {
+        const id = instanceId as ProviderInstanceId;
+        const instance = Option.isSome(instances)
+          ? yield* instances.value.getInstance(id)
+          : undefined;
+        yield* instance?.invalidateCaches ?? Effect.void;
+        const providers = yield* service.refreshInstance(id);
+        const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+        const account = provider?.auth.email ?? `auth ${provider?.auth.status ?? "missing"}`;
+        if (options?.manual !== true && accountsRead.get(instanceId) === account) return;
+        accountsRead = new Map(accountsRead).set(instanceId, account);
+        yield* Effect.logInfo("board worker read provider account", {
+          instanceId,
+          account,
+          ...accountHome,
+        });
+      }),
+    });
 
   const ownerFor = (boardId: string): BoardWorktreeOwner =>
     boardId === ownBoardId ? "self" : boardWorktreeOwnerOf(boardId);
@@ -338,12 +376,7 @@ const makeBoardWorkerCapacityLive = Effect.gen(function* () {
       onNone: () => Effect.succeed([]),
       onSome: (service) => service.getProviders,
     }),
-    refreshProviderUsage: (instanceId) =>
-      Option.match(registry, {
-        onNone: () => Effect.void,
-        onSome: (service) =>
-          service.refreshInstance(instanceId as ProviderInstanceId).pipe(Effect.asVoid),
-      }),
+    refreshProviderAccount,
     // Section 5: no checkout of the repository is not set up; then its readiness script.
     notReady: (boardId, repositoryKey, projectId) =>
       repositoryKey === null

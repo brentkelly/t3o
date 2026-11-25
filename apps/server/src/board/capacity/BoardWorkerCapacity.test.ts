@@ -62,7 +62,7 @@ const portsOver = (
     return fakes.threads;
   }),
   providers: Effect.sync(() => fakes.providers),
-  refreshProviderUsage: (instanceId) => Effect.sync(() => void fakes.refreshed.push(instanceId)),
+  refreshProviderAccount: (instanceId) => Effect.sync(() => void fakes.refreshed.push(instanceId)),
   notReady: () => Effect.succeed(null),
   readiness: () => Effect.succeed([]),
   worktreeMarkedFor: (boardId, worktreePath) =>
@@ -118,6 +118,7 @@ const provider = (
     instanceId,
     driver,
     enabled: true,
+    installed: true,
     auth: { status: "authenticated", email: "dev@example.com", label: "Max" },
     usageLimits: {
       checkedAt,
@@ -309,7 +310,7 @@ it.effect(
       ];
       const { service } = yield* makeBoardWorkerCapacity({
         ...portsOver(fakes),
-        refreshProviderUsage: () => Effect.never,
+        refreshProviderAccount: () => Effect.never,
       });
       yield* TestClock.adjust(60 * 60_000);
       const pending = yield* Effect.forkChild(
@@ -331,17 +332,101 @@ it.effect(
   },
 );
 
-it.effect("the background refresh re-reads an exhausted provider every ten minutes", () => {
+it.effect("the background refresh re-probes a provider in trouble every five minutes", () => {
   const fakes = makeFakes();
   return Effect.gen(function* () {
-    fakes.providers = [provider("claude", [{ kind: "weekly", label: "Weekly", usedPercent: 100 }])];
+    const exhausted = provider("exhausted", [
+      { kind: "weekly", label: "Weekly", usedPercent: 100 },
+    ]);
+    const healthy = provider("healthy", [{ kind: "weekly", label: "Weekly", usedPercent: 10 }]);
+    const probeFailed = {
+      ...provider("probe-failed", []),
+      usageLimits: {
+        checkedAt: "1970-01-01T00:00:00.000Z",
+        windows: [],
+        unavailable: { reason: "probeFailed" },
+      },
+    } as unknown as ServerProvider;
+    const lostAccount = provider("lost-account", [
+      { kind: "weekly", label: "Weekly", usedPercent: 10 },
+    ]);
+    // Cursor, OpenCode and Pi report auth unknown when healthy: never re-probed for it.
+    const neverHadAccount = {
+      ...provider("never-had-account", []),
+      auth: { status: "unknown" },
+      usageLimits: undefined,
+    } as unknown as ServerProvider;
+    const disabled = { ...exhausted, instanceId: "disabled", enabled: false } as ServerProvider;
+    const uninstalled = {
+      ...exhausted,
+      instanceId: "uninstalled",
+      installed: false,
+    } as ServerProvider;
+    fakes.providers = [
+      exhausted,
+      healthy,
+      probeFailed,
+      lostAccount,
+      neverHadAccount,
+      disabled,
+      uninstalled,
+    ];
     const made = yield* makeBoardWorkerCapacity(portsOver(fakes));
     const fiber = yield* Effect.forkChild(made.background);
     yield* TestClock.adjust(1);
-    assert.deepStrictEqual(fakes.refreshed, ["claude"]);
-    yield* TestClock.adjust(10 * 60_000);
-    assert.deepStrictEqual(fakes.refreshed, ["claude", "claude"]);
+    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed"]);
+
+    // A failed probe after a re-login leaves auth unknown with no usage: it once had an account.
+    fakes.providers = fakes.providers.map((candidate) =>
+      candidate.instanceId === "lost-account"
+        ? ({ ...candidate, auth: { status: "unknown" }, usageLimits: undefined } as ServerProvider)
+        : candidate,
+    );
+    fakes.refreshed.length = 0;
+    yield* TestClock.adjust(60_000);
+    assert.deepStrictEqual(fakes.refreshed, ["lost-account"]);
+
+    fakes.refreshed.length = 0;
+    yield* TestClock.adjust(3 * 60_000);
+    assert.deepStrictEqual(fakes.refreshed, []);
+    yield* TestClock.adjust(60_000);
+    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed"]);
+    yield* TestClock.adjust(60_000);
+    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed", "lost-account"]);
     yield* Fiber.interrupt(fiber);
+  }).pipe(withMachine(fakes), Effect.provide(TestClock.layer()));
+});
+
+it.effect("refreshing accounts re-probes every enabled provider and returns the result", () => {
+  const fakes = makeFakes();
+  return Effect.gen(function* () {
+    const old = provider("claude", [{ kind: "weekly", label: "Weekly", usedPercent: 100 }]);
+    fakes.providers = [
+      old,
+      provider("codex", [], undefined, "codex"),
+      { ...old, instanceId: "disabled", enabled: false } as ServerProvider,
+    ];
+    const { service } = yield* makeBoardWorkerCapacity({
+      ...portsOver(fakes),
+      refreshProviderAccount: (instanceId) =>
+        Effect.sync(() => {
+          fakes.refreshed.push(instanceId);
+          if (instanceId !== "claude") return;
+          fakes.providers = fakes.providers.map((candidate) =>
+            candidate.instanceId === "claude"
+              ? ({
+                  ...provider("claude", [{ kind: "weekly", label: "Weekly", usedPercent: 12 }]),
+                  auth: { status: "authenticated", email: "new@example.com" },
+                } as unknown as ServerProvider)
+              : candidate,
+          );
+        }),
+    });
+    const snapshot = yield* service.refreshAccounts("board-a");
+    assert.deepStrictEqual([...fakes.refreshed].sort(), ["claude", "codex"]);
+    const claude = snapshot.providers.find((candidate) => candidate.instanceId === "claude");
+    assert.strictEqual(claude?.account.email, "new@example.com");
+    assert.isFalse(claude?.quota.exhausted);
   }).pipe(withMachine(fakes), Effect.provide(TestClock.layer()));
 });
 

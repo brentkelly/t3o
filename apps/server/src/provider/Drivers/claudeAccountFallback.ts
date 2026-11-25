@@ -17,8 +17,8 @@ export interface ClaudeOauthIdentity {
 }
 
 /** The signed-in account in `.claude.json`; undefined when unreadable or signed out. */
-export const readClaudeOauthIdentity = (accountConfigPath: string) =>
-  Effect.gen(function* () {
+export const readClaudeOauthIdentity = Effect.fn("readClaudeOauthIdentity")(
+  function* (accountConfigPath: string) {
     const fs = yield* FileSystem.FileSystem;
     const raw = yield* fs.readFileString(accountConfigPath);
     const config = yield* Schema.decodeEffect(Schema.fromJsonString(AccountConfig))(raw);
@@ -28,7 +28,9 @@ export const readClaudeOauthIdentity = (accountConfigPath: string) =>
       organizationUuid: account.organizationUuid?.trim() || undefined,
       emailAddress: account.emailAddress?.trim() || undefined,
     } satisfies ClaudeOauthIdentity;
-  }).pipe(Effect.orElseSucceed(() => undefined));
+  },
+  Effect.orElseSucceed(() => undefined),
+);
 
 /**
  * Whether a failed probe may reuse the last good account. Matching the organization alone lets
