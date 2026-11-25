@@ -13,6 +13,7 @@ import { resolveWorkerCapacitySettings } from "../tunnel/workerFile.ts";
 import {
   makeBoardWorkerCapacity,
   providerQuota,
+  quotaThresholdsOf,
   provisionUnderClaim,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_SETTLE_MS,
@@ -184,6 +185,8 @@ it.effect("an admitted start counts against the cap until its thread shows runni
   }).pipe(Effect.provide(TestClock.layer()), (effect) => withMachine(makeFakes())(effect)),
 );
 
+const DEFAULTS = { session: 95, weekly: 95 };
+
 it("quota gates only account-wide session and weekly windows, until they reset", () => {
   const now = Date.parse("2026-11-13T00:00:00.000Z");
   const later = "2026-11-20T09:00:00.000Z";
@@ -197,19 +200,19 @@ it("quota gates only account-wide session and weekly windows, until they reset",
     },
     { kind: "monthly", label: "Monthly spend", usedPercent: 100 },
   ]);
-  assert.isFalse(providerQuota(scoped, 95, now).exhausted);
+  assert.isFalse(providerQuota(scoped, DEFAULTS, now).exhausted);
   // Scope comes from ids and drivers, not labels: an account window's label may carry a "·"…
   const relabelled = provider("claude", [
     { kind: "weekly", label: "Weekly · all models", usedPercent: 100, id: "seven_day" },
   ]);
-  assert.isTrue(providerQuota(relabelled, 95, now).exhausted);
+  assert.isTrue(providerQuota(relabelled, DEFAULTS, now).exhausted);
   // Only the windows that refuse placement are drawn at their limit.
   assert.deepStrictEqual(
-    providerQuota(scoped, 95, now).windows.map((window) => window.nearLimit),
+    providerQuota(scoped, DEFAULTS, now).windows.map((window) => window.nearLimit),
     [false, false],
   );
   assert.deepStrictEqual(
-    providerQuota(relabelled, 95, now).windows.map((window) => window.nearLimit),
+    providerQuota(relabelled, DEFAULTS, now).windows.map((window) => window.nearLimit),
     [true],
   );
   // …and every Antigravity window is one model family's.
@@ -219,22 +222,55 @@ it("quota gates only account-wide session and weekly windows, until they reset",
     undefined,
     "antigravity",
   );
-  assert.isFalse(providerQuota(family, 95, now).exhausted);
+  assert.isFalse(providerQuota(family, DEFAULTS, now).exhausted);
   const weekly = provider("claude", [
     { kind: "weekly", label: "Weekly", usedPercent: 96, resetsAt: later },
   ]);
-  assert.deepInclude(providerQuota(weekly, 95, now), { exhausted: true, resetsAt: later });
+  assert.deepInclude(providerQuota(weekly, DEFAULTS, now), { exhausted: true, resetsAt: later });
   const past = provider("claude", [
     { kind: "session", label: "Session", usedPercent: 100, resetsAt: "2026-11-12T00:00:00.000Z" },
   ]);
-  assert.isFalse(providerQuota(past, 95, now).exhausted);
+  assert.isFalse(providerQuota(past, DEFAULTS, now).exhausted);
   assert.isFalse(
     providerQuota(
       { usageLimits: undefined, driver: ProviderDriverKind.make("claudeAgent") },
-      95,
+      DEFAULTS,
       now,
     ).exhausted,
   );
+});
+
+it("session and weekly windows gate at their own thresholds", () => {
+  const now = Date.parse("2026-11-13T00:00:00.000Z");
+  const later = "2026-11-20T09:00:00.000Z";
+  const defaults = quotaThresholdsOf(resolveWorkerCapacitySettings({}));
+  const window = (kind: "session" | "weekly", usedPercent: number, id?: string) =>
+    provider("claude", [
+      { kind, label: kind, usedPercent, resetsAt: later, ...(id === undefined ? {} : { id }) },
+    ]);
+  const rows: ReadonlyArray<
+    readonly [string, ReturnType<typeof window>, { session: number; weekly: number }, boolean]
+  > = [
+    ["weekly at 95% by default", window("weekly", 95, "seven_day"), defaults, false],
+    ["weekly at 100% by default", window("weekly", 100, "seven_day"), defaults, true],
+    ["session at 95% by default", window("session", 95, "five_hour"), defaults, true],
+    [
+      "weekly at 92% under a 90% weekly threshold",
+      window("weekly", 92),
+      { session: 95, weekly: 90 },
+      true,
+    ],
+    [
+      "session at 92% under a 90% weekly threshold",
+      window("session", 92),
+      { session: 95, weekly: 90 },
+      false,
+    ],
+    ["a per-model weekly window at 100%", window("weekly", 100, "seven_day_opus"), defaults, false],
+  ];
+  for (const [name, subject, thresholds, exhausted] of rows) {
+    assert.strictEqual(providerQuota(subject, thresholds, now).exhausted, exhausted, name);
+  }
 });
 
 it.effect(
