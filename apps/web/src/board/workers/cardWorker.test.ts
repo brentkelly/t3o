@@ -275,6 +275,74 @@ describe("queue reasons and move notices", () => {
     ).toBeNull();
   });
 
+  it("names the provider window holding a quota wait, from the worker's snapshot (T3O-139)", () => {
+    const quotaProvider = (instanceId: string, exhausted: boolean) => ({
+      instanceId,
+      driver: "claudeAgent",
+      account: { status: "signed-in" as const },
+      quota: {
+        exhausted,
+        checkedAt: NOW,
+        resetsAt: exhausted ? "2026-01-07T18:00:00.000Z" : null,
+        windows: [
+          { label: "Session", usedPercent: 40, resetsAt: NOW, gating: true, nearLimit: false },
+          {
+            label: "Weekly",
+            usedPercent: 99.6,
+            resetsAt: "2026-01-07T18:00:00.000Z",
+            gating: true,
+            nearLimit: exhausted,
+          },
+        ],
+      },
+      agents: { running: 0, max: null },
+    });
+    const capacity = new Map([
+      [
+        String(LINUX),
+        snapshot(0, { providers: [quotaProvider("codex", false), quotaProvider("claude", true)] }),
+      ],
+    ]);
+    const card = {
+      workerId: LINUX,
+      queuedBy: "quota" as const,
+      queuedDetail: { workerId: LINUX, providerInstanceId: "claude" },
+      projectId,
+    };
+    const reason = (input: Partial<Parameters<typeof boardQueueReason>[0]>) =>
+      boardQueueReason({
+        card,
+        state: state([worker(LINUX, "linux-box")]),
+        cardKeys: new Map(),
+        projectName: "advisor",
+        clock: (iso) => `at ${iso}`,
+        ...input,
+      });
+    expect(reason({ capacity })).toEqual({
+      kind: "quota",
+      worker: "linux-box",
+      limit: {
+        provider: "Claude",
+        window: "weekly",
+        percent: 100,
+        resets: "at 2026-01-07T18:00:00.000Z",
+      },
+    });
+    // No snapshot yet, or one no longer at the threshold: today's wording.
+    expect(reason({})).toEqual({ kind: "quota", worker: "linux-box" });
+    expect(
+      reason({
+        capacity: new Map([
+          [String(LINUX), snapshot(0, { providers: [quotaProvider("claude", false)] })],
+        ]),
+      }),
+    ).toEqual({ kind: "quota", worker: "linux-box" });
+    // An older hold names no provider: the worker's exhausted one stands in.
+    expect(
+      reason({ capacity, card: { ...card, queuedDetail: { workerId: LINUX } } }),
+    ).toMatchObject({ limit: { provider: "Claude", window: "weekly" } });
+  });
+
   it("says Moving in blue terms and Move failed in amber ones", () => {
     const board = state([worker(LINUX, "linux-box")]);
     expect(

@@ -21,7 +21,8 @@ export interface BoardQueueInfo {
   readonly detail: string;
   /** Waiting for its worker's checkout: no limit to start past. */
   readonly waitingForCheckout?: boolean;
-  /** Held for good until a human acts (Too big): amber, not a wait. */
+  /** Amber, not a blue wait: held until a human acts (Too big), or on something outside the
+      board such as a provider's quota reset. */
   readonly blocked?: boolean;
   /** Waiting on a human to sign in somewhere: violet (`--attention`). */
   readonly attention?: boolean;
@@ -78,6 +79,8 @@ export const boardProviderLoginHint = (provider: string) =>
 /** The hint a capacity wait carries: the worker decides what it offers. */
 const boardCapacityHint = (worker: string) =>
   `${worker} decides what it offers. Run \`pnpm t3o-worker status\` there to see what holds the rest.`;
+
+const QUOTA_START_NOW = "Start now starts it anyway, and it pauses if it reaches the limit.";
 
 /** The queued story when the card's worker holds it, naming why (T3O-86). */
 function withQueueReason(
@@ -180,13 +183,31 @@ function withQueueReason(
             headline: `${reason.worker} is reserved for ${reason.behind}`,
             detail: `${reason.worker} is held for ${reason.behind}, earlier in this board's queue. This card starts on another worker when one has room, or after ${reason.behind}.`,
           };
-    case "quota":
+    case "quota": {
+      // Amber like a usage-limit park: nobody works, and it waits on the provider's reset.
+      const limit = reason.limit;
+      if (limit === undefined) {
+        return {
+          ...base,
+          blocked: true,
+          label: "Provider near quota",
+          headline: `Provider near quota on ${reason.worker}`,
+          detail: `The provider this step uses is near its usage limit on ${reason.worker}. This card starts by itself once the limit resets. ${QUOTA_START_NOW}`,
+        };
+      }
+      const name = `${limit.provider} ${limit.window} limit`;
       return {
         ...base,
-        label: `Queued #${n} · provider near quota`,
-        headline: `Provider near quota on ${reason.worker}`,
-        detail: `The provider this step uses is near its usage limit on ${reason.worker}. This card starts when the limit resets.`,
+        blocked: true,
+        label: name,
+        headline: `${name} at ${limit.percent}% on ${reason.worker}`,
+        detail: `${
+          limit.resets === null
+            ? "This card starts by itself once it resets."
+            : `It resets ${limit.resets}, and this card starts by itself then.`
+        } ${QUOTA_START_NOW}`,
       };
+    }
     case "agent-cap":
       return {
         ...base,

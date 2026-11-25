@@ -20,6 +20,11 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 
+import {
+  boardQuotaNearLimitWindows,
+  boardQuotaProviderName,
+  boardQuotaResetClock,
+} from "./boardQuotaBanner.logic";
 import { boardShellHoldsWorktree } from "./boardWorkerFilter";
 import { localWorkerLabel } from "./threadWorker";
 import { clockTime } from "./workerCopy";
@@ -274,7 +279,18 @@ export type BoardQueueReason =
   | { readonly kind: "holding"; readonly worker: string }
   /** T3o: `worker` isn't taking new cards: held for this board's `behind`, or not said why. */
   | { readonly kind: "reserved"; readonly worker: string; readonly behind: string | null }
-  | { readonly kind: "quota"; readonly worker: string }
+  | {
+      readonly kind: "quota";
+      readonly worker: string;
+      /** T3o (T3O-139): the window holding it, from the worker's snapshot; absent without one. */
+      readonly limit?: {
+        readonly provider: string;
+        readonly window: string;
+        readonly percent: number;
+        /** Already formatted: "Wed 6:00 pm". */
+        readonly resets: string | null;
+      };
+    }
   | { readonly kind: "agent-cap"; readonly worker: string }
   | { readonly kind: "needs-update"; readonly worker: string }
   | {
@@ -300,6 +316,9 @@ export function boardQueueReason(input: {
   /** Card keys by id, for "Waiting behind T3O-90". */
   readonly cardKeys: ReadonlyMap<string, string>;
   readonly projectName: string;
+  /** T3o (T3O-139): every worker's snapshot, for which quota window holds the card. */
+  readonly capacity?: ReadonlyMap<string, Pick<BoardWorkerCapacitySnapshot, "providers">>;
+  readonly clock?: (iso: string) => string;
 }): BoardQueueReason | null {
   const queuedBy: BoardStepQueuedBy | undefined = input.card.queuedBy;
   if (queuedBy === undefined) return null;
@@ -346,8 +365,27 @@ export function boardQueueReason(input: {
             ? null
             : (input.cardKeys.get(detail.behindCardId) ?? null),
       };
-    case "quota":
-      return { kind: "quota", worker };
+    case "quota": {
+      const providers = input.capacity?.get(workerId)?.providers ?? [];
+      const provider =
+        providers.find((candidate) => candidate.instanceId === detail?.providerInstanceId) ??
+        (detail?.providerInstanceId === undefined
+          ? providers.find((candidate) => candidate.quota.exhausted)
+          : undefined);
+      const window = provider === undefined ? undefined : boardQuotaNearLimitWindows(provider)[0];
+      if (provider === undefined || window === undefined) return { kind: "quota", worker };
+      const clock = input.clock ?? boardQuotaResetClock;
+      return {
+        kind: "quota",
+        worker,
+        limit: {
+          provider: boardQuotaProviderName(provider),
+          window: window.window,
+          percent: window.percent,
+          resets: window.resetsAt === null ? null : clock(window.resetsAt),
+        },
+      };
+    }
     case "agent-cap":
       return { kind: "agent-cap", worker };
     case "needs-update":

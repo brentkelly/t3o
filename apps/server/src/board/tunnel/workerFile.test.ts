@@ -125,6 +125,7 @@ describe("board addresses", () => {
       maxAgents: 4,
       providerCaps: { codex: 2 },
       quotaThresholdPercent: 90,
+      weeklyQuotaThresholdPercent: 100,
       holdEarlyStartFraction: 0.6,
       holdMaxMinutes: 120,
     });
@@ -140,6 +141,20 @@ describe("board addresses", () => {
     expect(
       resolveWorkerCapacitySettings({ quotaThresholdPercent: 0.5 }).quotaThresholdPercent,
     ).toBe(1);
+    expect(resolveWorkerCapacitySettings({ "quotaThresholdPercent.weekly": 90 })).toMatchObject({
+      quotaThresholdPercent: 95,
+      weeklyQuotaThresholdPercent: 90,
+    });
+    expect(
+      resolveWorkerCapacitySettings({ "quotaThresholdPercent.weekly": 250 })
+        .weeklyQuotaThresholdPercent,
+    ).toBe(100);
+    expect(findWorkerConfigKey("quotaThresholdPercent.weekly")?.parse("101").ok).toBe(false);
+    expect(findWorkerConfigKey("quotaThresholdPercent.weekly")?.parse("0").ok).toBe(false);
+    expect(findWorkerConfigKey("quotaThresholdPercent.weekly")?.parse("90")).toEqual({
+      ok: true,
+      value: 90,
+    });
     expect(findWorkerConfigKey("capacity.gpus")).toBeUndefined();
     // T3o: holds (T3O-87).
     expect(findWorkerConfigKey("hold.earlyStartFraction")?.parse("1.5").ok).toBe(false);

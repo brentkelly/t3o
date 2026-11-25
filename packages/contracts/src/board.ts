@@ -2856,7 +2856,8 @@ export const BoardStepQueuedDetail = Schema.Struct({
   /** T3o: why the board server can't plan (T3O-87): its project folder is missing or empty
       (Clone here), or exists and isn't a checkout of the project's repository. */
   serverCheckout: Schema.optionalKey(Schema.Literals(["missing", "not-a-checkout"])),
-  /** T3o: the provider to sign in to on the board server (T3O-87). */
+  /** T3o: the provider the wait is about: the one to sign in to on the board server (T3O-87),
+      or the one at its quota threshold (T3O-139). */
   providerInstanceId: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type BoardStepQueuedDetail = typeof BoardStepQueuedDetail.Type;

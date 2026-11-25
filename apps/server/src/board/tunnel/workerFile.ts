@@ -41,6 +41,15 @@ const positiveNumber =
       : { ok: false, message: `${what} must be a number above 0.` };
   };
 
+const percent =
+  (what: string) =>
+  (raw: string): WorkerConfigParse => {
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 1 && value <= 100
+      ? { ok: true, value }
+      : { ok: false, message: `${what} must be between 1 and 100.` };
+  };
+
 const positiveInt =
   (what: string) =>
   (raw: string): WorkerConfigParse => {
@@ -92,13 +101,14 @@ export const WORKER_CONFIG_KEYS: ReadonlyArray<{
   {
     key: "quotaThresholdPercent",
     description:
-      "Stop taking new cards for a provider once its session or weekly window is at this percent. Default: 95.",
-    parse: (raw) => {
-      const value = Number(raw);
-      return Number.isFinite(value) && value >= 1 && value <= 100
-        ? { ok: true, value }
-        : { ok: false, message: "quotaThresholdPercent must be between 1 and 100." };
-    },
+      "Stop taking new cards for a provider once its session window is at this percent. Default: 95.",
+    parse: percent("quotaThresholdPercent"),
+  },
+  {
+    key: "quotaThresholdPercent.weekly",
+    description:
+      "Stop taking new cards for a provider once its weekly window is at this percent. Default: 100.",
+    parse: percent("quotaThresholdPercent.weekly"),
   },
   {
     key: "hold.earlyStartFraction",
@@ -129,6 +139,9 @@ export function findWorkerConfigKey(key: string) {
 }
 
 const DEFAULT_QUOTA_THRESHOLD_PERCENT = 95;
+// A card that reaches the real limit mid-turn pauses and resumes after the reset, so a
+// weekly window, where 5% is hours of work, runs to its limit by default.
+const DEFAULT_WEEKLY_QUOTA_THRESHOLD_PERCENT = 100;
 
 /** The capacity settings `worker.json` declares; absent keys fall to the machine defaults. */
 export interface WorkerCapacitySettings {
@@ -137,7 +150,9 @@ export interface WorkerCapacitySettings {
   readonly diskGB: number | null;
   readonly maxAgents: number | null;
   readonly providerCaps: Readonly<Record<string, number>>;
+  /** Session windows; weekly windows use `weeklyQuotaThresholdPercent`. */
   readonly quotaThresholdPercent: number;
+  readonly weeklyQuotaThresholdPercent: number;
   /** T3o: holds (T3O-87). */
   readonly holdEarlyStartFraction: number;
   readonly holdMaxMinutes: number;
@@ -161,15 +176,21 @@ export function resolveWorkerCapacitySettings(
       providerCaps[key.slice("providerCaps.".length)] = value;
     }
   }
-  const threshold = read("quotaThresholdPercent");
+  const percentOr = (key: string, fallback: number) => {
+    const value = read(key);
+    return value === null ? fallback : Math.max(1, Math.min(100, value));
+  };
   return {
     cpuCores: read("capacity.cpuCores"),
     ramGiB: read("capacity.ramGiB"),
     diskGB: read("capacity.diskGB"),
     maxAgents: read("maxAgents", true),
     providerCaps,
-    quotaThresholdPercent:
-      threshold === null ? DEFAULT_QUOTA_THRESHOLD_PERCENT : Math.max(1, Math.min(100, threshold)),
+    quotaThresholdPercent: percentOr("quotaThresholdPercent", DEFAULT_QUOTA_THRESHOLD_PERCENT),
+    weeklyQuotaThresholdPercent: percentOr(
+      "quotaThresholdPercent.weekly",
+      DEFAULT_WEEKLY_QUOTA_THRESHOLD_PERCENT,
+    ),
     holdEarlyStartFraction: Math.min(1, read("hold.earlyStartFraction") ?? 0.5),
     holdMaxMinutes: read("hold.maxMinutes") ?? 120,
   };

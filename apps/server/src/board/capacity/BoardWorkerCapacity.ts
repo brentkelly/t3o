@@ -286,11 +286,21 @@ const isGatingWindow = (driver: string, window: { readonly kind: string; readonl
 
 const nowIso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
-/** A provider is exhausted when an account-wide session or weekly window is at the
+export interface QuotaThresholds {
+  readonly session: number;
+  readonly weekly: number;
+}
+
+export const quotaThresholdsOf = (settings: WorkerCapacitySettings): QuotaThresholds => ({
+  session: settings.quotaThresholdPercent,
+  weekly: settings.weeklyQuotaThresholdPercent,
+});
+
+/** A provider is exhausted when an account-wide session or weekly window is at its
     threshold. Model-scoped and spend windows never gate; a passed reset is available. */
 export function providerQuota(
   provider: Pick<ServerProvider, "usageLimits" | "driver">,
-  thresholdPercent: number,
+  thresholds: QuotaThresholds,
   now: number,
 ): BoardWorkerProviderCapacity["quota"] {
   const limits = provider.usageLimits;
@@ -307,7 +317,7 @@ export function providerQuota(
       gating,
       nearLimit:
         gating &&
-        window.usedPercent >= thresholdPercent &&
+        window.usedPercent >= (window.kind === "weekly" ? thresholds.weekly : thresholds.session) &&
         (resetsAt === null || Date.parse(resetsAt) > now),
     };
   });
@@ -454,7 +464,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
       if (providerInstanceId === null) return null;
       const provider = providers.find((candidate) => candidate.instanceId === providerInstanceId);
       if (provider === undefined) return null;
-      const quota = providerQuota(provider, settings.quotaThresholdPercent, now);
+      const quota = providerQuota(provider, quotaThresholdsOf(settings), now);
       return quota.exhausted ? { resetsAt: quota.resetsAt } : null;
     };
   };
@@ -878,7 +888,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
           instanceId: provider.instanceId,
           driver: provider.driver,
           account: accountOf(provider),
-          quota: providerQuota(provider, settings.quotaThresholdPercent, now),
+          quota: providerQuota(provider, quotaThresholdsOf(settings), now),
           agents: {
             running: boardThreads.filter(
               (thread) => thread.providerInstanceId === provider.instanceId,
@@ -1063,7 +1073,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
     const settings = yield* ports.settings;
     for (const provider of yield* ports.providers) {
       if (!provider.enabled) continue;
-      const quota = providerQuota(provider, settings.quotaThresholdPercent, now);
+      const quota = providerQuota(provider, quotaThresholdsOf(settings), now);
       if (!quota.exhausted) continue;
       const last = quotaRefreshedAt.get(provider.instanceId);
       if (last !== undefined && now - last < QUOTA_REFRESH_MS) continue;

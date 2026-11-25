@@ -143,11 +143,14 @@ asks it for room before a card gets a worktree there. A card is placed only when
 for it, and a queued card says what it's waiting on: **waiting for room** (its details name the
 worker and whether it's CPU, RAM or disk), **Next on build-01** when it holds a worker,
 **build-01 is reserved for T3O-90** when this board holds that worker for an earlier card,
-**build-01 isn't taking new cards**, **agents busy** when the worker's agent cap is full, **provider
-near quota** when the provider's subscription is nearly used up, or **needs update** when the
-worker is too old to be asked. Cards queue in Building in the usual order; **Start now** jumps
-the queue and starts a card even on a worker that isn't taking new cards (the worker still refuses
-it if the machine lacks the disk or half the RAM).
+**build-01 isn't taking new cards**, **agents busy** when the worker's agent cap is full, **Claude
+weekly limit** (amber) when a provider's usage window is at the worker's threshold, or **needs
+update** when the worker is too old to be asked. While any worker, the board's own server included,
+is at a provider's threshold, a banner above the board names the worker, the window, how full it
+is, when it resets and how many cards wait on it; it goes away by itself once the reading drops.
+Cards queue in Building in the usual order; **Start now** jumps the queue and starts a card even
+on a worker that isn't taking new cards (the worker still refuses it if the machine lacks the disk
+or half the RAM).
 
 ### Holds: a large card doesn't wait forever
 
@@ -184,8 +187,12 @@ To hold some of a machine back, or cap it, set these on the worker with `pnpm t3
 - `maxAgents` — the most agents running at once on this worker, from every board. Unset means no cap.
 - `providerCaps.<providerInstanceId>` — the most agents of one provider instance, such as
   `providerCaps.claudeAgent`.
-- `quotaThresholdPercent` — how much of a subscription's usage window can be used before the worker
-  stops taking new cards for that provider (default 95).
+- `quotaThresholdPercent` — how much of a subscription's session window (Claude's five-hour one,
+  for example) can be used before the worker stops taking new cards for that provider (default 95),
+  leaving room for your own use.
+- `quotaThresholdPercent.weekly` — the same for weekly windows (default 100): a few percent of a
+  week is hours of work. A card that reaches the real limit mid-turn pauses and picks up again after
+  the reset, so running to the limit loses nothing. **Start now** starts a held card anyway.
 
 `pnpm t3o-worker status` shows what the worker declares, what it has free, and its agents.
 

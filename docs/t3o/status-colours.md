@@ -86,6 +86,8 @@ is violet-500 light / violet-700 foreground, lifting to violet-400 in dark, exac
   ones that stay put until a human acts keep the red failure treatment they have had since t3o-30 —
   the banner asserts "this needs you", which is exactly the half of `stalled` it is still true of.
   `boardStallIsWaiting` is that split, so the banner cannot drift from the chip beside it.
+  A card queued behind a provider's quota threshold before it starts is amber for the same reason
+  (T3O-139), and so is the board's quota banner: nobody works until the window resets.
 - **A worker the board can't use is amber, and online stays grey (T3O-60).** Worker offline, Worker
   removed, Access revoked and Incompatible all say the same thing: the cards on that worker are
   held, and only a human (or the worker coming back) frees them. A failed Move is amber for the same

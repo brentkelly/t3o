@@ -135,6 +135,7 @@ import { BOARD_UTILITY_MENU_RESERVED_SPACE, BoardUtilityMenu } from "./BoardUtil
 import { BoardSubBoardPlanStrip } from "./BoardSubBoardPlanStrip";
 import { BoardCardFilterField, BoardTopBar } from "./BoardTopBar";
 import { BoardWorkerFilterButton, BoardWorkerFilterStrip } from "./workers/BoardWorkerFilter";
+import { BoardQuotaBanner, useBoardQuotaView } from "./workers/BoardQuotaBanner";
 import {
   BOARD_UNPLACED_FILTER,
   boardShellPlacementTarget,
@@ -463,6 +464,8 @@ function useBoardPageModel({
   // Stays the same object across a clone's progress ticks, so those don't
   // rebuild the queue or re-render the columns.
   const cardWorkersState = useBoardWorkersCardView(environmentId);
+  // T3o (T3O-139): which quota window holds a card, and the board's quota banner.
+  const quotaView = useBoardQuotaView(environmentId);
   usePruneWorkerThreadEnvironments(environmentId);
   // The strip's thread title and state are joined from the thread shells the
   // client already holds; nothing is duplicated onto the wire.
@@ -707,6 +710,7 @@ function useBoardPageModel({
                 state: cardWorkersState,
                 cardKeys,
                 projectName: projectNames.get(card.projectId) ?? "this project",
+                capacity: quotaView,
               });
         const resolved = boardQueueInfo({ slot, running, reason });
         if (resolved !== null) info.set(cardId, resolved);
@@ -1577,6 +1581,8 @@ function EnvironmentBoard({
 
   const canCreate = addProjects.length > 0;
 
+  const quotaView = useBoardQuotaView(environmentId);
+
   const view = (
     <BoardWorkersContext.Provider value={cardWorkersState}>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -1610,6 +1616,7 @@ function EnvironmentBoard({
             </Button>
           ) : null}
         </BoardTopBar>
+        <BoardQuotaBanner capacity={quotaView} cards={everyCard} workers={cardWorkersState} />
         {workerFilter.length === 0 ? null : (
           <BoardWorkerFilterStrip
             label={boardWorkerFilterLabel(workerFilter, cardWorkersState)}
