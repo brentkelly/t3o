@@ -32,6 +32,7 @@ interface Answers {
   seqs?: Array<number>;
   status?: Partial<BoardWorkerStatus>;
   refreshed?: Array<string>;
+  refreshHang?: boolean;
 }
 
 const layer = (answers: Answers) =>
@@ -42,10 +43,12 @@ const layer = (answers: Answers) =>
         Layer.succeed(BoardWorkerCapacity, {
           subscribe: () => Stream.never,
           refreshAccounts: () =>
-            Effect.sync(() => {
-              answers.refreshed?.push("local");
-              return snapshotWith("local@example.com");
-            }),
+            answers.refreshHang
+              ? Effect.never
+              : Effect.sync(() => {
+                  answers.refreshed?.push("local");
+                  return snapshotWith("local@example.com");
+                }),
         } as never),
         Layer.succeed(ServerEnvironment, {
           getEnvironmentId: Effect.succeed(EnvironmentId.make("env-board")),
@@ -164,4 +167,20 @@ it.effect("refreshing accounts publishes the worker's fresh snapshot, and refuse
       }).pipe(Effect.provide(layer(answers)));
     }
   }),
+);
+
+it.effect(
+  "a local account refresh that hangs gives up after a minute, as a remote one does",
+  () => {
+    const answers: Answers = { hang: false, refreshHang: true };
+    return Effect.gen(function* () {
+      const client = yield* BoardCapacityClient;
+      const pending = yield* client
+        .refreshAccounts(BOARD_LOCAL_WORKER_ID)
+        .pipe(Effect.result, Effect.forkChild);
+      yield* TestClock.adjust("60 seconds");
+      const result = yield* Fiber.join(pending);
+      assert.strictEqual(result._tag === "Failure" ? result.failure.code : null, "internal");
+    }).pipe(Effect.provide(layer(answers)));
+  },
 );

@@ -296,7 +296,16 @@ const makeBoardCapacityClient = Effect.gen(function* () {
     workerId: BoardWorkerId,
   ) {
     if (workerId === BOARD_LOCAL_WORKER_ID) {
-      const snapshot = yield* localCapacity.refreshAccounts(localBoardId);
+      const snapshot = yield* localCapacity.refreshAccounts(localBoardId).pipe(
+        Effect.timeout(REFRESH_ACCOUNTS_TIMEOUT),
+        Effect.mapError(
+          () =>
+            new BoardWorkerActionError({
+              code: "internal",
+              message: "This server couldn't refresh its accounts in time.",
+            }),
+        ),
+      );
       yield* publish(workerId, snapshot);
       return snapshot.providers;
     }
