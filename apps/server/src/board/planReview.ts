@@ -77,7 +77,9 @@ export function planReviewPolicy(input: {
   if (input.state.planReviewStartedAt === undefined || rounds === undefined) return null;
   return {
     targetRounds: rounds,
-    unattended: resolveCardPlanReview(input).unattended === true,
+    // A pending Auto-plan answers for the human, so the review runs unattended (T3O-141).
+    unattended:
+      resolveCardPlanReview(input).unattended === true || isBoardCardAutoPlanPending(input.card),
     splitApprovedAfterReview: input.card.pendingSplitApproval !== undefined,
   };
 }

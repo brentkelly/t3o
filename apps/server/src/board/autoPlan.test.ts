@@ -1413,6 +1413,27 @@ it.effect("an unreachable planning thread is left alone, not read as finished", 
   );
 });
 
+/** The policy an attended two-round review's agent was last told, from its round tool. */
+const ATTENDED_POLICY = "rounds=2;unattended=false;split=false";
+
+/** The review-policy steer telling the agent its review is now unattended. */
+const NOW_UNATTENDED = "The review is now unattended";
+const HUMAN_IS_BACK = "The human is back";
+
+const sendsContaining = (commands: ReadonlyArray<HarnessCommand>, text: string) =>
+  commands.filter((command) => command.type === "thread.send" && command.text.includes(text));
+
+/** The production engine feeds the supervisor's own card edits back to it; the harness does not,
+    so a test replays them, in order, to exercise their stance and policy arms. */
+const loopBackCardUpdates = (h: Harness, from: number) =>
+  Effect.gen(function* () {
+    const events = (yield* h.decided).slice(from);
+    for (const event of events) {
+      if (event.type === "board.card-updated") yield* h.pumpDomain(event);
+    }
+    return (yield* h.decided).length;
+  });
+
 /** A late plan review reopening the finished step, as the decider records it. */
 const lateReviewStarted = (state: BoardCardStepState, sequence: number) =>
   ({
@@ -1425,6 +1446,7 @@ const lateReviewStarted = (state: BoardCardStepState, sequence: number) =>
         status: "running",
         planReviewStartedAt: "1969-12-31T12:00:00.000Z",
         planReviewRounds: 2,
+        planReviewPolicySent: ATTENDED_POLICY,
       },
     },
   }) as unknown as HarnessEvent;
@@ -1441,37 +1463,48 @@ const failingAnswer = (local: LocalThreadGatewayShape): ThreadGatewayShape => ({
     ),
 });
 
-it.effect("Auto-plan turned on during a late plan review waits for the turn, no interrupt", () => {
-  const card = planningCard("review", { autoBuildSetting: true });
-  return withGovernor(
-    {
-      board: { cards: [card], plans: [plan("review", "one", 0)], nextCardNumberByProject: {} },
-      settings,
-    },
-    (h) =>
-      Effect.gen(function* () {
-        const id = BoardCardId.make("review");
-        const threadId = yield* finishedPlanning(h, id, card, (thread) => aliveThread(thread));
-        yield* h.pumpDomain(lateReviewStarted(boardCardStepState(yield* h.board, id)!, 3));
-        assert.strictEqual(boardCardStepState(yield* h.board, id)?.status, "running");
+it.effect(
+  "Auto-plan turned on during a late plan review makes it unattended, no interrupt and no Auto-plan text (T3O-141)",
+  () => {
+    const card = planningCard("review", { autoBuildSetting: true });
+    return withGovernor(
+      {
+        board: { cards: [card], plans: [plan("review", "one", 0)], nextCardNumberByProject: {} },
+        settings,
+      },
+      (h) =>
+        Effect.gen(function* () {
+          const id = BoardCardId.make("review");
+          const threadId = yield* finishedPlanning(h, id, card, (thread) => aliveThread(thread));
+          yield* h.pumpDomain(lateReviewStarted(boardCardStepState(yield* h.board, id)!, 3));
+          assert.strictEqual(boardCardStepState(yield* h.board, id)?.status, "running");
+          const decided = (yield* h.decided).length;
 
-        yield* setAutomation(h, id, { autoPlan: true, autoSignOff: true }, 4);
-        const commands = yield* h.commands;
-        assert.isFalse(commands.some((command) => command.type === "thread.interrupt"));
-        assert.lengthOf(sendsOf(commands, boardAutoPlanInstruction(true)), 0);
-        assert.isString(boardCardStepState(yield* h.board, id)?.reopenedAt);
+          yield* setAutomation(h, id, { autoPlan: true, autoSignOff: true }, 4);
+          yield* loopBackCardUpdates(h, decided);
+          const commands = yield* h.commands;
+          assert.isFalse(commands.some((command) => command.type === "thread.interrupt"));
+          assert.isFalse(commands.some((command) => command.type === "thread.send"));
+          const marked = yield* h.board;
+          assert.isUndefined(boardCardStepState(marked, id)?.reopenedAt);
+          assert.isTrue(cardOf(marked.cards, "review")?.planReview?.unattended);
+          assert.strictEqual(cardOf(marked.cards, "review")?.autoPlan?.endedAt, null);
 
-        yield* Ref.update(
-          h.shells,
-          (shells) => new Map([...shells, [threadId, fakeThreadState(threadId)]]),
-        );
-        yield* h.pumpRuntime(turnCompleted(ThreadId.make(threadId), "turn-live"));
-        assert.lengthOf(sendsOf(yield* h.commands, reopenedText(true)), 1);
-        yield* h.pumpDomain(completedAgain(id, 5));
-        assert.strictEqual(cardStage(yield* h.board, id), BOARD_SEED_STAGE_IDS.building);
-      }),
-  );
-});
+          yield* Ref.update(
+            h.shells,
+            (shells) => new Map([...shells, [threadId, fakeThreadState(threadId)]]),
+          );
+          yield* h.pumpRuntime(turnCompleted(ThreadId.make(threadId), "turn-live"));
+          const ended = yield* h.commands;
+          assert.lengthOf(sendsOf(ended, reopenedText(true)), 0);
+          assert.lengthOf(sendsContaining(ended, BOARD_AUTO_PLAN_INSTRUCTION), 0);
+          assert.lengthOf(sendsContaining(ended, NOW_UNATTENDED), 1);
+          yield* h.pumpDomain(completedAgain(id, 5));
+          assert.strictEqual(cardStage(yield* h.board, id), BOARD_SEED_STAGE_IDS.building);
+        }),
+    );
+  },
+);
 
 it.effect("a reopen whose answer fails ends Auto-plan and settles the finish back", () => {
   const card = planningCard("lost", { autoBuildSetting: true });
@@ -1858,3 +1891,230 @@ it.effect("an attended review is approved by Auto sign-off once it finishes (T3O
       }),
   );
 });
+
+// ── Auto-plan turned on while a plan review runs (T3O-141) ─────────────
+
+/** An attended two-round review the agent started from its first complete-step: the step is
+    still running, no success is recorded, and its thread is mid-turn running the reviewers. */
+const reviewUnderway = (
+  h: Harness,
+  id: BoardCardId,
+  card: BoardCard,
+  options: { readonly done?: boolean; readonly activeTurnRef?: string | null } = {},
+) =>
+  Effect.gen(function* () {
+    yield* h.pumpDomain(cardMoved(card, "sprint", "planning", 1));
+    const state = boardCardStepState(yield* h.board, id)!;
+    yield* h.pumpDomain({
+      type: "board.plan-review-started",
+      sequence: 2,
+      payload: {
+        cardId: state.cardId,
+        state: {
+          ...state,
+          planReviewStartedAt: NOW,
+          planReviewRounds: 2,
+          planReviewPolicySent:
+            card.planReview?.unattended === true
+              ? "rounds=2;unattended=true;split=false"
+              : ATTENDED_POLICY,
+          ...(options.done === true ? { planReviewDoneAt: NOW } : {}),
+        },
+      },
+    } as unknown as HarnessEvent);
+    const threadId = state.threadId!;
+    yield* Ref.update(
+      h.shells,
+      (shells) =>
+        new Map([
+          ...shells,
+          [
+            String(threadId),
+            aliveThread(String(threadId), {
+              activeTurnRef:
+                options.activeTurnRef === undefined ? "turn-review" : options.activeTurnRef,
+            }),
+          ],
+        ]),
+    );
+    assert.strictEqual(boardCardStepState(yield* h.board, id)?.status, "running");
+    return threadId;
+  });
+
+const attendedReview = { enabled: true, rounds: 2 } as const;
+
+const interruptsOrSends = (commands: ReadonlyArray<HarnessCommand>) =>
+  commands.filter(
+    (command) =>
+      command.type === "thread.interrupt" ||
+      command.type === "thread.send" ||
+      command.type === "thread.answer-pending-input",
+  );
+
+it.effect(
+  "Auto-plan on mid-review makes the review unattended without interrupting it; off again sends nothing",
+  () => {
+    const card = planningCard("busy-review", { planReview: attendedReview });
+    return withGovernor(
+      {
+        board: {
+          cards: [card],
+          plans: [plan("busy-review", "one", 0)],
+          nextCardNumberByProject: {},
+        },
+        settings,
+      },
+      (h) =>
+        Effect.gen(function* () {
+          const id = BoardCardId.make("busy-review");
+          const threadId = yield* reviewUnderway(h, id, card);
+          assert.isTrue(boardCardStepState(yield* h.board, id)?.humanInLoop);
+          let decided = (yield* h.decided).length;
+
+          yield* setAutomation(h, id, { autoPlan: true }, 3);
+          decided = yield* loopBackCardUpdates(h, decided);
+          assert.deepStrictEqual(interruptsOrSends(yield* h.commands), []);
+          const on = yield* h.board;
+          assert.deepStrictEqual(cardOf(on.cards, "busy-review")?.planReview, {
+            enabled: true,
+            rounds: 2,
+            unattended: true,
+          });
+          assert.strictEqual(cardOf(on.cards, "busy-review")?.autoPlan?.endedAt, null);
+          assert.isFalse(boardCardStepState(on, id)?.humanInLoop);
+          assert.include(
+            autoPlanNotes(yield* h.commands),
+            "Auto-plan is on: the plan review carries on, now unattended.",
+          );
+
+          // The turn ends: the review's own policy message goes out once, never the Auto-plan text.
+          yield* Ref.update(
+            h.shells,
+            (shells) => new Map([...shells, [String(threadId), fakeThreadState(String(threadId))]]),
+          );
+          yield* h.pumpRuntime(turnCompleted(threadId, "turn-review"));
+          const ended = yield* h.commands;
+          assert.lengthOf(sendsContaining(ended, NOW_UNATTENDED), 1);
+          assert.lengthOf(sendsContaining(ended, BOARD_AUTO_PLAN_INSTRUCTION), 0);
+          assert.lengthOf(sendsContaining(ended, "Switching to unattended"), 0);
+
+          const before = (yield* h.commands).length;
+          yield* setAutomation(h, id, { autoPlan: false }, 4);
+          yield* loopBackCardUpdates(h, decided);
+          const off = (yield* h.commands).slice(before);
+          assert.isFalse(off.some((command) => command.type === "thread.send"));
+          const after = yield* h.board;
+          assert.isTrue(cardOf(after.cards, "busy-review")?.planReview?.unattended);
+          assert.isString(cardOf(after.cards, "busy-review")?.autoPlan?.endedAt);
+          assert.isFalse(boardCardStepState(after, id)?.humanInLoop);
+        }),
+    );
+  },
+);
+
+it.effect(
+  "Auto-plan on while a finished review's agent is still summarising does not interrupt",
+  () => {
+    const card = planningCard("summarising", { planReview: attendedReview });
+    return withGovernor(
+      {
+        board: {
+          cards: [card],
+          plans: [plan("summarising", "one", 0)],
+          nextCardNumberByProject: {},
+        },
+        settings,
+      },
+      (h) =>
+        Effect.gen(function* () {
+          const id = BoardCardId.make("summarising");
+          yield* reviewUnderway(h, id, card, { done: true });
+          const decided = (yield* h.decided).length;
+          yield* setAutomation(h, id, { autoPlan: true }, 3);
+          yield* loopBackCardUpdates(h, decided);
+          assert.deepStrictEqual(interruptsOrSends(yield* h.commands), []);
+          assert.isTrue(cardOf((yield* h.board).cards, "summarising")?.planReview?.unattended);
+        }),
+    );
+  },
+);
+
+it.effect("Auto-plan on during an already unattended review sends nothing at all", () => {
+  const card = planningCard("quiet-review", { planReview: unattendedReview });
+  return withGovernor(
+    {
+      board: {
+        cards: [card],
+        plans: [plan("quiet-review", "one", 0)],
+        nextCardNumberByProject: {},
+      },
+      settings,
+    },
+    (h) =>
+      Effect.gen(function* () {
+        const id = BoardCardId.make("quiet-review");
+        yield* reviewUnderway(h, id, card, { activeTurnRef: null });
+        const decided = (yield* h.decided).length;
+        yield* setAutomation(h, id, { autoPlan: true }, 3);
+        yield* loopBackCardUpdates(h, decided);
+        assert.deepStrictEqual(interruptsOrSends(yield* h.commands), []);
+        assert.include(
+          autoPlanNotes(yield* h.commands),
+          "Auto-plan is on: the plan review carries on, already unattended.",
+        );
+        assert.isFalse(boardCardStepState(yield* h.board, id)?.humanInLoop);
+      }),
+  );
+});
+
+it.effect(
+  "Unattended turned off while Auto-plan is on waits for Auto-plan to end before the human is back",
+  () => {
+    const card = planningCard("handback", { planReview: attendedReview });
+    return withGovernor(
+      {
+        board: { cards: [card], plans: [plan("handback", "one", 0)], nextCardNumberByProject: {} },
+        settings,
+      },
+      (h) =>
+        Effect.gen(function* () {
+          const id = BoardCardId.make("handback");
+          yield* reviewUnderway(h, id, card, { activeTurnRef: null });
+          let decided = (yield* h.decided).length;
+          yield* setAutomation(h, id, { autoPlan: true }, 3);
+          decided = yield* loopBackCardUpdates(h, decided);
+          // Idle thread: the policy message goes out right away.
+          assert.lengthOf(sendsContaining(yield* h.commands, NOW_UNATTENDED), 1);
+
+          // The human turns the review's Unattended off while Auto-plan is still on.
+          let attended: BoardCard | undefined;
+          yield* Ref.update(h.model, (current) => ({
+            ...current,
+            board: {
+              ...current.board!,
+              cards: current.board!.cards.map((candidate) => {
+                if (candidate.id !== id) return candidate;
+                attended = { ...candidate, planReview: { ...attendedReview, unattended: false } };
+                return attended;
+              }),
+            },
+          }));
+          yield* h.pumpDomain({
+            type: "board.card-updated",
+            sequence: 4,
+            payload: { cardId: id, card: attended! },
+          } as unknown as HarnessEvent);
+          decided = (yield* h.decided).length;
+          assert.lengthOf(sendsContaining(yield* h.commands, HUMAN_IS_BACK), 0);
+
+          yield* setAutomation(h, id, { autoPlan: false }, 5);
+          yield* loopBackCardUpdates(h, decided);
+          const commands = yield* h.commands;
+          assert.lengthOf(sendsContaining(commands, HUMAN_IS_BACK), 1);
+          assert.lengthOf(sendsContaining(commands, "Switching"), 0);
+          assert.lengthOf(sendsOf(commands, boardAutoPlanOffInstruction({ reopened: false })), 0);
+          assert.isTrue(boardCardStepState(yield* h.board, id)?.humanInLoop);
+        }),
+    );
+  },
+);
