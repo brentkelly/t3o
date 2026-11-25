@@ -185,7 +185,12 @@ import {
   type UpdateBoardLabelInput,
 } from "../operations/boardCommands.ts";
 import type { EnvironmentShellState } from "./shell.ts";
-import { boardCapacityAction, boardCapacityViewStream } from "./boardCapacity.ts";
+import {
+  boardCapacityAction,
+  boardCapacityViewStream,
+  boardQuotaView,
+  EMPTY_BOARD_QUOTA_VIEW,
+} from "./boardCapacity.ts";
 import {
   boardCardLinkedThreadIds,
   type BoardCardThreadShells,
@@ -1044,10 +1049,22 @@ export function createBoardEnvironmentAtoms<R, ER>(
     subscribe: (_request: Record<string, never>) => boardCapacityViewStream(),
   });
 
+  /** T3o (T3O-139): which workers' providers are at their quota threshold, for the board page.
+      Changes only when a quota reading does, so the board doesn't re-render on every tick. */
+  const quotaAtom = Atom.family((environmentId: EnvironmentId) => {
+    let previous = EMPTY_BOARD_QUOTA_VIEW;
+    return Atom.make((get) => {
+      const result = get(capacityAtom({ environmentId, input: {} }));
+      previous = AsyncResult.isSuccess(result) ? boardQuotaView(result.value, previous) : previous;
+      return previous;
+    }).pipe(Atom.withLabel(`environment-board-quota:${environmentId}`));
+  });
+
   return {
     boardAtom,
     cardThreadShellsAtom,
     capacityAtom,
+    quotaAtom,
     capacityAction: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:capacity-action",
       execute: (input: BoardWorkersCapacityActionInput) => boardCapacityAction(input),

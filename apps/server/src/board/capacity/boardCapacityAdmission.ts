@@ -180,13 +180,23 @@ export function holdForDenial(
     readonly reason: string;
     readonly dimension?: BoardResourceDimension;
     readonly detail?: string;
+    readonly providerInstanceId?: string;
   },
   workerId: BoardWorkerId,
   kind: "placement" | "grow",
 ): CapacityHold {
   switch (answer.reason) {
     case "quota":
-      return { queuedBy: "quota", detail: { workerId }, blocksWorker: false };
+      return {
+        queuedBy: "quota",
+        detail: {
+          workerId,
+          ...(answer.providerInstanceId === undefined
+            ? {}
+            : { providerInstanceId: answer.providerInstanceId }),
+        },
+        blocksWorker: false,
+      };
     case "not-ready":
       return {
         queuedBy: "setup",

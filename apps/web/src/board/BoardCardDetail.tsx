@@ -80,6 +80,7 @@ import {
   useBoardCardShellThreads,
 } from "./boardCardThreadRows";
 import { boardThreadWorker, threadWorkerRanOn } from "./workers/threadWorker";
+import { useBoardQuotaView } from "./workers/BoardQuotaBanner";
 import { boardAttachmentLimits } from "./boardAttachmentUpload";
 import { boardConflictFix } from "./boardConflictFix";
 import { boardScheduleKind } from "./boardSchedule";
@@ -236,6 +237,8 @@ export function BoardCardDetail({
     pipelineCardProjectId === null ? null : (projectStageConfigs[pipelineCardProjectId] ?? null);
   // The board's workers, for the queue's reason.
   const workersState = useAtomValue(boardEnvironment.workersAtom(environmentId));
+  // T3o (T3O-139): which quota window holds the card.
+  const quotaView = useBoardQuotaView(environmentId);
   // Projects alone: the shell's thread pushes would re-render the open card.
   const projects = useAtomValue(environmentProjects.environmentProjectsAtom(environmentId));
 
@@ -665,6 +668,7 @@ export function BoardCardDetail({
           reason: boardQueueReason({
             card: cardShell,
             state: workersState,
+            capacity: quotaView,
             cardKeys: new Map(
               allShellCards.map((card) => [String(card.cardId), card.key] as const),
             ),

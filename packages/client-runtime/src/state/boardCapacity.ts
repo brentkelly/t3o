@@ -7,6 +7,7 @@ import {
   BOARD_WORKERS_WS_METHODS,
   type BoardResourceProfile,
   type BoardWorkerCapacitySnapshot,
+  type BoardWorkerProviderCapacity,
   type BoardWorkersCapacityActionInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -35,6 +36,34 @@ export const boardCapacityViewStream = () =>
         ),
     ),
   );
+
+/** T3o (T3O-139): per worker, only its providers at their quota threshold. */
+export type BoardQuotaView = ReadonlyMap<
+  string,
+  { readonly providers: ReadonlyArray<BoardWorkerProviderCapacity> }
+>;
+
+export const EMPTY_BOARD_QUOTA_VIEW: BoardQuotaView = new Map();
+
+/**
+ * The quota slice of the capacity view, `previous` itself while that slice is unchanged:
+ * the board reads it, and a snapshot's headroom moves far more often than its quota.
+ */
+export function boardQuotaView(view: BoardCapacityView, previous: BoardQuotaView): BoardQuotaView {
+  const next = new Map<
+    string,
+    { readonly providers: ReadonlyArray<BoardWorkerProviderCapacity> }
+  >();
+  for (const [workerId, snapshot] of view) {
+    const providers = snapshot.providers
+      .filter((provider) => provider.quota.exhausted)
+      // `agents` ticks with every turn; nothing quota copy reads.
+      .map((provider) => ({ ...provider, agents: { running: 0, max: null } }));
+    if (providers.length > 0) next.set(workerId, { providers });
+  }
+  if (next.size === 0) return EMPTY_BOARD_QUOTA_VIEW;
+  return JSON.stringify([...next]) === JSON.stringify([...previous]) ? previous : next;
+}
 
 /** Re-check readiness, or read a readiness or setup log. */
 export const boardCapacityAction = (input: BoardWorkersCapacityActionInput) =>

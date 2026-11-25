@@ -516,7 +516,7 @@ const CI_CLAIM = { providerInstanceId: null, force: false, noHolds: true } as co
 const freshPlacementPass = (): PlacementPass => ({ grants: new Map(), ahead: null });
 
 /** T3o: the hold a card's step takes when no worker can be placed on now (T3O-87). */
-function placementHold(wait: PlacementWait): CapacityHold {
+function placementHold(wait: PlacementWait, providerInstanceId: string | null): CapacityHold {
   if (wait.kind === "no-ready-worker") {
     return { queuedBy: "no-ready-worker", detail: null, blocksWorker: false };
   }
@@ -544,7 +544,11 @@ function placementHold(wait: PlacementWait): CapacityHold {
         blocksWorker: false,
       };
     case "quota":
-      return { queuedBy: "quota", detail: worker, blocksWorker: false };
+      return {
+        queuedBy: "quota",
+        detail: { ...worker, ...(providerInstanceId === null ? {} : { providerInstanceId }) },
+        blocksWorker: false,
+      };
     case "setting-up":
       return { queuedBy: "setup", detail: worker, blocksWorker: false };
     case "not-ready":
@@ -2061,7 +2065,7 @@ const make = Effect.gen(function* () {
                 detail: { workerId: wait.workerId },
                 blocksWorker: false,
               } satisfies CapacityHold)
-            : placementHold(wait),
+            : placementHold(wait, claimFor.providerInstanceId),
       context,
     };
   });

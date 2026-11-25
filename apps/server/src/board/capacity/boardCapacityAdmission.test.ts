@@ -771,6 +771,10 @@ it("a denial's hold: capacity blocks the worker for placements only", () => {
   });
   assert.isFalse(holdForDenial({ reason: "capacity" }, W1, "grow").blocksWorker);
   assert.strictEqual(holdForDenial({ reason: "quota" }, W1, "placement").queuedBy, "quota");
+  assert.deepStrictEqual(
+    holdForDenial({ reason: "quota", providerInstanceId: "claude" }, W1, "placement").detail,
+    { workerId: W1, providerInstanceId: "claude" },
+  );
   assert.strictEqual(holdForDenial({ reason: "not-ready" }, W1, "placement").queuedBy, "setup");
   // A failing readiness check needs a human; a check still running ends by itself.
   assert.deepStrictEqual(

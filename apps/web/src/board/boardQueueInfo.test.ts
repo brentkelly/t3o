@@ -132,9 +132,32 @@ describe("boardQueueInfo with worker capacity (T3O-86)", () => {
   it("names quota, the agent cap and a worker that needs updating", () => {
     const of = (kind: "quota" | "agent-cap" | "needs-update") =>
       boardQueueInfo({ slot: slot(1, 1), running: 1, reason: { kind, worker: "build-01" } })!;
-    expect(of("quota").label).toBe("Queued #1 · provider near quota");
+    expect(of("quota")).toMatchObject({ blocked: true, label: "Provider near quota" });
+    expect(of("quota").detail).toContain("Start now");
     expect(of("agent-cap").detail).toContain("as many agents at once as it allows");
     expect(of("needs-update").detail).toContain("pnpm t3o-update");
+  });
+
+  it("names a quota hold's window, percent and reset, in amber (T3O-139)", () => {
+    const quota = (resets: string | null) =>
+      boardQueueInfo({
+        slot: slot(2, 3),
+        running: 1,
+        reason: {
+          kind: "quota",
+          worker: "build-01",
+          limit: { provider: "Claude", window: "weekly", percent: 95, resets },
+        },
+      })!;
+    expect(quota("Wed 6:00 pm")).toMatchObject({
+      blocked: true,
+      label: "Claude weekly limit",
+      headline: "Claude weekly limit at 95% on build-01",
+    });
+    expect(quota("Wed 6:00 pm").detail).toBe(
+      "It resets Wed 6:00 pm, and this card starts by itself then. Start now starts it anyway, and it pauses if it reaches the limit.",
+    );
+    expect(quota(null).detail).toMatch(/^This card starts by itself once it resets\. Start now/);
   });
 
   it("tells a checkout on its way from a worker that needs a human, and the card's own setup", () => {
