@@ -6,12 +6,15 @@ import { refreshAccountsBlocked, refreshAccountsLines } from "./refreshAccounts.
 const provider = (
   account: BoardWorkerProviderCapacity["account"],
   windows: BoardWorkerProviderCapacity["quota"]["windows"] = [],
+  driver = "claudeAgent",
+  instanceId = driver,
 ) =>
   ({
-    driver: "claudeAgent",
+    instanceId,
+    driver,
     account,
     quota: { exhausted: false, checkedAt: null, resetsAt: null, windows },
-  }) as Pick<BoardWorkerProviderCapacity, "driver" | "account" | "quota">;
+  }) as Pick<BoardWorkerProviderCapacity, "instanceId" | "driver" | "account" | "quota">;
 
 describe("refreshAccountsBlocked", () => {
   it.each([
@@ -34,13 +37,13 @@ describe("refreshAccountsLines", () => {
           { label: "Weekly", usedPercent: 12, resetsAt: null, gating: true },
           { label: "Opus weekly", usedPercent: 90, resetsAt: null, gating: false },
         ]),
-        provider({ status: "unknown" }),
-        provider({ status: "signed-out" }),
+        provider({ status: "unknown" }, [], "codex"),
+        provider({ status: "signed-out" }, [], "claudeAgent", "claude-work"),
       ]),
     ).toEqual([
-      "Claude: dana@acme.io · Session 3% · Weekly 12%",
-      "Claude: account unknown",
-      "Claude: signed out",
+      "Claude (claudeAgent): dana@acme.io · Session 3% · Weekly 12%",
+      "Codex: account unknown",
+      "Claude (claude-work): signed out",
     ]);
   });
 });

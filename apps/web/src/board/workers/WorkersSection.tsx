@@ -638,7 +638,10 @@ function WorkerMenu(props: {
       description:
         lines.length === 0
           ? "No providers are enabled there."
-          : lines.map((line) => <div key={line}>{line}</div>),
+          : lines.map((line, index) => (
+              // oxlint-disable-next-line react/no-array-index-key -- a fixed list in a one-shot toast
+              <div key={index}>{line}</div>
+            )),
     });
   };
   return (

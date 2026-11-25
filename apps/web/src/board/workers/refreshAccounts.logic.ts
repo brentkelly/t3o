@@ -22,12 +22,18 @@ export function refreshAccountsBlocked(
   return null;
 }
 
-/** "Claude: dana@acme.io · Weekly 12%", one line per provider the worker read. */
+/** "Claude: dana@acme.io · Weekly 12%", one line per provider the worker read. A driver with
+    several instances names each one, so their lines can be told apart. */
 export function refreshAccountsLines(
-  providers: ReadonlyArray<Pick<BoardWorkerProviderCapacity, "driver" | "account" | "quota">>,
+  providers: ReadonlyArray<
+    Pick<BoardWorkerProviderCapacity, "instanceId" | "driver" | "account" | "quota">
+  >,
 ): ReadonlyArray<string> {
   return providers.map((provider) => {
-    const name = boardQuotaProviderName(provider);
+    const shared = providers.filter((other) => other.driver === provider.driver).length > 1;
+    const name = shared
+      ? `${boardQuotaProviderName(provider)} (${provider.instanceId})`
+      : boardQuotaProviderName(provider);
     const account =
       provider.account.email ??
       (provider.account.status === "signed-out" ? "signed out" : "account unknown");

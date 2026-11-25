@@ -7,7 +7,6 @@ import {
   boardRepositoryGroupingKey,
   normalizeBoardReadinessPath,
   type ProjectId,
-  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeOS from "node:os";
 
@@ -53,6 +52,7 @@ import {
 import { EMPTY_CAPACITY_STATE, type CapacityRecord } from "./capacityModel.ts";
 import { makeCardSetup } from "./cardSetup.ts";
 import { BoardMachine, bytesToGB } from "./machine.ts";
+import { makeProviderAccountRefresh } from "./providerAccountRefresh.ts";
 import { makeReadiness } from "./readiness.ts";
 import {
   READINESS_GIT_GUARD,
@@ -118,41 +118,16 @@ const makeBoardWorkerCapacityLive = Effect.gen(function* () {
   const ownBoardId = yield* Effect.flatMap(ServerEnvironment, (env) => env.getEnvironmentId);
   const registry = yield* Effect.serviceOption(ProviderRegistry);
   const instances = yield* Effect.serviceOption(ProviderInstanceRegistry);
-  /** The account each provider last read, so the log names it only when it changes. */
-  let accountsRead = new Map<string, string>();
-  // Logged beside the account so a login made as another user or home diagnoses itself.
-  const accountHome = {
-    HOME: Option.getOrNull(yield* Config.String("HOME").pipe(Config.option)),
-    CLAUDE_CONFIG_DIR: Option.getOrNull(
-      yield* Config.String("CLAUDE_CONFIG_DIR").pipe(Config.option),
-    ),
-  };
-
-  /** Invalidating first is what makes a re-login show: Claude's probe cache outlives it. */
-  const refreshProviderAccount: WorkerCapacityPorts["refreshProviderAccount"] = (
-    instanceId,
-    options,
-  ) =>
-    Option.match(registry, {
-      onNone: () => Effect.void,
-      onSome: Effect.fn("BoardWorkerCapacity.refreshProviderAccount")(function* (service) {
-        const id = instanceId as ProviderInstanceId;
-        const instance = Option.isSome(instances)
-          ? yield* instances.value.getInstance(id)
-          : undefined;
-        yield* instance?.invalidateCaches ?? Effect.void;
-        const providers = yield* service.refreshInstance(id);
-        const provider = providers.find((candidate) => candidate.instanceId === instanceId);
-        const account = provider?.auth.email ?? `auth ${provider?.auth.status ?? "missing"}`;
-        if (options?.manual !== true && accountsRead.get(instanceId) === account) return;
-        accountsRead = new Map(accountsRead).set(instanceId, account);
-        yield* Effect.logInfo("board worker read provider account", {
-          instanceId,
-          account,
-          ...accountHome,
-        });
-      }),
-    });
+  const refreshProviderAccount = yield* makeProviderAccountRefresh({
+    refreshInstance: Option.map(registry, (service) => service.refreshInstance),
+    getInstance: Option.map(instances, (service) => service.getInstance),
+    home: {
+      HOME: Option.getOrNull(yield* Config.String("HOME").pipe(Config.option)),
+      CLAUDE_CONFIG_DIR: Option.getOrNull(
+        yield* Config.String("CLAUDE_CONFIG_DIR").pipe(Config.option),
+      ),
+    },
+  });
 
   const ownerFor = (boardId: string): BoardWorktreeOwner =>
     boardId === ownBoardId ? "self" : boardWorktreeOwnerOf(boardId);
