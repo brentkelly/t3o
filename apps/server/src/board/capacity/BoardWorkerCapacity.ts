@@ -1080,8 +1080,8 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
   let hadAccount = new Set<string>();
 
   /** Upstream refreshes usage only while a UI client is connected, which a headless worker
-      never has: a provider at its limit, whose probe failed, or that lost its account is
-      re-probed here every five minutes. */
+      never has: a provider at its limit, whose probe failed, that is signed out (a re-probe
+      between /logout and /login) or that lost its account is re-probed every five minutes. */
   const refreshQuota = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const settings = yield* ports.settings;
@@ -1095,6 +1095,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
       const due =
         providerQuota(provider, quotaThresholdsOf(settings), now).exhausted ||
         provider.usageLimits?.unavailable?.reason === "probeFailed" ||
+        provider.auth.status === "unauthenticated" ||
         (provider.auth.status === "unknown" && hadAccount.has(provider.instanceId));
       if (!due) continue;
       const last = quotaRefreshedAt.get(provider.instanceId);

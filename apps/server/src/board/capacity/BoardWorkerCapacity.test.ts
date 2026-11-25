@@ -347,6 +347,12 @@ it.effect("the background refresh re-probes a provider in trouble every five min
         unavailable: { reason: "probeFailed" },
       },
     } as unknown as ServerProvider;
+    // Signed out between /logout and /login: nothing else re-probes it on a headless worker.
+    const signedOut = {
+      ...provider("signed-out", []),
+      auth: { status: "unauthenticated" },
+      usageLimits: undefined,
+    } as unknown as ServerProvider;
     const lostAccount = provider("lost-account", [
       { kind: "weekly", label: "Weekly", usedPercent: 10 },
     ]);
@@ -366,6 +372,7 @@ it.effect("the background refresh re-probes a provider in trouble every five min
       exhausted,
       healthy,
       probeFailed,
+      signedOut,
       lostAccount,
       neverHadAccount,
       disabled,
@@ -374,7 +381,7 @@ it.effect("the background refresh re-probes a provider in trouble every five min
     const made = yield* makeBoardWorkerCapacity(portsOver(fakes));
     const fiber = yield* Effect.forkChild(made.background);
     yield* TestClock.adjust(1);
-    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed"]);
+    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed", "signed-out"]);
 
     // A failed probe after a re-login leaves auth unknown with no usage: it once had an account.
     fakes.providers = fakes.providers.map((candidate) =>
@@ -390,9 +397,14 @@ it.effect("the background refresh re-probes a provider in trouble every five min
     yield* TestClock.adjust(3 * 60_000);
     assert.deepStrictEqual(fakes.refreshed, []);
     yield* TestClock.adjust(60_000);
-    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed"]);
+    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed", "signed-out"]);
     yield* TestClock.adjust(60_000);
-    assert.deepStrictEqual(fakes.refreshed, ["exhausted", "probe-failed", "lost-account"]);
+    assert.deepStrictEqual(fakes.refreshed, [
+      "exhausted",
+      "probe-failed",
+      "signed-out",
+      "lost-account",
+    ]);
     yield* Fiber.interrupt(fiber);
   }).pipe(withMachine(fakes), Effect.provide(TestClock.layer()));
 });
