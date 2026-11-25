@@ -92,14 +92,25 @@ A card is placed on a worker when its build starts, not before. The board picks 
 are online, ready for the project, signed in to the step's provider with quota to spare, not
 reserved, and with room for the whole card:
 
-1. **Warm first:** a worker that finished building one of this board's cards for the same repository
+1. **Fewest active cards first:** the worker with the fewest of this board's cards building, in
+   review or in CI.
+2. Then **warm:** a worker that finished building one of this board's cards for the same repository
    in the last 24 hours, the most recent first. Reviews and CI don't count.
-2. Then the worker with the most room left after the card.
+3. Then the worker with the most room left after the card.
 
-The card's **Worker** row says where it was placed, when, and why ("offered the most RAM among ready
-workers", "built z5 most recently", "pinned"), or **Not placed yet: chosen when the build starts**.
-The board server is in the pool when it's ready; declare it zero build capacity to keep it for
-planning only.
+The board server goes last, because it also serves the app and runs every planning thread. It goes
+first only when nothing at all is running on it (no planning, build or chat of your own) and every
+other worker already has a card. It still takes the card whenever no other worker can, so a card
+never waits for a remote worker. To keep builds off the board server entirely, declare it zero
+build capacity.
+
+Workers are compared by how many cards they have, not how big those cards are, and only this
+board's cards count: a worker shared with another board can look emptier than it is, though its free
+room still limits what it takes.
+
+The card's **Worker** row says where it was placed, when, and why ("fewest active cards among ready
+workers", "built z5 most recently", "this server had nothing running", "no other worker could take
+it", "pinned"), or **Not placed yet: chosen when the build starts**.
 
 **Pin builds to…** in a card's details restricts its builds to one worker; it doesn't affect
 planning. To pin a card as you create it, use the pin icon beside the clock in the New card dialog's
