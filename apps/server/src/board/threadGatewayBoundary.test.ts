@@ -29,6 +29,10 @@ const ALLOWED_UPSTREAM_IMPORTS = new Map([
     "provider/ProviderRegistry.ts",
     "a worker reporting its own provider instances to a central board (T3O-62); no threads",
   ],
+  [
+    "provider/ProviderInstanceRegistry.ts",
+    "a worker re-probing its own provider account after a re-login (T3O-140); no threads",
+  ],
 ]);
 
 /**

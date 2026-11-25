@@ -573,7 +573,9 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       const accountConfigPath = path.join(fixtures.claudeHomePath, ".claude.json");
       yield* fs.writeFileString(
         accountConfigPath,
-        JSON.stringify({ oauthAccount: { organizationUuid: "org-a" } }),
+        JSON.stringify({
+          oauthAccount: { organizationUuid: "org-a", emailAddress: "account-a@example.com" },
+        }),
       );
       const claudeId = ProviderInstanceId.make("claude_probe_recovery");
       let probeCount = 0;
@@ -638,10 +640,28 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       expect(first.usageLimits?.unavailable).toBeUndefined();
       expect(probeCount).toBe(1);
 
+      // A re-login to another seat in the same organization must not republish the old account.
       yield* TestClock.adjust("1 second");
       yield* fs.writeFileString(
         accountConfigPath,
-        JSON.stringify({ oauthAccount: { organizationUuid: "org-b" } }),
+        JSON.stringify({
+          oauthAccount: { organizationUuid: "org-a", emailAddress: "seat-two@example.com" },
+        }),
+      );
+      yield* claude!.invalidateCaches ?? Effect.void;
+      failProbe = true;
+      const seatSwitchedFailure = yield* claude!.snapshot.refresh;
+      expect(seatSwitchedFailure.auth.status).toBe("unknown");
+      expect(seatSwitchedFailure.auth.email).toBeUndefined();
+      expect(seatSwitchedFailure.usageLimits).toBeUndefined();
+      failProbe = false;
+
+      yield* TestClock.adjust("1 second");
+      yield* fs.writeFileString(
+        accountConfigPath,
+        JSON.stringify({
+          oauthAccount: { organizationUuid: "org-b", emailAddress: "Account-B@example.com" },
+        }),
       );
       yield* claude!.invalidateCaches ?? Effect.void;
       failProbe = true;

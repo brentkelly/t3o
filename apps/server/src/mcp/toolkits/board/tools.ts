@@ -38,6 +38,7 @@ import {
   TrimmedNonEmptyString,
   BoardCardCapacityView,
   BoardCardSize,
+  BoardWorkerProviderCapacity,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -579,6 +580,19 @@ const BoardUnarchiveCardTool = Tool.make("board_unarchive_card", {
   dependencies,
 }).annotate(Tool.Title, "Unarchive board card");
 
+// T3o: Refresh accounts for agents (T3O-140).
+const BoardRefreshWorkerAccountsTool = Tool.make("board_refresh_worker_accounts", {
+  description:
+    "Re-check one worker's provider accounts and usage now. Use it when a provider on a worker was signed in again, or the account or quota the board shows for it looks stale. workerId takes a worker's id or label; 'local' or the board server's own label is the board server. Answers each enabled provider's account and quota as the worker now reads them. Refused for an offline worker or one that needs a T3o update.",
+  parameters: Schema.Struct({ workerId: TrimmedNonEmptyString }),
+  success: Schema.Array(BoardWorkerProviderCapacity),
+  failure: BoardToolFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "Refresh worker accounts")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Idempotent, true);
+
 const BoardDeleteCardTool = Tool.make("board_delete_card", {
   description:
     "Delete a card outright. IRREVERSIBLE and not what you want in most cases: the card leaves the board entirely, its rows are purged from every board table, the threads linked to it are deleted with their whole conversation, and its worktree and board/* branches are reclaimed, and unmerged work on that branch is gone. Its key is never re-issued. Prefer board_archive_card, which is reversible and keeps all of that; delete only when a human asked for a card and its history to be destroyed, or for a card created in error. Rejected on a card whose plan cards still exist (delete those first), on a card with WORK IN FLIGHT (a step that has not settled means an agent is inside that worktree, so archive it or wait instead), and on YOUR OWN card (deleting the card you are working on would delete this thread and the worktree you are running in, so ask a human to do it from the app).",
@@ -915,6 +929,7 @@ export const BoardToolkit = Toolkit.make(
   BoardArchiveCardTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardUnarchiveCardTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardDeleteCardTool.annotate(McpSchema.EnabledWhen, shownToThreads),
+  BoardRefreshWorkerAccountsTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardIndentCardsTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardOutdentCardsTool.annotate(McpSchema.EnabledWhen, shownToThreads),
   BoardGroupCardsTool.annotate(McpSchema.EnabledWhen, shownToThreads),

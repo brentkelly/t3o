@@ -48,6 +48,7 @@ import {
   type ProjectId,
   type ThreadId,
   type BoardWorkersCapacityActionInput,
+  type BoardWorkersRefreshAccountsInput,
 } from "@t3tools/contracts";
 import {
   type BoardThreadShellFields,
@@ -188,6 +189,7 @@ import type { EnvironmentShellState } from "./shell.ts";
 import {
   boardCapacityAction,
   boardCapacityViewStream,
+  boardRefreshAccounts,
   boardQuotaView,
   EMPTY_BOARD_QUOTA_VIEW,
 } from "./boardCapacity.ts";
@@ -1073,6 +1075,10 @@ export function createBoardEnvironmentAtoms<R, ER>(
     capacityAction: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:board:capacity-action",
       execute: (input: BoardWorkersCapacityActionInput) => boardCapacityAction(input),
+    }),
+    refreshAccounts: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:board:refresh-accounts",
+      execute: (input: BoardWorkersRefreshAccountsInput) => boardRefreshAccounts(input),
     }),
     ciLogAtom,
     ciLogDownloadAtom,

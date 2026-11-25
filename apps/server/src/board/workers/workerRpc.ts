@@ -28,6 +28,7 @@ import {
   t3oBoardUserSubject,
   type AuthEnvironmentScope,
   type BoardWorkersCapacityActionInput,
+  type BoardWorkersRefreshAccountsInput,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -39,6 +40,7 @@ import { EnvironmentAuth, type AuthenticatedSession } from "../../auth/Environme
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import { BoardCapacityClient } from "../capacity/BoardCapacityClient.ts";
 import { BoardWorkerCapacity } from "../capacity/BoardWorkerCapacity.ts";
 import { boardCapacityAction, boardCapacityStream } from "../capacity/boardCapacityRpc.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -250,6 +252,12 @@ export const boardWorkerRpcHandlers = (currentSession: AuthenticatedSession) =>
             ),
       [BOARD_WORKERS_WS_METHODS.capacityAction]: (input: BoardWorkersCapacityActionInput) =>
         authorized(BOARD_WORKERS_WS_METHODS.capacityAction, boardCapacityAction(input)),
+      // T3o: Refresh accounts (T3O-140).
+      [BOARD_WORKERS_WS_METHODS.refreshAccounts]: (input: BoardWorkersRefreshAccountsInput) =>
+        authorized(
+          BOARD_WORKERS_WS_METHODS.refreshAccounts,
+          Effect.flatMap(BoardCapacityClient, (client) => client.refreshAccounts(input.workerId)),
+        ),
 
       // ── Worker: answering a central server ──────────────────────────
       [BOARD_WORKER_WS_METHODS.hello]: (_input: Record<string, never>) =>

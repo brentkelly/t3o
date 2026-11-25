@@ -95,6 +95,7 @@ type CallerBound =
   | "actuals"
   | "launchScheduleRun"
   | "pruneScheduleRuns"
+  | "refreshAccounts"
   | ThreadMutation
   | "runCi"
   | "readCiLog"
@@ -202,6 +203,10 @@ export type WorkerGatewayHostShape = Omit<
     input: BoardGatewayPruneScheduleRunsInput,
     caller: GatewayCaller,
   ) => Effect.Effect<BoardGatewayLaunchScheduleRunResult, BoardWorkerGatewayError>;
+  /** T3o: re-probe this worker's provider accounts, for a board's session (T3O-140). */
+  readonly refreshAccounts: (
+    caller: GatewayCaller,
+  ) => Effect.Effect<BoardWorkerCapacitySnapshot, BoardWorkerGatewayError>;
   readonly subscribeMcpRelay: (
     centralEnvironmentId: EnvironmentId,
     caller: AuthSessionId,
@@ -240,6 +245,7 @@ export const hostForSession = (
   actuals: (input) => host.actuals(input, caller),
   launchScheduleRun: (input) => host.launchScheduleRun(input, caller),
   pruneScheduleRuns: (input) => host.pruneScheduleRuns(input, caller),
+  refreshAccounts: () => host.refreshAccounts(caller),
   interrupt: (input) => host.interrupt(input, caller),
   stopSession: (input) => host.stopSession(input, caller),
   settle: (input) => host.settle(input, caller),
@@ -811,6 +817,10 @@ export const makeWorkerGatewayHost = Effect.gen(function* () {
     checkReadiness: (input, caller) =>
       capacityOf("checkReadiness", caller).pipe(
         Effect.flatMap(({ service, boardId }) => service.checkReadiness(boardId, input)),
+      ),
+    refreshAccounts: (caller) =>
+      capacityOf("refreshAccounts", caller).pipe(
+        Effect.flatMap(({ service, boardId }) => service.refreshAccounts(boardId)),
       ),
     readinessOutput: (repositoryKey, path, caller) =>
       capacityOf("readinessOutput", caller).pipe(

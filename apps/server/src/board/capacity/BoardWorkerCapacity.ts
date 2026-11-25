@@ -88,9 +88,16 @@ const MEASURE_INTERVAL_MS = 5 * 60_000;
     is re-measured at the normal pace for a while after finishing, then only rarely. */
 const FINISHED_REMEASURE_WINDOW_MS = 2 * 60 * 60_000;
 const FINISHED_MEASURE_INTERVAL_MS = 6 * 60 * 60_000;
-/** Usage is refreshed this often while a gating window is at the threshold, and on a
-    placement claim when the reading is older. */
+/** A placement claim refreshes a usage reading older than this first. */
 const QUOTA_REFRESH_MS = 10 * 60_000;
+/** A provider at its limit, whose probe failed, or whose account went unknown is re-probed
+    this often, so a re-login on a headless worker reaches the board within minutes (T3O-140). */
+const QUOTA_ATTENTION_REFRESH_MS = 5 * 60_000;
+/** A provider in trouble (signed out, probe failed, account gone) backs off from that, doubling
+    per probe up to this, so one that never recovers isn't probed every five minutes forever. A
+    provider only at its limit keeps the five minutes: its limit resets on its own. */
+const TROUBLE_REFRESH_MAX_MS = 60 * 60_000;
+const QUOTA_ATTENTION_TICK_MS = 60_000;
 /** A claim waits this long for a stale usage reading, then decides on what it has. */
 const CLAIM_QUOTA_REFRESH_TIMEOUT_MS = 2_000;
 
@@ -111,7 +118,12 @@ export interface WorkerCapacityPorts {
   /** The threads that may be running, never every thread: only running ones count. */
   readonly threads: Effect.Effect<ReadonlyArray<CapacityThread>>;
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
-  readonly refreshProviderUsage: (instanceId: string) => Effect.Effect<void>;
+  /** Re-probe this provider's account and usage now, bypassing cached probes; resolves after
+      the registry holds the result. `manual` is a human's Refresh accounts. */
+  readonly refreshProviderAccount: (
+    instanceId: string,
+    options?: { readonly manual?: boolean },
+  ) => Effect.Effect<void>;
   /** Null when the worker is ready for the repository, else why not (section 5). */
   readonly notReady: (
     boardId: string,
@@ -226,6 +238,8 @@ export interface BoardWorkerCapacityShape {
   ) => Effect.Effect<BoardCapacityHoldResult>;
   readonly releaseHold: (boardId: string, cardId: string) => Effect.Effect<void>;
   readonly snapshot: (boardId: string) => Effect.Effect<BoardWorkerCapacitySnapshot>;
+  /** Re-probe every enabled provider's account and usage now, then the snapshot (T3O-140). */
+  readonly refreshAccounts: (boardId: string) => Effect.Effect<BoardWorkerCapacitySnapshot>;
   /** The snapshot now, then on every meaningful change, at most every 5 s. */
   readonly subscribe: (boardId: string) => Stream.Stream<BoardWorkerCapacitySnapshot>;
   /** A board left: its records and claims go. */
@@ -395,6 +409,8 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
     Effect.catchCause(() => Effect.succeed(EMPTY_CAPACITY_STATE)),
   );
   let quotaRefreshedAt = new Map<string, number>();
+  /** Consecutive background probes that found each provider in trouble. */
+  let troubleProbes = new Map<string, number>();
 
   const persistBoard = (boardId: string) =>
     ports.store.saveBoard(
@@ -484,7 +500,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
     if (last !== undefined && now - last < QUOTA_REFRESH_MS) return;
     quotaRefreshedAt = new Map(quotaRefreshedAt).set(providerInstanceId, now);
     yield* ports
-      .refreshProviderUsage(providerInstanceId)
+      .refreshProviderAccount(providerInstanceId)
       .pipe(Effect.timeout(CLAIM_QUOTA_REFRESH_TIMEOUT_MS), Effect.ignore);
   });
 
@@ -1066,20 +1082,65 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
     }
   }).pipe(Effect.withSpan("BoardWorkerCapacity.measure"));
 
-  /** Usage refreshes every ten minutes while a gating window is at the threshold: upstream
-      refreshes only while a UI client is connected, which a headless worker never has. */
+  /** Instances that ever reported an account: auth unknown is healthy for some drivers. */
+  let hadAccount = new Set<string>();
+
+  /** Upstream refreshes usage only while a UI client is connected, which a headless worker
+      never has: a provider at its limit, whose probe failed, that is signed out (a re-probe
+      between /logout and /login) or that lost its account is re-probed every five minutes; all
+      but the one at its limit back off to hourly while the trouble lasts. */
   const refreshQuota = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const settings = yield* ports.settings;
     for (const provider of yield* ports.providers) {
-      if (!provider.enabled) continue;
-      const quota = providerQuota(provider, quotaThresholdsOf(settings), now);
-      if (!quota.exhausted) continue;
+      if (provider.auth.email !== undefined || provider.usageLimits !== undefined) {
+        if (!hadAccount.has(provider.instanceId)) {
+          hadAccount = new Set(hadAccount).add(provider.instanceId);
+        }
+      }
+      const trouble =
+        provider.usageLimits?.unavailable?.reason === "probeFailed" ||
+        provider.auth.status === "unauthenticated" ||
+        (provider.auth.status === "unknown" && hadAccount.has(provider.instanceId));
+      if (!trouble && troubleProbes.has(provider.instanceId)) {
+        troubleProbes = new Map(troubleProbes);
+        troubleProbes.delete(provider.instanceId);
+      }
+      if (!provider.enabled || !provider.installed) continue;
+      if (!trouble && !providerQuota(provider, quotaThresholdsOf(settings), now).exhausted) {
+        continue;
+      }
       const last = quotaRefreshedAt.get(provider.instanceId);
-      if (last !== undefined && now - last < QUOTA_REFRESH_MS) continue;
+      const probes = troubleProbes.get(provider.instanceId) ?? 0;
+      const interval = trouble
+        ? Math.min(
+            QUOTA_ATTENTION_REFRESH_MS * 2 ** Math.max(probes - 1, 0),
+            TROUBLE_REFRESH_MAX_MS,
+          )
+        : QUOTA_ATTENTION_REFRESH_MS;
+      if (last !== undefined && now - last < interval) continue;
       quotaRefreshedAt = new Map(quotaRefreshedAt).set(provider.instanceId, now);
-      yield* ports.refreshProviderUsage(provider.instanceId).pipe(Effect.ignore);
+      if (trouble) troubleProbes = new Map(troubleProbes).set(provider.instanceId, probes + 1);
+      yield* ports.refreshProviderAccount(provider.instanceId).pipe(Effect.ignore);
     }
+  });
+
+  const refreshAccounts: BoardWorkerCapacityShape["refreshAccounts"] = Effect.fn(
+    "BoardWorkerCapacity.refreshAccounts",
+  )(function* (boardId) {
+    const now = yield* Clock.currentTimeMillis;
+    const enabled = (yield* ports.providers).filter((provider) => provider.enabled);
+    yield* Effect.forEach(
+      enabled,
+      (provider) =>
+        ports.refreshProviderAccount(provider.instanceId, { manual: true }).pipe(Effect.ignore),
+      { concurrency: "unbounded", discard: true },
+    );
+    quotaRefreshedAt = new Map([
+      ...quotaRefreshedAt,
+      ...enabled.map((provider) => [provider.instanceId, now] as const),
+    ]);
+    return yield* snapshot(boardId);
   });
 
   return {
@@ -1095,6 +1156,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
       hold,
       releaseHold: releaseHoldOf,
       snapshot,
+      refreshAccounts,
       subscribe,
       forgetBoard: forget,
       boardIds: Effect.sync(() => [
@@ -1115,7 +1177,7 @@ export const makeBoardWorkerCapacity = Effect.fn("makeBoardWorkerCapacity")(func
     background: Effect.all(
       [
         measure.pipe(Effect.ignore, Effect.repeat(Schedule.spaced(MEASURE_INTERVAL_MS))),
-        refreshQuota.pipe(Effect.ignore, Effect.repeat(Schedule.spaced(QUOTA_REFRESH_MS))),
+        refreshQuota.pipe(Effect.ignore, Effect.repeat(Schedule.spaced(QUOTA_ATTENTION_TICK_MS))),
       ],
       { concurrency: "unbounded", discard: true },
     ),

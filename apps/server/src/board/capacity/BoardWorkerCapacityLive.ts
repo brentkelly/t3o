@@ -7,13 +7,13 @@ import {
   boardRepositoryGroupingKey,
   normalizeBoardReadinessPath,
   type ProjectId,
-  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeOS from "node:os";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as DateTime from "effect/DateTime";
@@ -27,6 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../../config.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { BoardActualsMeter } from "../actuals/BoardActualsMeter.ts";
@@ -51,6 +52,7 @@ import {
 import { EMPTY_CAPACITY_STATE, type CapacityRecord } from "./capacityModel.ts";
 import { makeCardSetup } from "./cardSetup.ts";
 import { BoardMachine, bytesToGB } from "./machine.ts";
+import { makeProviderAccountRefresh } from "./providerAccountRefresh.ts";
 import { makeReadiness } from "./readiness.ts";
 import {
   READINESS_GIT_GUARD,
@@ -115,6 +117,17 @@ const makeBoardWorkerCapacityLive = Effect.gen(function* () {
   const path = yield* Path.Path;
   const ownBoardId = yield* Effect.flatMap(ServerEnvironment, (env) => env.getEnvironmentId);
   const registry = yield* Effect.serviceOption(ProviderRegistry);
+  const instances = yield* Effect.serviceOption(ProviderInstanceRegistry);
+  const refreshProviderAccount = yield* makeProviderAccountRefresh({
+    refreshInstance: Option.map(registry, (service) => service.refreshInstance),
+    getInstance: Option.map(instances, (service) => service.getInstance),
+    home: {
+      HOME: Option.getOrNull(yield* Config.String("HOME").pipe(Config.option)),
+      CLAUDE_CONFIG_DIR: Option.getOrNull(
+        yield* Config.String("CLAUDE_CONFIG_DIR").pipe(Config.option),
+      ),
+    },
+  });
 
   const ownerFor = (boardId: string): BoardWorktreeOwner =>
     boardId === ownBoardId ? "self" : boardWorktreeOwnerOf(boardId);
@@ -338,12 +351,7 @@ const makeBoardWorkerCapacityLive = Effect.gen(function* () {
       onNone: () => Effect.succeed([]),
       onSome: (service) => service.getProviders,
     }),
-    refreshProviderUsage: (instanceId) =>
-      Option.match(registry, {
-        onNone: () => Effect.void,
-        onSome: (service) =>
-          service.refreshInstance(instanceId as ProviderInstanceId).pipe(Effect.asVoid),
-      }),
+    refreshProviderAccount,
     // Section 5: no checkout of the repository is not set up; then its readiness script.
     notReady: (boardId, repositoryKey, projectId) =>
       repositoryKey === null

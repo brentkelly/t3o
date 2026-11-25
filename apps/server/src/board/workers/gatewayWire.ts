@@ -163,6 +163,8 @@ export interface WorkerGatewayRpcOf<E> {
   readonly pruneScheduleRuns: (
     input: BoardGatewayPruneScheduleRunsInput,
   ) => Effect.Effect<BoardGatewayLaunchScheduleRunResult, E>;
+  /** T3o: re-probe the worker's provider accounts, then its snapshot (T3O-140). */
+  readonly refreshAccounts: () => Effect.Effect<BoardWorkerCapacitySnapshot, E>;
 }
 
 export type WorkerGatewayRpc = WorkerGatewayRpcOf<WorkerGatewayCallError>;

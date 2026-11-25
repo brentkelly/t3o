@@ -34,6 +34,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { BoardHint } from "../BoardHint";
 import { useBoardSettings } from "../useBoardEnvironmentId";
 import { describeBoardCommandFailure } from "../boardCommandFeedback";
+import { refreshAccountsBlocked, refreshAccountsLines } from "./refreshAccounts.logic";
 import { AddWorkerDialog } from "./AddWorkerDialog";
 import { BoardServerPlanningCallouts } from "./BoardServerPlanningCallouts";
 import { useNowAtDeadlines, type BoardWorkersView } from "./boardWorkersState";
@@ -292,6 +293,7 @@ export function WorkersSection(props: {
               workerId={BOARD_LOCAL_WORKER_ID}
               label={localName}
               live
+              refreshAccountsBlocked={null}
               onRename={() => setRenaming(localWorkerView(localName))}
             />
           }
@@ -346,6 +348,7 @@ export function WorkersSection(props: {
                   workerId={worker.id}
                   label={worker.label}
                   live={live}
+                  refreshAccountsBlocked={refreshAccountsBlocked(worker.id, worker.status)}
                   onRename={() => setRenaming(worker)}
                   onRemove={() => setRemoving(worker)}
                 />
@@ -608,12 +611,52 @@ function WorkerMenu(props: {
   readonly workerId: BoardWorkerId;
   readonly label: string;
   readonly live: boolean;
+  /** Why Refresh accounts can't run here, or null. */
+  readonly refreshAccountsBlocked: string | null;
   readonly onRename: () => void;
   /** Absent for the board server, which can't be removed. */
   readonly onRemove?: () => void;
 }) {
   const navigate = useNavigate();
   const capacityAction = useAtomCommand(boardEnvironment.capacityAction);
+  const refreshAccounts = useAtomCommand(boardEnvironment.refreshAccounts, {
+    reportFailure: false,
+  });
+  // A refresh re-probes every provider on the worker and can take up to a minute.
+  const [refreshing, setRefreshing] = useState(false);
+  const runRefreshAccounts = async () => {
+    setRefreshing(true);
+    const toastId = toastManager.add({
+      type: "loading",
+      title: `${props.label} is re-reading its accounts…`,
+      timeout: 0,
+    });
+    const result = await refreshAccounts({
+      environmentId: props.environmentId,
+      input: { workerId: props.workerId },
+    }).finally(() => setRefreshing(false));
+    if (result._tag !== "Success") {
+      toastManager.update(toastId, {
+        type: "error",
+        title: describeBoardCommandFailure(result),
+        timeout: 8_000,
+      });
+      return;
+    }
+    const lines = refreshAccountsLines(result.value);
+    toastManager.update(toastId, {
+      timeout: 8_000,
+      type: "success",
+      title: `${props.label} re-read its accounts`,
+      description:
+        lines.length === 0
+          ? "No providers are enabled there."
+          : lines.map((line, index) => (
+              // oxlint-disable-next-line react/no-array-index-key -- a fixed list in a one-shot toast
+              <div key={index}>{line}</div>
+            )),
+    });
+  };
   return (
     <Menu>
       <MenuTrigger
@@ -639,6 +682,17 @@ function WorkerMenu(props: {
           }
         >
           Re-check all projects
+        </MenuItem>
+        <MenuItem
+          disabled={refreshing || props.refreshAccountsBlocked !== null}
+          onClick={() => void runRefreshAccounts()}
+        >
+          Refresh accounts
+          {refreshing || props.refreshAccountsBlocked === null ? null : (
+            <span className="ms-auto text-muted-foreground text-xs">
+              {props.refreshAccountsBlocked}
+            </span>
+          )}
         </MenuItem>
         <MenuItem onClick={props.onRename}>Rename…</MenuItem>
         {/* T3o: the board's worker filter, set to this worker (T3O-87). */}

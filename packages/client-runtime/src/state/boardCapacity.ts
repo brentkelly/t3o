@@ -10,6 +10,7 @@ import {
   type BoardWorkerCapacitySnapshot,
   type BoardWorkerProviderCapacity,
   type BoardWorkersCapacityActionInput,
+  type BoardWorkersRefreshAccountsInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
@@ -69,3 +70,7 @@ export function boardQuotaView(view: BoardCapacityView, previous: BoardQuotaView
 /** Re-check readiness, or read a readiness or setup log. */
 export const boardCapacityAction = (input: BoardWorkersCapacityActionInput) =>
   request(BOARD_WORKERS_WS_METHODS.capacityAction, input);
+
+/** Re-probe a worker's provider accounts now; answers what it read (T3O-140). */
+export const boardRefreshAccounts = (input: BoardWorkersRefreshAccountsInput) =>
+  request(BOARD_WORKERS_WS_METHODS.refreshAccounts, input);
