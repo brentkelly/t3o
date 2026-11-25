@@ -684,11 +684,10 @@ it.effect.each([
   // A fresh card's failed first provision left no commits on W1, so it ranks freely.
   { name: "failed first provision", status: "failed", reprovision: false, home: false },
 ] as const)(
-  "a $name whose branch the remote lacks goes back to W1: $home",
+  "a $name whose branch the remote lacks is bound to W1: $home",
   ({ status, reprovision, home }) =>
     Effect.gen(function* () {
       const { placement } = yield* makePlacement(workersState([workerView(W1)]));
-      // `local` has far more room, so an unbound card would rank there first.
       const capacity = yield* w1RoomForOne();
       const reclaimed: BoardCard = {
         ...placedBuildingCard("card-a", "a", W1),
@@ -709,7 +708,10 @@ it.effect.each([
         (h) =>
           Effect.gen(function* () {
             yield* h.pumpDomain(movedToBuilding(reclaimed, 1));
-            assert.deepStrictEqual(yield* spawnsOn(h), [home ? W1 : BOARD_LOCAL_WORKER_ID]);
+            // W1 ranks first either way (T3O-143): only a card bound to its home reads pinned.
+            assert.deepStrictEqual(yield* spawnsOn(h), [W1]);
+            const placed = (yield* h.board).cards.find((card) => card.id === reclaimed.id);
+            assert.strictEqual(placed?.resources?.placement?.reason === "pinned", home);
           }),
       );
     }),
