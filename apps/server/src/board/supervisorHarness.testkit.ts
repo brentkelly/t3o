@@ -80,6 +80,7 @@ import { localBoardWorkspaceDeps, makeBoardWorkspaces } from "./workspace/worksp
 import type { WorktreeRetirer } from "./worktreeRetire.ts";
 import { worktreeRetirerTestLayer } from "./worktreeRetire.testkit.ts";
 import {
+  LocalThreadGateway,
   ThreadGateway,
   type BoardProject,
   type BoardThreadState,
@@ -1253,6 +1254,8 @@ export function withGovernor(
       Layer.succeed(BoardEngine, boardEngineStub),
       Layer.succeed(BoardQueries, boardQueriesStub),
       Layer.succeed(ThreadGateway, gateway),
+      // T3o: the board server's own busy threads, for placement's bias (T3O-143).
+      Layer.succeed(LocalThreadGateway, fake.gateway),
       input.placement === undefined ? Layer.empty : Layer.succeed(BoardPlacement, input.placement),
       capacity === undefined ? Layer.empty : Layer.succeed(BoardCapacityClient, capacity.client),
       Layer.succeed(ServerSettingsService, settingsStub),

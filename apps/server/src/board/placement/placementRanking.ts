@@ -7,9 +7,14 @@ import {
   boardThreadLinkWorkerId,
   boardReadinessIsFor,
   boardWorkerSpeaksReadiness,
+  boardCardPlacementTarget,
   type BoardCard,
   type BoardState,
   boardResourceProfileOverflow,
+  boardStageById,
+  boardStageWithRole,
+  compareBoardStages,
+  effectiveBoardStageRole,
   type BoardWorkerCapacitySnapshot,
   type BoardResourceDimension,
   type BoardResourceProfile,
@@ -47,6 +52,10 @@ export interface PlacementWorkerFacts {
   /** What it offers now, less this pass's grants. */
   readonly headroom: BoardResourceProfile | null;
   readonly over: { readonly cpuRam: boolean; readonly disk: boolean } | null;
+  /** This board's cards building or in review there, other than the one being placed. */
+  readonly activeCards: number;
+  /** Board server only: some thread on it is busy, board or not (or it couldn't be read). */
+  readonly threadsBusy: boolean;
 }
 
 export type PlacementIneligibility =
@@ -147,8 +156,9 @@ export interface RankedPlacement {
 const DIMENSION_NAMES = { cpu: "CPU", ram: "RAM" } as const;
 
 /**
- * The eligible workers in placement order: warm first (most recent first), then the most room
- * left after the card, then worker id. A pin restricts the candidates to the pinned worker.
+ * The eligible workers in placement order (T3O-143): remote workers by fewest active cards, then
+ * warm, then room left, then id. The board server serves the app, so it goes last unless it is
+ * fully idle and every remote has a card. A pin restricts the candidates to the pinned worker.
  */
 export function rankPlacement(input: {
   readonly workers: ReadonlyArray<PlacementWorkerFacts>;
@@ -183,34 +193,120 @@ export function rankPlacement(input: {
   const rooms = new Map(
     eligible.map((worker) => [worker.workerId, placementRoomLeft(worker, input.profile)]),
   );
-  const ordered = [...eligible].sort((left, right) => {
-    const leftWarm = input.warm.get(left.workerId);
-    const rightWarm = input.warm.get(right.workerId);
-    if (leftWarm !== undefined || rightWarm !== undefined) {
-      if (leftWarm === undefined) return 1;
-      if (rightWarm === undefined) return -1;
-      if (leftWarm !== rightWarm) return rightWarm - leftWarm;
+  const local = eligible.find((worker) => worker.workerId === BOARD_LOCAL_WORKER_ID);
+  const remotes = eligible
+    .filter((worker) => worker.workerId !== BOARD_LOCAL_WORKER_ID)
+    .sort((left, right) => {
+      if (left.activeCards !== right.activeCards) return left.activeCards - right.activeCards;
+      const leftWarm = input.warm.get(left.workerId);
+      const rightWarm = input.warm.get(right.workerId);
+      if (leftWarm !== undefined || rightWarm !== undefined) {
+        if (leftWarm === undefined) return 1;
+        if (rightWarm === undefined) return -1;
+        if (leftWarm !== rightWarm) return rightWarm - leftWarm;
+      }
+      const roomDelta = rooms.get(right.workerId)!.share - rooms.get(left.workerId)!.share;
+      if (roomDelta !== 0 && !Number.isNaN(roomDelta)) return roomDelta;
+      return left.workerId < right.workerId ? -1 : left.workerId > right.workerId ? 1 : 0;
+    });
+  const localFirst = local !== undefined && boardServerLeads(local, remotes);
+  const ordered =
+    local === undefined ? remotes : localFirst ? [local, ...remotes] : [...remotes, local];
+  const otherWorkers = input.workers.some((worker) => worker.workerId !== BOARD_LOCAL_WORKER_ID);
+  const remoteReason = (worker: PlacementWorkerFacts, index: number) => {
+    const runnerUp = remotes[index + 1];
+    if (runnerUp !== undefined && worker.activeCards < runnerUp.activeCards) {
+      return "fewest active cards among ready workers";
     }
-    const roomDelta = rooms.get(right.workerId)!.share - rooms.get(left.workerId)!.share;
-    if (roomDelta !== 0 && !Number.isNaN(roomDelta)) return roomDelta;
-    return left.workerId < right.workerId ? -1 : left.workerId > right.workerId ? 1 : 0;
-  });
+    if (input.warm.has(worker.workerId)) return `built ${input.repositoryLabel} most recently`;
+    if (remotes.length === 1) {
+      return local === undefined ? "the only ready worker" : "kept this server free";
+    }
+    const room = rooms.get(worker.workerId)!;
+    return room.share === Number.NEGATIVE_INFINITY
+      ? "first ready worker"
+      : `offered the most ${DIMENSION_NAMES[room.dimension]} among ready workers`;
+  };
   const ranked = ordered.map((worker): RankedPlacement => {
     const reason =
       input.force === true
         ? "started anyway"
         : input.pinnedWorkerId !== null
           ? "pinned"
-          : input.warm.has(worker.workerId)
-            ? `built ${input.repositoryLabel} most recently`
-            : ordered.length === 1
-              ? "the only ready worker"
-              : rooms.get(worker.workerId)!.share === Number.NEGATIVE_INFINITY
-                ? "first ready worker"
-                : `offered the most ${DIMENSION_NAMES[rooms.get(worker.workerId)!.dimension]} among ready workers`;
+          : worker === local
+            ? localFirst
+              ? "this server had nothing running"
+              : otherWorkers
+                ? "no other worker could take it"
+                : "the only ready worker"
+            : remoteReason(worker, remotes.indexOf(worker));
     return { workerId: worker.workerId, reason };
   });
   return { ranked, verdicts };
+}
+
+/** The board server goes first only with no active card, no busy thread, and every eligible
+    remote worker already building or reviewing a card. */
+const boardServerLeads = (
+  local: PlacementWorkerFacts,
+  remotes: ReadonlyArray<PlacementWorkerFacts>,
+): boolean =>
+  remotes.length > 0 &&
+  local.activeCards === 0 &&
+  !local.threadsBusy &&
+  remotes.every((worker) => worker.activeCards > 0);
+
+/**
+ * Whether the board server's busy threads could change this ranking: it is a candidate with no
+ * active card, and every remote candidate has one. Only then is the (SQL) busy read worth making.
+ */
+export function boardServerIdlenessMatters(
+  ranked: ReadonlyArray<RankedPlacement>,
+  workers: ReadonlyArray<PlacementWorkerFacts>,
+): boolean {
+  const facts = new Map(workers.map((worker) => [worker.workerId, worker]));
+  const local = ranked.some((entry) => entry.workerId === BOARD_LOCAL_WORKER_ID)
+    ? facts.get(BOARD_LOCAL_WORKER_ID)
+    : undefined;
+  if (local === undefined) return false;
+  const remotes = ranked
+    .filter((entry) => entry.workerId !== BOARD_LOCAL_WORKER_ID)
+    .map((entry) => facts.get(entry.workerId)!);
+  return boardServerLeads({ ...local, threadsBusy: false }, remotes);
+}
+
+/**
+ * The cards this board has building or in review on each worker (T3O-143): placed there with a
+ * worktree, at or after the build-role stage and before the merge-role stage (so CI counts), not
+ * archived, blocked or a group. With no build stage, nothing counts.
+ */
+export function activeCardsByWorker(
+  board: BoardState,
+  excludeCardId: string | null,
+): ReadonlyMap<BoardWorkerId, ReadonlySet<string>> {
+  const active = new Map<BoardWorkerId, Set<string>>();
+  const build = boardStageWithRole(board, "build");
+  if (build === null) return active;
+  const merge = boardStageWithRole(board, "merge");
+  for (const card of board.cards) {
+    if (String(card.id) === excludeCardId) continue;
+    if (card.archivedAt !== null || card.blocked || card.group !== null) continue;
+    const workerId = boardCardPlacementTarget(card);
+    if (workerId === null) continue;
+    const stage = boardStageById(board, card.stage);
+    if (stage === null || compareBoardStages(stage, build) < 0) continue;
+    if (
+      merge !== null
+        ? compareBoardStages(stage, merge) >= 0
+        : effectiveBoardStageRole(stage) === "done"
+    ) {
+      continue;
+    }
+    let cards = active.get(workerId);
+    if (cards === undefined) active.set(workerId, (cards = new Set()));
+    cards.add(String(card.id));
+  }
+  return active;
 }
 
 /** Why a card waits when no worker can take it now. */
@@ -337,6 +433,8 @@ export function placementFacts(input: {
   readonly providerInstanceId: string | null;
   readonly granted: BoardResourceProfile | null;
   readonly closed: boolean;
+  readonly activeCards: number;
+  readonly threadsBusy: boolean;
 }): PlacementWorkerFacts {
   const snapshot = input.snapshot;
   const readinessEntry =
@@ -383,6 +481,8 @@ export function placementFacts(input: {
     declared: snapshot?.declared ?? null,
     headroom,
     over: snapshot?.over ?? null,
+    activeCards: input.activeCards,
+    threadsBusy: input.threadsBusy,
   };
 }
 

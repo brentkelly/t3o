@@ -7,6 +7,7 @@ import {
   ThreadId,
   type BoardCard,
   type BoardResourceProfile,
+  type BoardState,
   type BoardStepCompletion,
   type BoardWorkerCapacitySnapshot,
   type BoardWorkerId,
@@ -14,7 +15,9 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  activeCardsByWorker,
   boardBuildHistory,
+  boardServerIdlenessMatters,
   boardWorkerReadyForProject,
   localIsBuildCandidate,
   PLACEMENT_WARM_WINDOW_MS,
@@ -48,6 +51,8 @@ const worker = (
   declared: { cpuCores: 16, ramGiB: 32, diskGB: 200 },
   headroom: { cpuCores: 16, ramGiB: 32, diskGB: 200 },
   over: { cpuRam: false, disk: false },
+  activeCards: 0,
+  threadsBusy: false,
   ...overrides,
 });
 
@@ -106,7 +111,8 @@ describe("placement ranking (T3O-87)", () => {
         worker(BOARD_LOCAL_WORKER_ID),
         worker(W1, { headroom: { cpuCores: 6, ramGiB: 12, diskGB: 200 } }),
       ],
-      expected: [BOARD_LOCAL_WORKER_ID, W1],
+      // T3O-143: behind every remote worker, even with more room.
+      expected: [W1, BOARD_LOCAL_WORKER_ID],
     },
     {
       name: "a worker whose snapshot shows the card doesn't fit is not a candidate",
@@ -315,6 +321,154 @@ describe("placement ranking (T3O-87)", () => {
     expect(configured(snapshot(big, "ready"))).toBe(false);
     expect(configured({ ...snapshot(big, "ready"), readinessProtocol: 2 })).toBe(true);
     expect(ready(W1, "ready", snapshot(big, "ready"))).toBe(true);
+  });
+});
+
+describe("remote workers before the board server (T3O-143)", () => {
+  const LOCAL = BOARD_LOCAL_WORKER_ID;
+
+  /** Places `cards` one after another on identical workers, each counting what it was given. */
+  const placeInTurn = (cards: number, options: { readonly serverBusy: boolean }) => {
+    const counts = new Map<BoardWorkerId, number>();
+    const placed: Array<BoardWorkerId> = [];
+    for (let card = 0; card < cards; card += 1) {
+      const result = rank(
+        [W1, W2, LOCAL].map((workerId) =>
+          worker(workerId, {
+            activeCards: counts.get(workerId) ?? 0,
+            threadsBusy: workerId === LOCAL && options.serverBusy,
+          }),
+        ),
+      );
+      const first = result.ranked[0]!.workerId;
+      counts.set(first, (counts.get(first) ?? 0) + 1);
+      placed.push(first);
+    }
+    return placed;
+  };
+
+  it("six cards: each remote worker first, the idle board server third, then remotes by load", () => {
+    expect(placeInTurn(6, { serverBusy: false })).toEqual([W1, W2, LOCAL, W1, W2, W1]);
+  });
+
+  it("a board server with a busy thread never goes first", () => {
+    expect(placeInTurn(6, { serverBusy: true })).toEqual([W1, W2, W1, W2, W1, W2]);
+  });
+
+  it.each([
+    {
+      name: "an empty board server ranks behind an empty remote worker",
+      workers: [worker(LOCAL), worker(W1), worker(W2, { activeCards: 1 })],
+      expected: [W1, W2, LOCAL],
+      reason: "fewest active cards among ready workers",
+    },
+    {
+      name: "an idle board server leads once every remote worker has a card",
+      workers: [worker(LOCAL), worker(W1, { activeCards: 2 }), worker(W2, { activeCards: 1 })],
+      expected: [LOCAL, W2, W1],
+      reason: "this server had nothing running",
+    },
+    {
+      name: "a board server with a card of its own stays last, whatever the remote load",
+      workers: [worker(LOCAL, { activeCards: 1 }), worker(W1, { activeCards: 3 })],
+      expected: [W1, LOCAL],
+      reason: "kept this server free",
+    },
+    {
+      name: "the board server takes the card when no remote worker can",
+      workers: [worker(LOCAL), worker(W1, { closed: true }), worker(W2, { online: false })],
+      expected: [LOCAL],
+      reason: "no other worker could take it",
+    },
+    {
+      name: "on a board with no other worker, the board server is the only ready worker",
+      workers: [worker(LOCAL, { threadsBusy: true, activeCards: 2 })],
+      expected: [LOCAL],
+      reason: "the only ready worker",
+    },
+  ])("$name", ({ workers, expected, reason }) => {
+    const result = rank(workers);
+    expect(order(result)).toEqual(expected);
+    expect(result.ranked[0]!.reason).toBe(reason);
+  });
+
+  it("fewer active cards beats warm; warm breaks a tie on count", () => {
+    const warm = new Map([[W1, NOW - HOUR]]);
+    expect(order(rank([worker(W1, { activeCards: 1 }), worker(W2)], { warm }))).toEqual([W2, W1]);
+    const tie = rank([worker(W1, { activeCards: 1 }), worker(W2, { activeCards: 1 })], { warm });
+    expect(order(tie)).toEqual([W1, W2]);
+    expect(tie.ranked[0]!.reason).toBe("built z5 most recently");
+  });
+
+  it("a pin to the board server is unaffected", () => {
+    const result = rank([worker(LOCAL, { threadsBusy: true, activeCards: 1 }), worker(W1)], {
+      pinnedWorkerId: LOCAL,
+    });
+    expect(order(result)).toEqual([LOCAL]);
+    expect(result.ranked[0]!.reason).toBe("pinned");
+  });
+
+  it("the board server's threads are read only when they could put it first", () => {
+    const matters = (
+      workers: ReadonlyArray<PlacementWorkerFacts>,
+      pinned: BoardWorkerId | null = null,
+    ) => boardServerIdlenessMatters(rank(workers, { pinnedWorkerId: pinned }).ranked, workers);
+    const busy = (activeCards: number) => worker(LOCAL, { threadsBusy: true, activeCards });
+    expect(matters([busy(0), worker(W1, { activeCards: 1 })])).toBe(true);
+    // A remote worker still empty, the server with a card, no remote, or a pin: never read.
+    expect(matters([busy(0), worker(W1, { activeCards: 1 }), worker(W2)])).toBe(false);
+    expect(matters([busy(1), worker(W1, { activeCards: 1 })])).toBe(false);
+    expect(matters([busy(0)])).toBe(false);
+    expect(matters([busy(0), worker(W1, { activeCards: 1 })], LOCAL)).toBe(false);
+    // An ineligible remote doesn't count either way.
+    expect(matters([busy(0), worker(W1, { activeCards: 1 }), worker(W2, { online: false })])).toBe(
+      true,
+    );
+  });
+
+  it("active cards: placed with a worktree, from Building up to Ready for merge", () => {
+    const worktree = { status: "ready" } as BoardCard["worktree"];
+    const card = (id: string, stage: string, overrides: Partial<BoardCard> = {}) =>
+      ({
+        id: BoardCardId.make(id),
+        stage,
+        archivedAt: null,
+        blocked: false,
+        group: null,
+        worktree,
+        pinnedWorkerId: null,
+        placedWorkerId: W1,
+        ...overrides,
+      }) as unknown as BoardCard;
+    const board = {
+      cards: [
+        card("building", "building"),
+        card("review", "review"),
+        card("ci", "ci"),
+        card("on-local", "building", { placedWorkerId: null }),
+        card("on-w2", "review", { placedWorkerId: W2 }),
+        card("placing", "building"),
+        card("provisioning", "building", {
+          worktree: { status: "provisioning" } as BoardCard["worktree"],
+        }),
+        card("ready", "ready"),
+        card("merge", "merge"),
+        card("done", "done"),
+        card("archived", "building", { archivedAt: "2026-06-01T00:00:00.000Z" }),
+        card("blocked", "building", { blocked: true }),
+        card("group", "building", { group: {} as BoardCard["group"] }),
+        card("held", "building", { worktree: null }),
+      ],
+    } as unknown as BoardState;
+    const active = activeCardsByWorker(board, "placing");
+    expect([...(active.get(W1) ?? [])].sort()).toEqual([
+      "building",
+      "ci",
+      "provisioning",
+      "review",
+    ]);
+    expect([...(active.get(W2) ?? [])]).toEqual(["on-w2"]);
+    expect([...(active.get(BOARD_LOCAL_WORKER_ID) ?? [])]).toEqual(["on-local"]);
   });
 });
 
