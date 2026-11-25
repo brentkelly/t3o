@@ -245,6 +245,7 @@ import {
   ThreadReadError,
   UNKNOWN_THREAD_STATE,
   LocalThreadGateway,
+  threadRunsWork,
   type BoardProject,
   type BoardThreadState,
   type ThreadCommandError,
@@ -1883,19 +1884,29 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * T3o: no thread on this server is busy, board or not, other than the card's own (its
-   * planning turn may still be finishing). Unreadable counts as busy (T3O-143).
+   * T3o: no thread on this server is running work, board or not, other than the card's own (its
+   * planning turn may still be finishing). A thread waiting on a human runs nothing. Unreadable
+   * counts as busy (T3O-143).
    */
   const boardServerIdle = Effect.fn("board-supervisor-boardServerIdle")(function* (
     card: BoardCard,
   ) {
     if (Option.isNone(localThreads)) return false;
-    const busy = yield* localThreads.value
+    const gateway = localThreads.value;
+    const busy = yield* gateway
       .listBusyThreadIds()
       .pipe(Effect.catchCause(() => Effect.succeed(null)));
     if (busy === null) return false;
     const own = new Set(card.threadLinks.map((link) => String(link.threadId)));
-    return busy.every((threadId) => own.has(String(threadId)));
+    for (const threadId of busy) {
+      if (own.has(String(threadId))) continue;
+      const state = yield* gateway
+        .threadState(threadId)
+        .pipe(Effect.catchCause(() => Effect.undefined));
+      if (state === undefined) return false;
+      if (state !== null && !state.deleted && threadRunsWork(state)) return false;
+    }
+    return true;
   });
 
   /**

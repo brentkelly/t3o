@@ -57,8 +57,8 @@ const earlyShortfall = (
 
 /**
  * Hold candidates in order: those that already have the early-start share of CPU and RAM,
- * then remote workers before the board server (T3O-143), then the smallest shortfall on the short dimension (as a share of what it declares), then
- * the placement order (warm, room left, id) the caller passes.
+ * then remote workers before the board server (T3O-143), then the smallest shortfall on the
+ * short dimension (as a share of what it declares), then the placement order the caller passes.
  */
 export function rankHoldCandidates(input: {
   readonly workers: ReadonlyArray<PlacementWorkerFacts>;

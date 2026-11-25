@@ -213,10 +213,12 @@ export function rankPlacement(input: {
   const ordered =
     local === undefined ? remotes : localFirst ? [local, ...remotes] : [...remotes, local];
   const otherWorkers = input.workers.some((worker) => worker.workerId !== BOARD_LOCAL_WORKER_ID);
+  // The board server is never compared on count or room, so with it eligible say "remote".
+  const among = local === undefined ? "ready workers" : "remote workers";
   const remoteReason = (worker: PlacementWorkerFacts, index: number) => {
     const runnerUp = remotes[index + 1];
     if (runnerUp !== undefined && worker.activeCards < runnerUp.activeCards) {
-      return "fewest active cards among ready workers";
+      return `fewest active cards among ${among}`;
     }
     if (input.warm.has(worker.workerId)) return `built ${input.repositoryLabel} most recently`;
     if (remotes.length === 1) {
@@ -225,7 +227,7 @@ export function rankPlacement(input: {
     const room = rooms.get(worker.workerId)!;
     return room.share === Number.NEGATIVE_INFINITY
       ? "first ready worker"
-      : `offered the most ${DIMENSION_NAMES[room.dimension]} among ready workers`;
+      : `offered the most ${DIMENSION_NAMES[room.dimension]} among ${among}`;
   };
   const ranked = ordered.map((worker): RankedPlacement => {
     const reason =

@@ -35,6 +35,7 @@ import {
   type Harness,
 } from "../supervisorHarness.testkit.ts";
 import { bindBoardWorkspace, type BoardWorkspace } from "../workspace/BoardWorkspace.ts";
+import type { BoardThreadState } from "../ThreadGateway.ts";
 import type { LocalBoardWorkspaceDeps } from "../workspace/LocalBoardWorkspace.ts";
 import { makeBoardWorkspaces } from "../workspace/workspaceLayer.ts";
 import { WorkerUnavailable } from "../workers/WorkerConnections.ts";
@@ -858,7 +859,7 @@ describe("remote workers before the board server (T3O-143)", () => {
 
   /** The board server takes builds; W1 already has a card in review; W2 isn't registered. */
   const withBoardServer = (
-    shells: ReadonlyArray<string>,
+    shells: ReadonlyArray<string | BoardThreadState>,
     body: (h: Harness, card: BoardCard) => Effect.Effect<void>,
   ) =>
     Effect.gen(function* () {
@@ -892,7 +893,13 @@ describe("remote workers before the board server (T3O-143)", () => {
           placement: staticPlacement(workersState([workerView(W1)])),
           capacity,
           workspaces: loggingWorkspaces(newWorkerGit()),
-          initialShells: new Map(shells.map((id) => [id, aliveThreadShell(id)])),
+          initialShells: new Map(
+            shells.map((shell) =>
+              typeof shell === "string"
+                ? [shell, aliveThreadShell(shell)]
+                : [String(shell.threadId), shell],
+            ),
+          ),
         },
         (h) => body(h, card),
       );
@@ -910,6 +917,20 @@ describe("remote workers before the board server (T3O-143)", () => {
           reason: "this server had nothing running",
         });
       }),
+    ),
+  );
+
+  it.effect("a thread waiting on a human's answer or permission doesn't keep the server busy", () =>
+    withBoardServer(
+      [
+        { ...aliveThreadShell("t-asks-a-question"), awaitingUserInput: true },
+        { ...aliveThreadShell("t-asks-permission"), awaitingPermission: true },
+      ],
+      (h, card) =>
+        Effect.gen(function* () {
+          yield* h.pumpDomain(movedToBuilding(card, 1));
+          assert.strictEqual((yield* cardIn(h, "card-1")).placedWorkerId, BOARD_LOCAL_WORKER_ID);
+        }),
     ),
   );
 

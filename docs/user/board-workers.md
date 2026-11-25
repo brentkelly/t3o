@@ -108,7 +108,7 @@ Workers are compared by how many cards they have, not how big those cards are, a
 board's cards count: a worker shared with another board can look emptier than it is, though its free
 room still limits what it takes.
 
-The card's **Worker** row says where it was placed, when, and why ("fewest active cards among ready
+The card's **Worker** row says where it was placed, when, and why ("fewest active cards among remote
 workers", "built z5 most recently", "this server had nothing running", "no other worker could take
 it", "pinned"), or **Not placed yet: chosen when the build starts**.
 

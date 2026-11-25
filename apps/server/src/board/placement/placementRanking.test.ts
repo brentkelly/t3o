@@ -360,7 +360,7 @@ describe("remote workers before the board server (T3O-143)", () => {
       name: "an empty board server ranks behind an empty remote worker",
       workers: [worker(LOCAL), worker(W1), worker(W2, { activeCards: 1 })],
       expected: [W1, W2, LOCAL],
-      reason: "fewest active cards among ready workers",
+      reason: "fewest active cards among remote workers",
     },
     {
       name: "an idle board server leads once every remote worker has a card",

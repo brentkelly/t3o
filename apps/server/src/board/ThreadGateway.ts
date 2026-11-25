@@ -113,6 +113,22 @@ export interface BoardThreadState {
   readonly usageLimit: BoardThreadUsageLimit | null;
 }
 
+/** Whether a thread is doing work now: a turn or background work, but never one held on a
+    human's question or permission prompt. */
+export const threadRunsWork = (
+  state: Pick<
+    BoardThreadState,
+    | "activeTurnRef"
+    | "backgroundWork"
+    | "waitingOnBackground"
+    | "awaitingUserInput"
+    | "awaitingPermission"
+  >,
+) =>
+  (state.activeTurnRef !== null || state.backgroundWork !== null || state.waitingOnBackground) &&
+  !state.awaitingUserInput &&
+  !state.awaitingPermission;
+
 /** A thread whose latest run hit a provider usage limit. */
 export interface BoardThreadUsageLimit {
   /** When the provider says the window reopens, or null when it did not say. */
