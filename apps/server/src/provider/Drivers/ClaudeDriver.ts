@@ -63,6 +63,8 @@ import {
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
+// T3o: account-switch-safe probe fallback (T3O-140).
+import { claudeFallbackAllowed, readClaudeOauthIdentity } from "./claudeAccountFallback.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -234,9 +236,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               Effect.flatMap((capabilities) =>
                 capabilities === undefined
                   ? Effect.fail(error)
-                  : ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
-                      Effect.flatMap((workspaceId) =>
-                        workspaceId === capabilities.workspaceId
+                  : // T3o: match org AND email so a same-org re-login never republishes the old seat (T3O-140).
+                    readClaudeOauthIdentity(accountConfigPath).pipe(
+                      Effect.flatMap((identity) =>
+                        claudeFallbackAllowed(capabilities, identity)
                           ? Effect.succeed({
                               _tag: "fallback" as const,
                               capabilities: withoutUsage(capabilities),
