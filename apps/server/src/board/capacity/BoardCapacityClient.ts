@@ -4,6 +4,9 @@
  */
 import {
   BOARD_LOCAL_WORKER_ID,
+  BOARD_WORKER_ACCOUNTS_PROTOCOL,
+  BoardWorkerActionError,
+  type BoardWorkerProviderCapacity,
   type BoardCapacityClaimInput,
   type BoardCapacityClaimResult,
   type BoardProvisionClaim,
@@ -40,6 +43,8 @@ import { BoardWorkerCapacity, provisionUnderClaim } from "./BoardWorkerCapacity.
 export type BoardClaimAnswer = BoardCapacityClaimResult | { readonly outcome: "unavailable" };
 
 const CLAIM_TIMEOUT = "5 seconds";
+/** A Claude probe can take tens of seconds; every provider is re-probed at once. */
+const REFRESH_ACCOUNTS_TIMEOUT = "60 seconds";
 const UNAVAILABLE: BoardClaimAnswer = { outcome: "unavailable" };
 
 export interface BoardCapacityClientShape {
@@ -116,6 +121,11 @@ export interface BoardCapacityClientShape {
     repositoryKey: string | null,
     path: string,
   ) => Effect.Effect<string | null>;
+  /** T3o: re-probe a worker's provider accounts now and publish its snapshot (T3O-140).
+      Refused for an offline worker, or one too old to have the call. */
+  readonly refreshAccounts: (
+    workerId: BoardWorkerId,
+  ) => Effect.Effect<ReadonlyArray<BoardWorkerProviderCapacity>, BoardWorkerActionError>;
   /** The worker went away or came back: its next sync is authoritative again. */
   readonly connectionChanged: (workerId: BoardWorkerId) => Effect.Effect<void>;
 }
@@ -282,6 +292,57 @@ const makeBoardCapacityClient = Effect.gen(function* () {
       return PubSub.publish(pubsub, workerId);
     });
 
+  const refreshAccounts = Effect.fn("BoardCapacityClient.refreshAccounts")(function* (
+    workerId: BoardWorkerId,
+  ) {
+    if (workerId === BOARD_LOCAL_WORKER_ID) {
+      const snapshot = yield* localCapacity.refreshAccounts(localBoardId);
+      yield* publish(workerId, snapshot);
+      return snapshot.providers;
+    }
+    const runtime = Option.isNone(connections)
+      ? undefined
+      : (yield* connections.value.current).get(workerId);
+    if (runtime === undefined) {
+      return yield* new BoardWorkerActionError({ code: "not-found", message: "No such worker." });
+    }
+    if (runtime.status.state !== "online") {
+      return yield* new BoardWorkerActionError({
+        code: "not-online",
+        message: "The worker is offline.",
+      });
+    }
+    if ((runtime.status.protocolVersion ?? 0) < BOARD_WORKER_ACCOUNTS_PROTOCOL) {
+      return yield* new BoardWorkerActionError({
+        code: "invalid",
+        message:
+          "The worker needs a T3o update to refresh accounts. Restarting T3o there re-reads its sign-in.",
+      });
+    }
+    const gateway = yield* gatewayOf(workerId);
+    if (gateway === null) {
+      return yield* new BoardWorkerActionError({
+        code: "not-online",
+        message: "The worker is offline.",
+      });
+    }
+    const snapshot = yield* gateway.refreshAccounts().pipe(
+      Effect.timeout(REFRESH_ACCOUNTS_TIMEOUT),
+      Effect.mapError(
+        (error) =>
+          new BoardWorkerActionError({
+            code: "internal",
+            message:
+              "message" in error && typeof error.message === "string" && error.message !== ""
+                ? `The worker couldn't refresh its accounts: ${error.message}`
+                : "The worker couldn't refresh its accounts.",
+          }),
+      ),
+    );
+    yield* publish(workerId, snapshot);
+    return snapshot.providers;
+  });
+
   // `local` streams in-process; each online worker over its gateway, restarted as it
   // reconnects.
   yield* localCapacity.subscribe(localBoardId).pipe(
@@ -382,6 +443,7 @@ const makeBoardCapacityClient = Effect.gen(function* () {
         : remoteOrNull(workerId, (gateway) => gateway.readinessOutput(repositoryKey, path)).pipe(
             Effect.map((value) => value ?? null),
           ),
+    refreshAccounts,
     connectionChanged: (workerId) => Effect.sync(() => void lastSynced.delete(workerId)),
   } satisfies BoardCapacityClientShape;
 });

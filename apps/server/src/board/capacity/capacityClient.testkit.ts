@@ -221,6 +221,7 @@ export const makeFakeCapacity = Effect.fn("makeFakeCapacity")(function* (
       readSetupLog: () => Effect.succeed(""),
       checkReadiness: () => Effect.succeed(null),
       readinessOutput: () => Effect.succeed(null),
+      refreshAccounts: () => Effect.succeed([]),
     },
   };
   return fake;

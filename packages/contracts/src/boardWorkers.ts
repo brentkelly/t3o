@@ -22,7 +22,11 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { BoardResourceProfile, BoardWorkerCapacitySnapshot } from "./boardCapacity.ts";
+import {
+  BoardResourceProfile,
+  BoardWorkerCapacitySnapshot,
+  BoardWorkerProviderCapacity,
+} from "./boardCapacity.ts";
 import { RepositoryIdentity, repositoryGroupingKeyOf } from "./environment.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -32,9 +36,12 @@ import { ProviderInstanceId } from "./providerInstance.ts";
  * Bump when the central server relies on a `boardWorker.*` call an older worker lacks. 2:
  * `closePullRequest`. 3: `usage-recorded` signals. 4: worker-owned capacity (T3O-86). 5: holds
  * and `pushCardBranch` (T3O-87). 6: `launchScheduleRun`
- * and `pruneScheduleRuns` (T3O-118).
+ * and `pruneScheduleRuns` (T3O-118). 7: `refreshAccounts` (T3O-140).
  */
-export const BOARD_WORKER_PROTOCOL_VERSION = 6;
+export const BOARD_WORKER_PROTOCOL_VERSION = 7;
+
+/** The first protocol whose workers re-probe their provider accounts on request. */
+export const BOARD_WORKER_ACCOUNTS_PROTOCOL = 7;
 
 /** The first protocol whose workers launch t3o.json schedule runs; an older one is skipped. */
 export const BOARD_WORKER_SCHEDULE_PROTOCOL = 6;
@@ -646,6 +653,8 @@ export const BOARD_WORKERS_WS_METHODS = {
   subscribeCapacity: "board.workers.subscribeCapacity",
   /** T3o: Re-check a project's readiness, or read a readiness or setup log (T3O-86). */
   capacityAction: "board.workers.capacityAction",
+  /** T3o: re-probe a worker's provider accounts and usage now (T3O-140). */
+  refreshAccounts: "board.workers.refreshAccounts",
 } as const;
 
 export const BoardWorkerCapacityItem = Schema.Struct({
@@ -655,6 +664,9 @@ export const BoardWorkerCapacityItem = Schema.Struct({
   held: Schema.optionalKey(BoardResourceProfile),
 });
 export type BoardWorkerCapacityItem = typeof BoardWorkerCapacityItem.Type;
+
+export const BoardWorkersRefreshAccountsInput = Schema.Struct({ workerId: BoardWorkerId });
+export type BoardWorkersRefreshAccountsInput = typeof BoardWorkersRefreshAccountsInput.Type;
 
 export const BoardWorkersCapacityActionInput = Schema.Union([
   /** A project's readiness checked again now; no project is every project on the worker. */
@@ -890,6 +902,11 @@ export const BOARD_WORKERS_RPCS = [
     success: Schema.NullOr(Schema.String),
     error: Schema.Union([BoardWorkerActionError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(BOARD_WORKERS_WS_METHODS.refreshAccounts, {
+    payload: BoardWorkersRefreshAccountsInput,
+    success: Schema.Array(BoardWorkerProviderCapacity),
+    error: Schema.Union([BoardWorkerActionError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 /**
@@ -925,4 +942,5 @@ export const BOARD_WORKER_RPC_SCOPES = {
   // Capacity is a read of the workers; a re-check runs a project's own script on one.
   [BOARD_WORKERS_WS_METHODS.subscribeCapacity]: AuthOrchestrationReadScope,
   [BOARD_WORKERS_WS_METHODS.capacityAction]: AuthOrchestrationOperateScope,
+  [BOARD_WORKERS_WS_METHODS.refreshAccounts]: AuthOrchestrationOperateScope,
 } as const;

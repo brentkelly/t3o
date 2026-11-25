@@ -417,5 +417,6 @@ const makeLiveGatewayRpc = (
     actuals: (input) => call({ _tag: "actuals", input }),
     launchScheduleRun: (input) => call({ _tag: "launchScheduleRun", input }),
     pruneScheduleRuns: (input) => call({ _tag: "pruneScheduleRuns", input }),
+    refreshAccounts: () => call({ _tag: "refreshAccounts" }),
   };
 };

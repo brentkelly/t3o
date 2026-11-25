@@ -560,6 +560,8 @@ export const BoardGatewayCall = Schema.Union([
   // T3o: a t3o.json schedule's run (T3O-118). Below protocol 6 the board never sends it.
   Schema.TaggedStruct("launchScheduleRun", { input: BoardGatewayLaunchScheduleRunInput }),
   Schema.TaggedStruct("pruneScheduleRuns", { input: BoardGatewayPruneScheduleRunsInput }),
+  // T3o: re-probe provider accounts (T3O-140). Below protocol 7 the board never sends it.
+  Schema.TaggedStruct("refreshAccounts", {}),
 ]);
 export type BoardGatewayCall = typeof BoardGatewayCall.Type;
 
@@ -598,6 +600,7 @@ export const BOARD_GATEWAY_CALL_RESULTS = {
   actuals: Schema.NullOr(BoardStepReading),
   launchScheduleRun: BoardGatewayLaunchScheduleRunResult,
   pruneScheduleRuns: BoardGatewayLaunchScheduleRunResult,
+  refreshAccounts: BoardWorkerCapacitySnapshot,
 } as const satisfies Record<BoardGatewayCall["_tag"], Schema.Top>;
 
 /**
