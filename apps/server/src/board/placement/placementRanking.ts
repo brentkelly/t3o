@@ -222,7 +222,8 @@ export function rankPlacement(input: {
     }
     if (input.warm.has(worker.workerId)) return `built ${input.repositoryLabel} most recently`;
     if (remotes.length === 1) {
-      return local === undefined ? "the only ready worker" : "kept this server free";
+      if (local === undefined) return "the only ready worker";
+      return localFirst ? "the only other ready worker" : "kept this server free";
     }
     const room = rooms.get(worker.workerId)!;
     return room.share === Number.NEGATIVE_INFINITY

@@ -392,6 +392,14 @@ describe("remote workers before the board server (T3O-143)", () => {
     expect(result.ranked[0]!.reason).toBe(reason);
   });
 
+  it("a sole remote ranked behind a leading board server doesn't claim it kept the server free", () => {
+    const result = rank([worker(LOCAL), worker(W1, { activeCards: 1 })]);
+    expect(result.ranked.map((entry) => [entry.workerId, entry.reason])).toEqual([
+      [LOCAL, "this server had nothing running"],
+      [W1, "the only other ready worker"],
+    ]);
+  });
+
   it("fewer active cards beats warm; warm breaks a tie on count", () => {
     const warm = new Map([[W1, NOW - HOUR]]);
     expect(order(rank([worker(W1, { activeCards: 1 }), worker(W2)], { warm }))).toEqual([W2, W1]);
