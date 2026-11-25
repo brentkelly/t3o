@@ -8,6 +8,7 @@ import {
   type BoardCardShell,
   type BoardWorkerCapacitySnapshot,
   type BoardWorkerProviderCapacity,
+  type BoardWorkersState,
   type ProviderDriverKind,
 } from "@t3tools/contracts";
 
@@ -68,13 +69,20 @@ const quotaHeldOn = (card: QuotaCard, workerId: string, providerInstanceId: stri
   (card.queuedDetail?.providerInstanceId === undefined ||
     card.queuedDetail.providerInstanceId === providerInstanceId);
 
-/** One entry per worker and provider at its threshold, whether or not a card waits on it. */
+/** The capacity view keeps a worker's last snapshot after it drops; only a live one is measured. */
+const quotaWorkerOnline = (workerId: string, workers: Pick<BoardWorkersState, "workers">) =>
+  workerId === BOARD_LOCAL_WORKER_ID ||
+  workers.workers.some((worker) => worker.id === workerId && worker.status.state === "online");
+
+/** One entry per online worker and provider at its threshold, whether or not a card waits on it. */
 export function boardQuotaBannerEntries(
   capacity: ReadonlyMap<string, Pick<BoardWorkerCapacitySnapshot, "providers">>,
   cards: ReadonlyArray<QuotaCard>,
+  workers: Pick<BoardWorkersState, "workers">,
 ): ReadonlyArray<BoardQuotaBannerEntry> {
   const entries: Array<BoardQuotaBannerEntry> = [];
   for (const [workerId, snapshot] of capacity) {
+    if (!quotaWorkerOnline(workerId, workers)) continue;
     for (const provider of snapshot.providers) {
       const windows = boardQuotaNearLimitWindows(provider);
       if (windows.length === 0) continue;

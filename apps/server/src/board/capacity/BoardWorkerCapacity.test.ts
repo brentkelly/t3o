@@ -185,7 +185,7 @@ it.effect("an admitted start counts against the cap until its thread shows runni
   }).pipe(Effect.provide(TestClock.layer()), (effect) => withMachine(makeFakes())(effect)),
 );
 
-const DEFAULTS = { session: 95, weekly: 95 };
+const BOTH_AT_95 = { session: 95, weekly: 95 };
 
 it("quota gates only account-wide session and weekly windows, until they reset", () => {
   const now = Date.parse("2026-11-13T00:00:00.000Z");
@@ -200,19 +200,19 @@ it("quota gates only account-wide session and weekly windows, until they reset",
     },
     { kind: "monthly", label: "Monthly spend", usedPercent: 100 },
   ]);
-  assert.isFalse(providerQuota(scoped, DEFAULTS, now).exhausted);
+  assert.isFalse(providerQuota(scoped, BOTH_AT_95, now).exhausted);
   // Scope comes from ids and drivers, not labels: an account window's label may carry a "·"…
   const relabelled = provider("claude", [
     { kind: "weekly", label: "Weekly · all models", usedPercent: 100, id: "seven_day" },
   ]);
-  assert.isTrue(providerQuota(relabelled, DEFAULTS, now).exhausted);
+  assert.isTrue(providerQuota(relabelled, BOTH_AT_95, now).exhausted);
   // Only the windows that refuse placement are drawn at their limit.
   assert.deepStrictEqual(
-    providerQuota(scoped, DEFAULTS, now).windows.map((window) => window.nearLimit),
+    providerQuota(scoped, BOTH_AT_95, now).windows.map((window) => window.nearLimit),
     [false, false],
   );
   assert.deepStrictEqual(
-    providerQuota(relabelled, DEFAULTS, now).windows.map((window) => window.nearLimit),
+    providerQuota(relabelled, BOTH_AT_95, now).windows.map((window) => window.nearLimit),
     [true],
   );
   // …and every Antigravity window is one model family's.
@@ -222,19 +222,19 @@ it("quota gates only account-wide session and weekly windows, until they reset",
     undefined,
     "antigravity",
   );
-  assert.isFalse(providerQuota(family, DEFAULTS, now).exhausted);
+  assert.isFalse(providerQuota(family, BOTH_AT_95, now).exhausted);
   const weekly = provider("claude", [
     { kind: "weekly", label: "Weekly", usedPercent: 96, resetsAt: later },
   ]);
-  assert.deepInclude(providerQuota(weekly, DEFAULTS, now), { exhausted: true, resetsAt: later });
+  assert.deepInclude(providerQuota(weekly, BOTH_AT_95, now), { exhausted: true, resetsAt: later });
   const past = provider("claude", [
     { kind: "session", label: "Session", usedPercent: 100, resetsAt: "2026-11-12T00:00:00.000Z" },
   ]);
-  assert.isFalse(providerQuota(past, DEFAULTS, now).exhausted);
+  assert.isFalse(providerQuota(past, BOTH_AT_95, now).exhausted);
   assert.isFalse(
     providerQuota(
       { usageLimits: undefined, driver: ProviderDriverKind.make("claudeAgent") },
-      DEFAULTS,
+      BOTH_AT_95,
       now,
     ).exhausted,
   );

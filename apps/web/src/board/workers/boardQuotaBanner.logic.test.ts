@@ -32,6 +32,11 @@ const held = (workerId: string | undefined, providerInstanceId?: string) => ({
   },
 });
 
+const workers = (...states: ReadonlyArray<[string, "online" | "offline"]>) => ({
+  workers: states.map(([id, state]) => ({ id, status: { state } })) as never,
+});
+const ONLINE = workers(["build-01", "online"]);
+
 describe("boardQuotaBannerEntries", () => {
   it("lists nothing when no worker is at its threshold", () => {
     const capacity = new Map([
@@ -40,8 +45,10 @@ describe("boardQuotaBannerEntries", () => {
         { providers: [provider("claude", [window("Weekly", 60, LATER, false)])] },
       ],
     ]);
-    expect(boardQuotaBannerEntries(capacity, [held(BOARD_LOCAL_WORKER_ID, "claude")])).toEqual([]);
-    expect(boardQuotaBannerEntries(new Map(), [])).toEqual([]);
+    expect(
+      boardQuotaBannerEntries(capacity, [held(BOARD_LOCAL_WORKER_ID, "claude")], ONLINE),
+    ).toEqual([]);
+    expect(boardQuotaBannerEntries(new Map(), [], ONLINE)).toEqual([]);
   });
 
   it("lists the board server and a remote worker, with their held cards", () => {
@@ -67,7 +74,7 @@ describe("boardQuotaBannerEntries", () => {
         queuedDetail: { workerId: "build-01" as never },
       },
     ];
-    expect(boardQuotaBannerEntries(capacity, cards)).toEqual([
+    expect(boardQuotaBannerEntries(capacity, cards, ONLINE)).toEqual([
       {
         workerId: BOARD_LOCAL_WORKER_ID,
         providerInstanceId: "claude",
@@ -93,7 +100,7 @@ describe("boardQuotaBannerEntries", () => {
     const capacity = new Map([
       ["build-01", { providers: [provider("claude", [window("Weekly", 100, null)])] }],
     ]);
-    expect(boardQuotaBannerEntries(capacity, [])).toMatchObject([
+    expect(boardQuotaBannerEntries(capacity, [], ONLINE)).toMatchObject([
       { workerId: "build-01", held: 0 },
     ]);
   });
@@ -101,6 +108,20 @@ describe("boardQuotaBannerEntries", () => {
   it("ignores a per-model window, which never gates", () => {
     const opus = { ...window("Weekly · Opus", 100, LATER, false), gating: false };
     const capacity = new Map([["build-01", { providers: [provider("claude", [opus], false)] }]]);
-    expect(boardQuotaBannerEntries(capacity, [held("build-01", "claude")])).toEqual([]);
+    expect(boardQuotaBannerEntries(capacity, [held("build-01", "claude")], ONLINE)).toEqual([]);
+  });
+
+  it("drops a worker that is offline or removed: its last snapshot is no longer measured", () => {
+    const exhausted = { providers: [provider("claude", [window("Weekly", 100, LATER)])] };
+    const capacity = new Map([
+      [BOARD_LOCAL_WORKER_ID as string, exhausted],
+      ["build-01", exhausted],
+      ["gone-02", exhausted],
+    ]);
+    expect(
+      boardQuotaBannerEntries(capacity, [], workers(["build-01", "offline"])).map(
+        (entry) => entry.workerId,
+      ),
+    ).toEqual([BOARD_LOCAL_WORKER_ID]);
   });
 });

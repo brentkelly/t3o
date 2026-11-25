@@ -147,9 +147,10 @@ worker and whether it's CPU, RAM or disk), **Next on build-01** when it holds a 
 weekly limit** (amber) when a provider's usage window is at the worker's threshold, or **needs
 update** when the worker is too old to be asked. While any worker, the board's own server included,
 is at a provider's threshold, a banner above the board names the worker, the window, how full it
-is, when it resets and how many cards wait on it; it goes away by itself once the reading drops. Cards queue in Building in the usual order; **Start now** jumps
-the queue and starts a card even on a worker that isn't taking new cards (the worker still refuses
-it if the machine lacks the disk or half the RAM).
+is, when it resets and how many cards wait on it; it goes away by itself once the reading drops.
+Cards queue in Building in the usual order; **Start now** jumps the queue and starts a card even
+on a worker that isn't taking new cards (the worker still refuses it if the machine lacks the disk
+or half the RAM).
 
 ### Holds: a large card doesn't wait forever
 

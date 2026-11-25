@@ -1055,7 +1055,12 @@ export function createBoardEnvironmentAtoms<R, ER>(
     let previous = EMPTY_BOARD_QUOTA_VIEW;
     return Atom.make((get) => {
       const result = get(capacityAtom({ environmentId, input: {} }));
-      previous = AsyncResult.isSuccess(result) ? boardQuotaView(result.value, previous) : previous;
+      // A failed stream measures nothing; a stale hold must not outlive it.
+      previous = AsyncResult.isSuccess(result)
+        ? boardQuotaView(result.value, previous)
+        : AsyncResult.isFailure(result)
+          ? EMPTY_BOARD_QUOTA_VIEW
+          : previous;
       return previous;
     }).pipe(Atom.withLabel(`environment-board-quota:${environmentId}`));
   });

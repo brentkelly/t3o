@@ -30,7 +30,7 @@ export function BoardQuotaBanner(props: {
   readonly workers: BoardWorkersState;
 }) {
   const navigate = useNavigate();
-  const entries = boardQuotaBannerEntries(props.capacity, props.cards);
+  const entries = boardQuotaBannerEntries(props.capacity, props.cards, props.workers);
   if (entries.length === 0) return null;
   return (
     <div className="flex flex-col gap-2 px-3 pt-2 sm:px-5">
