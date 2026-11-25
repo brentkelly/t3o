@@ -2,6 +2,7 @@ import {
   BOARD_LOCAL_WORKER_ID,
   EnvironmentId,
   type BoardSyncedCard,
+  type BoardWorkerId,
   type BoardWorkerCapacitySnapshot,
   type BoardWorkerStatus,
 } from "@t3tools/contracts";
@@ -127,7 +128,7 @@ it.effect("refreshing accounts publishes the worker's fresh snapshot, and refuse
   Effect.gen(function* () {
     const rows: ReadonlyArray<{
       readonly name: string;
-      readonly workerId: EnvironmentId;
+      readonly workerId: BoardWorkerId;
       readonly status?: Partial<BoardWorkerStatus>;
       readonly email?: string;
       readonly error?: string;
