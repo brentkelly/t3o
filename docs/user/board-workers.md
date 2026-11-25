@@ -206,6 +206,14 @@ no new work until usage drops.
 starts again when the window resets. Workers signed into the same subscription see the same usage,
 so they stop together.
 
+**Signing a worker into another account.** A worker uses the provider sign-in of the OS user that
+runs T3o there (for Claude, `CLAUDE_CONFIG_DIR` or the provider's home path when set), so sign in
+again as that user. A worker at its limit, or whose account check failed, checks again every few
+minutes, so a new sign-in shows on the board within about five. To check now, choose **Refresh
+accounts** in the worker's **…** menu: it shows the account each provider read. If it still shows
+the old one, the sign-in was made as another user or in another home. A worker on an older T3o
+release can't do this; restart T3o there and it reads its sign-in again.
+
 **After upgrading.** The old Concurrency settings are gone. Your workers declare their capacity instead, `maxAgents` and provider caps start unset,
 and each project gets a baseline worked out from its recent cards, marked **set at upgrade** until
 you change it.

@@ -11,6 +11,8 @@ const AccountConfig = Schema.Struct({
   ),
 });
 
+const decodeAccountConfig = Schema.decodeEffect(Schema.fromJsonString(AccountConfig));
+
 export interface ClaudeOauthIdentity {
   readonly organizationUuid: string | undefined;
   readonly emailAddress: string | undefined;
@@ -21,7 +23,7 @@ export const readClaudeOauthIdentity = Effect.fn("readClaudeOauthIdentity")(
   function* (accountConfigPath: string) {
     const fs = yield* FileSystem.FileSystem;
     const raw = yield* fs.readFileString(accountConfigPath);
-    const config = yield* Schema.decodeEffect(Schema.fromJsonString(AccountConfig))(raw);
+    const config = yield* decodeAccountConfig(raw);
     const account = config.oauthAccount;
     if (account === undefined) return undefined;
     return {
