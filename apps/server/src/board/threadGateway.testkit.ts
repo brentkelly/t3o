@@ -85,10 +85,11 @@ export const fakeThreadState = (
   const sessionStatus = input.sessionStatus ?? "idle";
   const activeTurnRef = input.activeTurnRef ?? null;
   const awaitingUserInput = input.awaitingUserInput ?? false;
-  const backgroundWork = input.backgroundWork ?? null;
   const archived = input.archived ?? false;
   const settlementDecided = input.settlementDecided ?? false;
   const midTurn = sessionStatus === "starting" || sessionStatus === "running";
+  // The real derivation reads no background work while a turn is live.
+  const backgroundWork = midTurn ? null : (input.backgroundWork ?? null);
   const awaitingPermission = (input.pendingApproval ?? false) && midTurn;
   const failed = sessionStatus === "error";
   return {

@@ -3479,6 +3479,27 @@ const make = Effect.gen(function* () {
         createdAt: yield* nowIso,
       });
       if (!admitted) return "refused";
+      // A stall read at the turn end can be stale by now: a thread that has since ended its turn to
+      // wait on its own background work goes on the check-in schedule, not the stall nudge.
+      if (
+        state.stalledReason === "waiting-retry" &&
+        !state.humanInLoop &&
+        (yield* liveThread(state.threadId).pipe(
+          Effect.map((shell) => shell?.waitingOnBackground ?? false),
+          Effect.catchCause(() => Effect.succeed(false)),
+        ))
+      ) {
+        yield* Effect.logInfo(
+          "board supervisor: stall retry found the thread waiting on background work",
+          {
+            cardId: card.id,
+            stepId: state.stepId,
+            threadId: state.threadId,
+          },
+        );
+        beginBackgroundWait(state.threadId, yield* nowIso);
+        return "admitted";
+      }
       // The resume text depends on why it stopped; a backoff rung resumes with the recovery nudge
       // recomposed from the step row.
       const text =
@@ -10751,6 +10772,16 @@ const make = Effect.gen(function* () {
     // person, and waking it could push an unanswered question back into work. Fires only on a limit
     // with a reset time; otherwise falls through to recovery.
     if (yield* parkForUsageLimit(found)) return;
+    // Enough to diagnose a stall nudge sent while background work still ran (T3O-142).
+    yield* Effect.logInfo("board supervisor: turn ended without completing; recovering", {
+      cardId: found.card.id,
+      stepId: found.state.stepId,
+      threadId,
+      completedTurnId: completedTurnId ?? null,
+      sessionStatus: shell?.sessionStatus ?? null,
+      activeTurnRef: shell?.activeTurnRef ?? null,
+      backgroundWork: shell?.backgroundWork ?? null,
+    });
     // Unattended, running with no question → died mid-work. Awaiting-input with
     // no pending question → the human answered and the agent ran another turn
     // without completing (or died); either way death detection is re-armed.
@@ -13815,8 +13846,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Supervise a step waiting on its own background work; true means the timeout logic must not
-   * run. Check-ins at +5, +15, +30 minutes, then every 30, asking the agent to verify the work.
-   * The first three are free; later ones are charged like recoveries (no backoff park) and the
+   * run. Check-ins at +30 minutes, then every 60, asking the agent to verify the work.
+   * The first two are free; later ones are charged like recoveries (no backoff park) and the
    * one crossing a ceiling escalates. The step stays running.
    */
   const sweepBackgroundWait = Effect.fn("board-supervisor-sweepBackgroundWait")(function* (input: {
@@ -13839,15 +13870,23 @@ const make = Effect.gen(function* () {
     }
     const shell = yield* liveThread(state.threadId, sweepThreadState);
     if (shell === undefined || !shell.waitingOnBackground) {
-      // A live turn (a check-in being answered) is supervised the ordinary
-      // way and keeps the wait; background work that is gone ends it.
-      if (shell === undefined || shell.backgroundWork === null) backgroundWaits.delete(key);
+      // A live turn (a check-in being answered) reads no background work, so it is supervised the
+      // ordinary way and keeps the wait for its turn end. Only a thread between turns with its
+      // background work gone, or a gone thread, ends it.
+      const midTurn =
+        shell !== undefined &&
+        (shell.sessionStatus === "starting" ||
+          shell.sessionStatus === "running" ||
+          shell.activeTurnRef !== null);
+      if (shell === undefined || (!midTurn && shell.backgroundWork === null)) {
+        backgroundWaits.delete(key);
+      }
       return false;
     }
     const card = board.cards.find((candidate) => candidate.id === state.cardId);
     if (card === undefined || card.archivedAt !== null) return true;
     // The agent committed real work: whatever it is waiting on now is a new
-    // wait, and gets a fresh five-minute first check. A todo advance is not
+    // wait, and gets a fresh 30-minute first check. A todo advance is not
     // read here (see `committedSince`); a wake that did real work restarts the
     // schedule through its own turn end instead.
     if (yield* committedSince(state, card, wait.since)) {
@@ -13927,7 +13966,9 @@ const make = Effect.gen(function* () {
     });
     yield* sendTurn({
       threadId: state.threadId,
-      text: boardBackgroundCheckInNudge(),
+      text: boardBackgroundCheckInNudge(
+        Math.max(1, Math.round((input.nowMs - Date.parse(wait.since)) / 60_000)),
+      ),
       runtimeMode: state.runtimeMode,
     });
     return true;

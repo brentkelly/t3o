@@ -15,6 +15,7 @@ import {
   boardBackgroundCheckInCharged,
   boardBackgroundCheckInDueMs,
   boardBackgroundCheckInNudge,
+  boardBackgroundWaitResumedSinceMs,
   boardRecoveryNudge,
   composeStepPrompt,
   orderBoardQueue,
@@ -683,30 +684,50 @@ describe("background-wait check-ins (T3O-20)", () => {
   const due = (checkInsSent: number) =>
     boardBackgroundCheckInDueMs({ sinceMs: 0, checkInsSent }) / minute;
 
-  it("goes out at +5, +15 and +30 minutes, then every 30", () => {
-    assert.deepStrictEqual([0, 1, 2, 3, 4, 5].map(due), [5, 15, 30, 60, 90, 120]);
+  it("goes out at +30 minutes, then every 60", () => {
+    assert.deepStrictEqual([0, 1, 2, 3, 4].map(due), [30, 90, 150, 210, 270]);
+  });
+
+  it("resumes a held wait one step of the ladder from now", () => {
+    const nowMs = 1_000 * minute;
+    for (const [checkInsSent, nextInMinutes] of [
+      [0, 30],
+      [1, 60],
+      [2, 60],
+      [3, 60],
+    ] as const) {
+      const sinceMs = boardBackgroundWaitResumedSinceMs({ nowMs, checkInsSent });
+      assert.strictEqual(
+        (boardBackgroundCheckInDueMs({ sinceMs, checkInsSent }) - nowMs) / minute,
+        nextInMinutes,
+        `after ${checkInsSent} check-ins`,
+      );
+    }
   });
 
   it("measures from when the wait began", () => {
     assert.strictEqual(
       boardBackgroundCheckInDueMs({ sinceMs: 1_000, checkInsSent: 0 }),
-      1_000 + 5 * minute,
+      1_000 + 30 * minute,
     );
   });
 
-  it("is free for the first half hour and charged after", () => {
+  it("is free for the first two check-ins and charged after", () => {
     assert.deepStrictEqual([0, 1, 2, 3, 4].map(boardBackgroundCheckInCharged), [
       false,
       false,
-      false,
+      true,
       true,
       true,
     ]);
   });
 
-  it("asks the agent to verify its work rather than reading as a failure", () => {
-    const text = boardBackgroundCheckInNudge();
-    assert.include(text, "verify it is still alive");
+  it("asks the agent for a status update rather than reading as a failure", () => {
+    const text = boardBackgroundCheckInNudge(90);
+    assert.include(text, "the wait began about 90 minutes ago");
+    assert.include(text, "Actually check its state");
+    assert.include(text, "one-line status update");
+    assert.include(boardBackgroundCheckInNudge(1), "about 1 minute ago");
     assert.include(text, "board_complete_step");
     assert.include(text, "end your turn again");
     assert.notInclude(text, "your work is not finished");
@@ -714,9 +735,18 @@ describe("background-wait check-ins (T3O-20)", () => {
     assert.notStrictEqual(text, boardRecoveryNudge({ stallCount: 1, endedWithQuestion: false }));
   });
 
+  it("T3O-142: the stall nudge says how to wait on background work", () => {
+    for (const stallCount of [1, 3]) {
+      assert.include(
+        boardRecoveryNudge({ stallCount, endedWithQuestion: false }),
+        "call t3_background_wait with its task ID before ending your turn",
+      );
+    }
+  });
+
   it("T3O-22: neither the check-in nor a late recovery nudge asks for a todo list", () => {
     for (const text of [
-      boardBackgroundCheckInNudge(),
+      boardBackgroundCheckInNudge(30),
       boardRecoveryNudge({ stallCount: 1, endedWithQuestion: false }),
       boardRecoveryNudge({ stallCount: 3, endedWithQuestion: true }),
     ]) {
