@@ -1144,7 +1144,7 @@ const makeThreadGatewayV2 = Effect.gen(function* () {
       },
       Effect.mapError(readError("threadsInWorktree")),
     ),
-    // A superset of `capacityThreadRunning`'s sources, each led by an index over in-flight rows
+    // A superset of `threadRunsWork`'s sources, each led by an index over in-flight rows
     // (upstream's `listActiveShellIndex` liveness predicate, inverted). Callers read each id's state.
     listBusyThreadIds: Effect.fn("ThreadGatewayV2.listBusyThreadIds")(
       function* () {

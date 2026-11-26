@@ -244,6 +244,8 @@ import {
   ThreadGateway,
   ThreadReadError,
   UNKNOWN_THREAD_STATE,
+  LocalThreadGateway,
+  threadRunsWork,
   type BoardProject,
   type BoardThreadState,
   type ThreadCommandError,
@@ -267,7 +269,9 @@ import { BoardPlacement, boardPlacementGate } from "./workers/BoardPlacement.ts"
 import { HOLD_REFRESH_MS } from "./capacity/holdModel.ts";
 import { boardHoldLimit, holdsToAsk, rankHoldCandidates } from "./placement/holdRanking.ts";
 import {
+  activeCardsByWorker,
   boardBuildHistory,
+  boardServerIdlenessMatters,
   boardWorkerReadyForProject,
   localIsBuildCandidate,
   placementFacts,
@@ -868,6 +872,8 @@ const make = Effect.gen(function* () {
   // CI steps run by the board itself, here or on a card's worker.
   const ciRunner = yield* BoardCiRunner;
   const workerConnections = yield* Effect.serviceOption(WorkerConnections);
+  // T3o: this server's own threads, board or not, to keep builds off a busy board server (T3O-143).
+  const localThreads = yield* Effect.serviceOption(LocalThreadGateway);
 
   const commandId = (tag: string) =>
     crypto.uuidV4().pipe(Effect.map((uuid) => CommandId.make(`server:board-${tag}:${uuid}`)));
@@ -1878,6 +1884,32 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * T3o: no thread on this server is running work, board or not, other than the card's own (its
+   * planning turn may still be finishing). A thread waiting on a human runs nothing. Unreadable
+   * counts as busy (T3O-143).
+   */
+  const boardServerIdle = Effect.fn("board-supervisor-boardServerIdle")(function* (
+    card: BoardCard,
+  ) {
+    if (Option.isNone(localThreads)) return false;
+    const gateway = localThreads.value;
+    const busy = yield* gateway
+      .listBusyThreadIds()
+      .pipe(Effect.catchCause(() => Effect.succeed(null)));
+    if (busy === null) return false;
+    const own = new Set(card.threadLinks.map((link) => String(link.threadId)));
+    for (const threadId of busy) {
+      if (own.has(String(threadId))) continue;
+      const state = yield* gateway
+        .threadState(threadId)
+        .pipe(Effect.catchCause(() => Effect.undefined));
+      if (state === undefined) return false;
+      if (state !== null && !state.deleted && threadRunsWork(state)) return false;
+    }
+    return true;
+  });
+
+  /**
    * T3o: the workers a card may be placed on now, in order, or why it waits (T3O-87). Reads the
    * board's worker summary and each worker's last capacity snapshot, less this pass's grants.
    */
@@ -1893,6 +1925,7 @@ const make = Effect.gen(function* () {
     const profile = requestedProfileOf(board, card);
     const facts: Array<PlacementWorkerFacts> = [];
     const closedWorkers = yield* closedWorkersNow;
+    const activeCards = activeCardsByWorker(board, String(card.id));
     const labelOf = (workerId: BoardWorkerId) =>
       workerId === BOARD_LOCAL_WORKER_ID
         ? "this server"
@@ -1934,6 +1967,9 @@ const make = Effect.gen(function* () {
             (snapshot?.hold?.closed === true &&
               snapshot.hold.cardId !== String(card.id) &&
               laterHolderOn(card, workerId, pass) === null),
+          activeCards: activeCards.get(workerId)?.size ?? 0,
+          // Assumed busy until a ranking it could change reads it (below).
+          threadsBusy: workerId === BOARD_LOCAL_WORKER_ID,
         }),
       );
     }
@@ -1968,16 +2004,23 @@ const make = Effect.gen(function* () {
     // T3o: never on a worker this board holds for an earlier card (T3O-87).
     const heldByCard = placementHoldsOf(card.id);
     const heldForOthers = heldForEarlier(card, pass);
-    const result = rankPlacement({
-      workers: facts,
-      profile,
-      warm,
-      pinnedWorkerId: card.pinnedWorkerId,
-      repositoryLabel: project?.title ?? "this project",
-      force: claimFor.force,
-      excluded: claimFor.force ? new Set() : new Set(heldForOthers.keys()),
-      heldByCard,
-    });
+    const rank = () =>
+      rankPlacement({
+        workers: facts,
+        profile,
+        warm,
+        pinnedWorkerId: card.pinnedWorkerId,
+        repositoryLabel: project?.title ?? "this project",
+        force: claimFor.force,
+        excluded: claimFor.force ? new Set() : new Set(heldForOthers.keys()),
+        heldByCard,
+      });
+    let result = rank();
+    if (boardServerIdlenessMatters(result.ranked, facts) && (yield* boardServerIdle(card))) {
+      const index = facts.findIndex((worker) => worker.workerId === BOARD_LOCAL_WORKER_ID);
+      facts[index] = { ...facts[index]!, threadsBusy: false };
+      result = rank();
+    }
     const context = {
       facts,
       profile,

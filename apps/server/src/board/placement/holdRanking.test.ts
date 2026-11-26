@@ -1,4 +1,4 @@
-import { EnvironmentId, type BoardWorkerId } from "@t3tools/contracts";
+import { BOARD_LOCAL_WORKER_ID, EnvironmentId, type BoardWorkerId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import { boardHoldLimit, holdCandidate, holdsToAsk, rankHoldCandidates } from "./holdRanking.ts";
@@ -25,6 +25,8 @@ const worker = (
   declared: { cpuCores: 32, ramGiB: 128, diskGB: 500 },
   headroom: { cpuCores: 2, ramGiB: 8, diskGB: 200 },
   over: { cpuRam: false, disk: false },
+  activeCards: 0,
+  threadsBusy: false,
   ...overrides,
 });
 
@@ -80,6 +82,22 @@ describe("hold candidates (T3O-87)", () => {
       pinnedWorkerId: null,
     });
     expect(ranked).toEqual([W2, W3, W1]);
+  });
+
+  it("holds a remote worker before the board server, even one less short (T3O-143)", () => {
+    expect(
+      rankHoldCandidates({
+        workers: [
+          worker(BOARD_LOCAL_WORKER_ID, { headroom: { cpuCores: 5, ramGiB: 18, diskGB: 200 } }),
+          worker(W1),
+        ],
+        profile: PROFILE,
+        fractionOf: () => 0.5,
+        // The wait path: no placement order to fall back on.
+        placementOrder: [],
+        pinnedWorkerId: null,
+      }),
+    ).toEqual([W1, BOARD_LOCAL_WORKER_ID]);
   });
 
   it("a pin restricts holds to the pinned worker", () => {

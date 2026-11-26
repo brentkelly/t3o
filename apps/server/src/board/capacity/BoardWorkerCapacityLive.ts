@@ -31,7 +31,7 @@ import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistr
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { BoardActualsMeter } from "../actuals/BoardActualsMeter.ts";
-import { LocalThreadGateway } from "../ThreadGateway.ts";
+import { LocalThreadGateway, threadRunsWork } from "../ThreadGateway.ts";
 import { readWorkerFile, resolveWorkerCapacitySettings } from "../tunnel/workerFile.ts";
 import { BoardRelayStore } from "../workers/BoardRelayStore.ts";
 import { sweepThisServerLeftovers } from "../serverLeftovers.ts";
@@ -89,19 +89,6 @@ const RecordJson = Schema.fromJsonString(
 const decodeRecords = Schema.decodeUnknownEffect(RecordJson);
 const encodeRecords = Schema.encodeEffect(RecordJson);
 
-/** Whether a thread's turn counts as running for capacity: a turn or background work, but
-    never a thread held on a human's question or permission prompt. */
-const capacityThreadRunning = (state: {
-  readonly activeTurnRef: string | null;
-  readonly backgroundWork: string | null;
-  readonly waitingOnBackground: boolean;
-  readonly awaitingUserInput: boolean;
-  readonly awaitingPermission: boolean;
-}) =>
-  (state.activeTurnRef !== null || state.backgroundWork !== null || state.waitingOnBackground) &&
-  !state.awaitingUserInput &&
-  !state.awaitingPermission;
-
 const makeBoardWorkerCapacityLive = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const sql = yield* SqlClient.SqlClient;
@@ -146,7 +133,7 @@ const makeBoardWorkerCapacityLive = Effect.gen(function* () {
         threadId,
         boardId: central ?? (ownThreads.has(threadId) ? ownBoardId : null),
         worktreePath: state.worktreePath,
-        running: capacityThreadRunning(state),
+        running: threadRunsWork(state),
         providerInstanceId: state.modelSelection?.instanceId ?? null,
       });
     }

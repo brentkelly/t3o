@@ -25,6 +25,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { makeFakeCapacity, type FakeCapacity } from "../capacity/capacityClient.testkit.ts";
 import {
+  aliveThreadShell,
   codexStep,
   makeBoardCard,
   movedToBuilding,
@@ -34,6 +35,7 @@ import {
   type Harness,
 } from "../supervisorHarness.testkit.ts";
 import { bindBoardWorkspace, type BoardWorkspace } from "../workspace/BoardWorkspace.ts";
+import type { BoardThreadState } from "../ThreadGateway.ts";
 import type { LocalBoardWorkspaceDeps } from "../workspace/LocalBoardWorkspace.ts";
 import { makeBoardWorkspaces } from "../workspace/workspaceLayer.ts";
 import { WorkerUnavailable } from "../workers/WorkerConnections.ts";
@@ -817,5 +819,132 @@ describe("holds at build start (T3O-87)", () => {
           }),
         );
       }),
+  );
+});
+
+describe("remote workers before the board server (T3O-143)", () => {
+  const HUGE: BoardResourceProfile = { cpuCores: 64, ramGiB: 128, diskGB: 400 };
+
+  it.effect("two cards placed in one pass go to different workers, not both to the roomiest", () =>
+    Effect.gen(function* () {
+      const capacity = yield* capacityOf([
+        [W1, HUGE],
+        [W2, FULL],
+      ]);
+      capacity.external.set(W1, HUGE);
+      capacity.external.set(W2, FULL);
+      const first = unplaced("card-1", "a");
+      const second = unplaced("card-2", "b");
+      yield* run({ cards: [first, second], capacity, git: newWorkerGit() }, (h) =>
+        Effect.gen(function* () {
+          yield* h.pumpDomain(movedToBuilding(first, 1));
+          yield* h.pumpDomain(movedToBuilding(second, 2));
+          assert.isNull((yield* cardIn(h, "card-1")).placedWorkerId);
+          assert.isNull((yield* cardIn(h, "card-2")).placedWorkerId);
+          capacity.external.delete(W1);
+          capacity.external.delete(W2);
+          yield* capacity.publish(W1);
+          yield* capacity.publish(W2);
+          yield* TestClock.adjust("2 seconds");
+          yield* h.reactor.drain;
+          const placed = [
+            (yield* cardIn(h, "card-1")).placedWorkerId,
+            (yield* cardIn(h, "card-2")).placedWorkerId,
+          ];
+          assert.sameMembers(placed as Array<BoardWorkerId>, [W1, W2]);
+        }),
+      );
+    }),
+  );
+
+  /** The board server takes builds; W1 already has a card in review; W2 isn't registered. */
+  const withBoardServer = (
+    shells: ReadonlyArray<string | BoardThreadState>,
+    body: (h: Harness, card: BoardCard) => Effect.Effect<void>,
+  ) =>
+    Effect.gen(function* () {
+      const capacity = yield* makeFakeCapacity(
+        new Map<BoardWorkerId, BoardResourceProfile>([
+          [BOARD_LOCAL_WORKER_ID, FULL],
+          [W1, FULL],
+        ]),
+      );
+      const busy = makeBoardCard({
+        id: "busy-1",
+        stage: "review",
+        orderKey: "a",
+        worktree: readyWorktree("busy-1"),
+        placedWorkerId: W1,
+      });
+      const card = unplaced("card-1", "b", {
+        threadLinks: [
+          {
+            threadId: ThreadId.make("t-own-plan"),
+            role: "planning",
+            linkedAt: "2026-01-01T00:00:00.000Z",
+            tombstonedAt: null,
+          },
+        ],
+      });
+      yield* withGovernor(
+        {
+          board: { ...world([busy, card]), workers: [registeredWorker(W1)] },
+          settings: settingsWith({ building: [codexStep], globalMaxConcurrent: 9 }),
+          placement: staticPlacement(workersState([workerView(W1)])),
+          capacity,
+          workspaces: loggingWorkspaces(newWorkerGit()),
+          initialShells: new Map(
+            shells.map((shell) =>
+              typeof shell === "string"
+                ? [shell, aliveThreadShell(shell)]
+                : [String(shell.threadId), shell],
+            ),
+          ),
+        },
+        (h) => body(h, card),
+      );
+    });
+
+  it.effect("an idle board server goes first once every remote worker has a card", () =>
+    withBoardServer(["t-own-plan"], (h, card) =>
+      Effect.gen(function* () {
+        yield* h.pumpDomain(movedToBuilding(card, 1));
+        const placed = yield* cardIn(h, "card-1");
+        // The card's own planning turn, still finishing, doesn't make the server busy.
+        assert.strictEqual(placed.placedWorkerId, BOARD_LOCAL_WORKER_ID);
+        assert.deepInclude(placed.resources?.placement, {
+          workerId: BOARD_LOCAL_WORKER_ID,
+          reason: "this server had nothing running",
+        });
+      }),
+    ),
+  );
+
+  it.effect("a thread waiting on a human's answer or permission doesn't keep the server busy", () =>
+    withBoardServer(
+      [
+        { ...aliveThreadShell("t-asks-a-question"), awaitingUserInput: true },
+        { ...aliveThreadShell("t-asks-permission"), awaitingPermission: true },
+      ],
+      (h, card) =>
+        Effect.gen(function* () {
+          yield* h.pumpDomain(movedToBuilding(card, 1));
+          assert.strictEqual((yield* cardIn(h, "card-1")).placedWorkerId, BOARD_LOCAL_WORKER_ID);
+        }),
+    ),
+  );
+
+  it.effect("any other busy thread on the board server keeps it last", () =>
+    withBoardServer(["t-own-plan", "t-someone-elses-chat"], (h, card) =>
+      Effect.gen(function* () {
+        yield* h.pumpDomain(movedToBuilding(card, 1));
+        const placed = yield* cardIn(h, "card-1");
+        assert.strictEqual(placed.placedWorkerId, W1);
+        assert.deepInclude(placed.resources?.placement, {
+          workerId: W1,
+          reason: "kept this server free",
+        });
+      }),
+    ),
   );
 });

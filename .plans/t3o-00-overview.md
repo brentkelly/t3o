@@ -592,9 +592,14 @@ its worktree is). There is no default worker since `T3O-87`.
 - **Placement is recorded only by the placement gate at build start**, on every path that creates a
   card worktree (a build step, CI, Move, removal's re-provision). The gate ranks every eligible
   worker (online, at the floor, ready for the project, provider signed in with quota room, not
-  closed, the whole profile fitting the snapshot less this pass's grants): **warm first** (one of
-  this board's cards finished a Building step for the same repository there in the last 24 hours,
-  most recent first), then the most room left after the card, then worker id. It runs the base
+  closed, the whole profile fitting the snapshot less this pass's grants). Remote workers rank
+  first, by **fewest active cards** (this board's cards placed there from Building up to Ready for
+  merge, groups and blocked cards aside), then **warm** (one of this board's cards finished a
+  Building step for the same repository there in the last 24 hours, most recent first), then the
+  most room left after the card, then worker id. The board server serves the app and runs every
+  planning thread, so it ranks **last** unless it has no active card, no busy thread of any kind
+  but the card's own, and every eligible remote already has a card; then it ranks first (T3O-143).
+  A bias, not a rule: it still takes the card whenever no remote can. It runs the base
   checks on the top candidate with no claim, claims, records the placement with its grant and why,
   then provisions there. A card with a recorded branch starts from its remote branch when the
   remote has it.

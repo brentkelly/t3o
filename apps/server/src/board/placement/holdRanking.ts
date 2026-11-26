@@ -2,7 +2,11 @@
  * Which workers a waiting card holds (T3O-87), as pure functions: the candidates, their order,
  * and the board's limit. The worker decides whether a hold is granted.
  */
-import type { BoardResourceProfile, BoardWorkerId } from "@t3tools/contracts";
+import {
+  BOARD_LOCAL_WORKER_ID,
+  type BoardResourceProfile,
+  type BoardWorkerId,
+} from "@t3tools/contracts";
 
 import type { PlacementWorkerFacts } from "./placementRanking.ts";
 
@@ -53,8 +57,8 @@ const earlyShortfall = (
 
 /**
  * Hold candidates in order: those that already have the early-start share of CPU and RAM,
- * then the smallest shortfall on the short dimension (as a share of what it declares), then
- * the placement order (warm, room left, id) the caller passes.
+ * then remote workers before the board server (T3O-143), then the smallest shortfall on the
+ * short dimension (as a share of what it declares), then the placement order the caller passes.
  */
 export function rankHoldCandidates(input: {
   readonly workers: ReadonlyArray<PlacementWorkerFacts>;
@@ -88,6 +92,8 @@ export function rankHoldCandidates(input: {
       const a = score(left);
       const b = score(right);
       if (a.canStart !== b.canStart) return a.canStart ? -1 : 1;
+      const leftLocal = left.workerId === BOARD_LOCAL_WORKER_ID;
+      if (leftLocal !== (right.workerId === BOARD_LOCAL_WORKER_ID)) return leftLocal ? 1 : -1;
       if (a.shareShort !== b.shareShort) return a.shareShort - b.shareShort;
       const order = placementIndex(left.workerId) - placementIndex(right.workerId);
       if (order !== 0) return order;
