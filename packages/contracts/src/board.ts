@@ -6962,6 +6962,9 @@ export const BoardCardAdmitStepCommand = Schema.Struct({
   queuedBy: Schema.optional(BoardStepQueuedBy),
   /** T3o: what it waits on (T3O-86). */
   queuedDetail: Schema.optional(BoardStepQueuedDetail),
+  /** T3o: the stall that parked this step was misread (the thread was waiting on its own
+      background work), so admission undoes that recovery's charge (T3O-142). */
+  refundStall: Schema.optionalKey(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 export type BoardCardAdmitStepCommand = typeof BoardCardAdmitStepCommand.Type;

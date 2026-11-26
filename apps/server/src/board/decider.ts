@@ -6119,6 +6119,17 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
               startedAt: null,
               updatedAt: command.createdAt,
             };
+      // T3o: undo the charge of a stall the board misread (T3O-142). Deliberately lenient: a
+      // real stall whose thread began background work during the backoff is refunded too.
+      const refunded: BoardCardStepState =
+        command.admitted && command.refundStall === true
+          ? {
+              ...state,
+              attempt: Math.max(1, state.attempt - 1),
+              stallCount: Math.max(0, state.stallCount - 1),
+              stageEntryRecoveries: Math.max(0, state.stageEntryRecoveries - 1),
+            }
+          : state;
       return {
         ...(yield* makeBoardEventBase({
           cardId: command.cardId,
@@ -6126,7 +6137,7 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
           commandId: command.commandId,
         })),
         type: "board.card-step-admitted",
-        payload: { cardId: command.cardId, state },
+        payload: { cardId: command.cardId, state: refunded },
       };
     }
 

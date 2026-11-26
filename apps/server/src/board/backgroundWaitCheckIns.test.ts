@@ -1,6 +1,6 @@
 /**
  * An agent waiting on its own background work is checked on, not nudged: at
- * +5, +15 and +30 minutes, then every 30. The first three are free; later ones
+ * +30 minutes, then every 60. The first two are free; later ones
  * spend the recovery budget and the one crossing a ceiling escalates. Each step
  * advances the TestClock and runs one sweep pass.
  */
@@ -93,20 +93,22 @@ const after = (h: Harness, minutes: number) =>
     yield* h.reactor.drain;
   });
 
-it.effect("check-ins go out at +5, +15 and +30 free, then +60 charged", () =>
+it.effect("check-ins go out at +30 and +90 free, then +150 charged", () =>
   withGovernor(fixture(), (h) =>
     Effect.gen(function* () {
       yield* startWaiting(h);
 
-      yield* after(h, 4);
-      assert.strictEqual(checkInsOf(yield* h.commands), 0, "nothing before +5");
+      yield* after(h, 29);
+      assert.strictEqual(checkInsOf(yield* h.commands), 0, "nothing before +30");
 
       yield* after(h, 1);
-      assert.strictEqual(checkInsOf(yield* h.commands), 1, "+5");
-      yield* after(h, 10);
-      assert.strictEqual(checkInsOf(yield* h.commands), 2, "+15");
-      yield* after(h, 15);
-      assert.strictEqual(checkInsOf(yield* h.commands), 3, "+30");
+      assert.strictEqual(checkInsOf(yield* h.commands), 1, "+30");
+      assert.include(turnTexts(yield* h.commands).at(-1)!, "the wait began about 30 minutes ago");
+      yield* after(h, 59);
+      assert.strictEqual(checkInsOf(yield* h.commands), 1, "nothing before +90");
+      yield* after(h, 1);
+      assert.strictEqual(checkInsOf(yield* h.commands), 2, "+90");
+      assert.include(turnTexts(yield* h.commands).at(-1)!, "the wait began about 90 minutes ago");
 
       const free = stateOf(yield* h.board);
       assert.strictEqual(free?.status, "running");
@@ -114,10 +116,10 @@ it.effect("check-ins go out at +5, +15 and +30 free, then +60 charged", () =>
       assert.strictEqual(free?.attempt, 1);
       assert.strictEqual(free?.stageEntryRecoveries, 0);
 
-      yield* after(h, 29);
-      assert.strictEqual(checkInsOf(yield* h.commands), 3, "nothing before +60");
+      yield* after(h, 59);
+      assert.strictEqual(checkInsOf(yield* h.commands), 2, "nothing before +150");
       yield* after(h, 1);
-      assert.strictEqual(checkInsOf(yield* h.commands), 4, "+60");
+      assert.strictEqual(checkInsOf(yield* h.commands), 3, "+150");
 
       const charged = stateOf(yield* h.board);
       assert.strictEqual(charged?.status, "running");
@@ -136,14 +138,14 @@ it.effect("a check-in turn that ends still waiting keeps the schedule", () =>
   withGovernor(fixture(), (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      yield* after(h, 5);
+      yield* after(h, 30);
       assert.strictEqual(checkInsOf(yield* h.commands), 1);
 
       // The agent checked, its monitor is still running, and it ended its turn.
       yield* h.pumpRuntime(turnCompleted(threadId));
 
-      // The second check-in is still due at +15 from the START of the wait.
-      yield* after(h, 10);
+      // The second check-in is still due at +90 from the START of the wait.
+      yield* after(h, 60);
       assert.strictEqual(checkInsOf(yield* h.commands), 2);
       assert.strictEqual(recoveriesOf(yield* h.commands), 0);
     }),
@@ -155,20 +157,19 @@ it.effect("a wait that never ends escalates to a human once the ladder is spent"
     Effect.gen(function* () {
       yield* startWaiting(h);
       const maxAttempts = stateOf(yield* h.board)!.maxAttempts;
-      // Three free check-ins, then one charged per half hour until the next
+      // Two free check-ins, then one charged per hour until the next
       // would reach `maxAttempts` consecutive stalls.
-      yield* after(h, 5);
-      yield* after(h, 10);
-      yield* after(h, 15);
+      yield* after(h, 30);
+      yield* after(h, 60);
       for (let charged = 1; charged < maxAttempts; charged++) {
-        yield* after(h, 30);
+        yield* after(h, 60);
         assert.strictEqual(stateOf(yield* h.board)?.status, "running");
         assert.strictEqual(stateOf(yield* h.board)?.stallCount, charged);
       }
-      const sent = 3 + maxAttempts - 1;
+      const sent = 2 + maxAttempts - 1;
       assert.strictEqual(checkInsOf(yield* h.commands), sent);
 
-      yield* after(h, 30);
+      yield* after(h, 60);
       const escalated = stateOf(yield* h.board);
       assert.strictEqual(escalated?.status, "stalled");
       assert.strictEqual(escalated?.stalledReason, "gave-up");
@@ -187,7 +188,7 @@ it.effect("a subagent awaiting approval holds every check-in, charge and escalat
       held.add(String(threadId));
       const maxAttempts = stateOf(yield* h.board)!.maxAttempts;
       // Far past every free check-in and the ceiling that would escalate.
-      for (let sweep = 0; sweep < 3 + maxAttempts + 2; sweep++) yield* after(h, 30);
+      for (let sweep = 0; sweep < 2 + maxAttempts + 2; sweep++) yield* after(h, 60);
       const waiting = stateOf(yield* h.board);
       assert.strictEqual(waiting?.status, "running");
       assert.strictEqual(waiting?.stallCount, 0);
@@ -195,11 +196,11 @@ it.effect("a subagent awaiting approval holds every check-in, charge and escalat
       assert.strictEqual(checkInsOf(yield* h.commands), 0);
       assert.strictEqual(stallNudgesOf(yield* h.commands), 0);
 
-      // Answered: the wait restarts, so the first check-in is +5 from now.
+      // Answered: the wait restarts, so the first check-in is +30 from now.
       held.delete(String(threadId));
       yield* after(h, 1);
-      yield* after(h, 4);
-      assert.strictEqual(checkInsOf(yield* h.commands), 0, "nothing before +5 after the answer");
+      yield* after(h, 29);
+      assert.strictEqual(checkInsOf(yield* h.commands), 0, "nothing before +30 after the answer");
       yield* after(h, 1);
       assert.strictEqual(checkInsOf(yield* h.commands), 1);
       assert.strictEqual(stateOf(yield* h.board)?.stallCount, 0);
@@ -216,9 +217,9 @@ it.effect("a subagent approval answered before a check-in is due restarts the wa
       yield* after(h, 2);
       held.delete(String(threadId));
       yield* after(h, 2);
-      yield* after(h, 1);
+      yield* after(h, 27);
       assert.strictEqual(checkInsOf(yield* h.commands), 0, "the wait restarted at +4");
-      yield* after(h, 4);
+      yield* after(h, 3);
       assert.strictEqual(checkInsOf(yield* h.commands), 1);
     }),
   );
@@ -229,21 +230,22 @@ it.effect("a hold released after charged check-ins resumes one interval out", ()
   return withGovernor({ ...fixture(), subagentsAwaitingApproval: held }, (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      yield* after(h, 5);
-      yield* after(h, 10);
-      yield* after(h, 15);
       yield* after(h, 30);
-      assert.strictEqual(checkInsOf(yield* h.commands), 4);
+      yield* after(h, 60);
+      yield* after(h, 60);
+      assert.strictEqual(checkInsOf(yield* h.commands), 3);
 
       held.add(String(threadId));
-      yield* after(h, 30);
-      yield* after(h, 30);
+      yield* after(h, 60);
+      yield* after(h, 60);
       held.delete(String(threadId));
       yield* after(h, 1);
-      yield* after(h, 29);
-      assert.strictEqual(checkInsOf(yield* h.commands), 4, "nothing before one interval");
+      yield* after(h, 59);
+      assert.strictEqual(checkInsOf(yield* h.commands), 3, "nothing before one interval");
       yield* after(h, 1);
-      assert.strictEqual(checkInsOf(yield* h.commands), 5, "one interval after the release");
+      assert.strictEqual(checkInsOf(yield* h.commands), 4, "one interval after the release");
+      // The wording counts from when the wait really began, hold included.
+      assert.include(turnTexts(yield* h.commands).at(-1), "the wait began about 331 minutes ago");
     }),
   );
 });
@@ -260,18 +262,19 @@ it.effect("a commit mid-wait restarts the schedule and the stall streak", () => 
   return withGovernor(input, (h) =>
     Effect.gen(function* () {
       yield* startWaiting(h);
-      yield* after(h, 5);
-      yield* after(h, 10);
-      yield* after(h, 15);
       yield* after(h, 30);
-      assert.strictEqual(checkInsOf(yield* h.commands), 4);
+      yield* after(h, 60);
+      yield* after(h, 60);
+      assert.strictEqual(checkInsOf(yield* h.commands), 3);
       assert.strictEqual(stateOf(yield* h.board)?.stallCount, 1, "one charged check-in");
 
       // The agent commits real work while its job runs: a new wait.
       committedAt = DateTime.formatIso(yield* DateTime.now);
       yield* after(h, 1);
-      yield* after(h, 5);
-      assert.strictEqual(checkInsOf(yield* h.commands), 5, "the new wait's first check");
+      yield* after(h, 29);
+      assert.strictEqual(checkInsOf(yield* h.commands), 3, "nothing before the new wait's +30");
+      yield* after(h, 1);
+      assert.strictEqual(checkInsOf(yield* h.commands), 4, "the new wait's first check");
 
       const reset = stateOf(yield* h.board);
       assert.strictEqual(reset?.stallCount, 0, "progress zeroes the streak");
@@ -292,10 +295,9 @@ it.effect("a commit made during a woken turn resets the stall streak", () => {
   return withGovernor(input, (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      yield* after(h, 5);
-      yield* after(h, 10);
-      yield* after(h, 15);
       yield* after(h, 30);
+      yield* after(h, 60);
+      yield* after(h, 60);
       // The agent answers the charged check-in, still waiting.
       yield* h.pumpRuntime(turnCompleted(threadId));
       assert.strictEqual(stateOf(yield* h.board)?.stallCount, 1, "one charged check-in");
@@ -306,8 +308,8 @@ it.effect("a commit made during a woken turn resets the stall streak", () => {
       committedAt = DateTime.formatIso(yield* DateTime.now);
       yield* h.pumpRuntime(turnCompleted(threadId));
 
-      yield* after(h, 5);
-      assert.strictEqual(checkInsOf(yield* h.commands), 5, "the new wait's first check");
+      yield* after(h, 30);
+      assert.strictEqual(checkInsOf(yield* h.commands), 4, "the new wait's first check");
       const reset = stateOf(yield* h.board);
       assert.strictEqual(reset?.stallCount, 0, "the woken turn's commit zeroes the streak");
       assert.strictEqual(reset?.attempt, 1);
@@ -340,7 +342,7 @@ it.effect(
         assert.strictEqual(stateOf(yield* h.board)?.status, "running", "not left violet");
 
         // Back on running, the wait is one the sweep checks in on.
-        yield* after(h, 5);
+        yield* after(h, 30);
         const commands = yield* h.commands;
         assert.strictEqual(checkInsOf(commands), 1);
         assert.strictEqual(recoveriesOf(commands), 0);
@@ -354,7 +356,7 @@ it.effect("a todo edit while answering a check-in does not restart the schedule"
   return withGovernor(fixture(todos), (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      yield* after(h, 5);
+      yield* after(h, 30);
       assert.strictEqual(checkInsOf(yield* h.commands), 1);
 
       // The agent answers the check-in — its todo list advances — and ends the
@@ -364,13 +366,13 @@ it.effect("a todo edit while answering a check-in does not restart the schedule"
       });
       yield* h.pumpRuntime(turnCompleted(threadId));
 
-      // Nothing new at +5 from the reply; the second is still due at +15 from
+      // Nothing new at +30 from the reply; the second is still due at +90 from
       // the start of the wait.
-      yield* after(h, 9);
+      yield* after(h, 59);
       assert.strictEqual(checkInsOf(yield* h.commands), 1, "the reply did not restart the wait");
       yield* after(h, 1);
       assert.strictEqual(checkInsOf(yield* h.commands), 2);
-      yield* after(h, 15);
+      yield* after(h, 60);
       assert.strictEqual(checkInsOf(yield* h.commands), 3);
     }),
   );
@@ -380,19 +382,19 @@ it.effect("a turn the board did not start restarts the schedule", () =>
   withGovernor(fixture(), (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      yield* after(h, 5);
+      yield* after(h, 30);
       yield* h.pumpRuntime(turnCompleted(threadId));
-      yield* after(h, 10);
+      yield* after(h, 60);
       yield* h.pumpRuntime(turnCompleted(threadId));
       assert.strictEqual(checkInsOf(yield* h.commands), 2);
 
-      // The provider woke the agent; it worked, started a new job and ended
-      // its turn still waiting. That is a new wait.
+      // The provider woke the agent (a subagent finished); it ended its turn
+      // still waiting on the others. That is a new wait.
       yield* after(h, 1);
       yield* h.pumpRuntime(turnCompleted(threadId));
 
-      // The new wait's first check is five minutes out — not the old +30.
-      yield* after(h, 4);
+      // The new wait's first check is 30 minutes out — not the old +150.
+      yield* after(h, 29);
       assert.strictEqual(checkInsOf(yield* h.commands), 2);
       yield* after(h, 1);
       assert.strictEqual(checkInsOf(yield* h.commands), 3);
@@ -412,8 +414,8 @@ it.effect("a quiet thread with background work is put on the schedule without a 
       // Long before the step's timeout, the sweep begins the wait...
       yield* after(h, 1);
       assert.strictEqual(checkInsOf(yield* h.commands), 0);
-      // ...and its first check-in goes out five minutes later.
-      yield* after(h, 5);
+      // ...and its first check-in goes out 30 minutes later.
+      yield* after(h, 30);
       assert.strictEqual(checkInsOf(yield* h.commands), 1);
       assert.strictEqual(recoveriesOf(yield* h.commands), 0);
     }),
@@ -424,7 +426,7 @@ it.effect("a turn that ends with the background work gone ends the wait", () =>
   withGovernor(fixture(), (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      yield* after(h, 5);
+      yield* after(h, 30);
       assert.strictEqual(checkInsOf(yield* h.commands), 1);
 
       // The job finished; the agent ended its turn without completing.
@@ -432,20 +434,128 @@ it.effect("a turn that ends with the background work gone ends the wait", () =>
       yield* h.pumpRuntime(turnCompleted(threadId));
       assert.strictEqual(recoveriesOf(yield* h.commands), 1, "ordinary recovery applies");
 
-      yield* after(h, 10);
+      yield* after(h, 60);
       assert.strictEqual(checkInsOf(yield* h.commands), 1, "no check-in after the wait ended");
     }),
   ),
 );
 
-it.effect("a live turn is not checked in on", () =>
+it.effect("a live turn is not checked in on, and keeps its wait", () =>
   withGovernor(fixture(), (h) =>
     Effect.gen(function* () {
       const threadId = yield* startWaiting(h);
-      // The provider woke the agent and it is mid-turn.
-      yield* setShell(h.shells, threadId, "monitoring", "running");
-      yield* after(h, 5);
+      // The provider woke the agent and it is mid-turn: a live turn reads no background work.
+      yield* setShell(h.shells, threadId, null, "running");
+      yield* after(h, 30);
       assert.strictEqual(checkInsOf(yield* h.commands), 0);
+
+      // Back between turns with its monitor running, and the turn end missed: the
+      // original wait is still there, so its overdue check-in goes out now.
+      yield* setShell(h.shells, threadId, "monitoring");
+      yield* after(h, 1);
+      assert.strictEqual(checkInsOf(yield* h.commands), 1);
+    }),
+  ),
+);
+
+/** Advance past a backoff rung and fire the due retries. */
+const retryAfter = (h: Harness, minutes: number) =>
+  Effect.gen(function* () {
+    yield* TestClock.adjust(Duration.minutes(minutes));
+    yield* h.reactor.fireRetries;
+    yield* h.reactor.drain;
+  });
+
+/** Answer the latest check-in: a live reply turn the sweep sees, then its end
+    with the background work still pending. */
+const answerCheckIn = (h: Harness, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    yield* setShell(h.shells, threadId, null, "running");
+    yield* after(h, 1);
+    yield* setShell(h.shells, threadId, "monitoring");
+    yield* h.pumpRuntime(turnCompleted(threadId));
+  });
+
+it.effect("a sweep during a check-in reply keeps the wait, so the ladder climbs", () =>
+  withGovernor(fixture(), (h) =>
+    Effect.gen(function* () {
+      const threadId = yield* startWaiting(h);
+      yield* after(h, 30);
+      assert.strictEqual(checkInsOf(yield* h.commands), 1);
+      yield* answerCheckIn(h, threadId);
+
+      // Not 30 minutes after the reply: the second rung, +90 from the start.
+      yield* after(h, 58);
+      assert.strictEqual(checkInsOf(yield* h.commands), 1, "nothing before +90");
+      yield* after(h, 1);
+      assert.strictEqual(checkInsOf(yield* h.commands), 2, "+90");
+      assert.strictEqual(stateOf(yield* h.board)?.stallCount, 0);
+      yield* answerCheckIn(h, threadId);
+
+      yield* after(h, 59);
+      assert.strictEqual(checkInsOf(yield* h.commands), 3, "+150");
+      assert.strictEqual(stateOf(yield* h.board)?.stallCount, 1, "the third is charged");
+      assert.strictEqual(stallNudgesOf(yield* h.commands), 0);
+    }),
+  ),
+);
+
+it.effect("a step already charged for a stall escalates after fewer charged check-ins", () =>
+  withGovernor(fixture(), (h) =>
+    Effect.gen(function* () {
+      yield* h.pumpDomain(movedToBuilding(buildingCard(CARD, "m"), 1));
+      const threadId = stateOf(yield* h.board)!.threadId!;
+      // A real stall: the turn ended with nothing running.
+      yield* setShell(h.shells, threadId, null);
+      yield* h.pumpRuntime(turnCompleted(threadId));
+      assert.strictEqual(stateOf(yield* h.board)?.stalledReason, "waiting-retry");
+      // The backoff rung (2 min ±1) re-admits it with the stall nudge.
+      yield* retryAfter(h, 4);
+      assert.strictEqual(stallNudgesOf(yield* h.commands), 1);
+      assert.strictEqual(stateOf(yield* h.board)?.stallCount, 1);
+
+      // The agent then waits on a monitor.
+      yield* setShell(h.shells, threadId, "monitoring");
+      yield* h.pumpRuntime(turnCompleted(threadId));
+      const maxAttempts = stateOf(yield* h.board)!.maxAttempts;
+      yield* after(h, 30);
+      yield* after(h, 60);
+      for (let stalls = 2; stalls < maxAttempts; stalls++) {
+        yield* after(h, 60);
+        assert.strictEqual(stateOf(yield* h.board)?.status, "running");
+        assert.strictEqual(stateOf(yield* h.board)?.stallCount, stalls);
+      }
+      yield* after(h, 60);
+      assert.strictEqual(stateOf(yield* h.board)?.stalledReason, "gave-up");
+      assert.strictEqual(checkInsOf(yield* h.commands), 2 + maxAttempts - 2);
+    }),
+  ),
+);
+
+it.effect("a stall retry that finds the thread waiting on background work starts a wait", () =>
+  withGovernor(fixture(), (h) =>
+    Effect.gen(function* () {
+      yield* h.pumpDomain(movedToBuilding(buildingCard(CARD, "m"), 1));
+      const threadId = stateOf(yield* h.board)!.threadId!;
+      // The turn end read no background work, so the step parked for a retry...
+      yield* setShell(h.shells, threadId, null);
+      yield* h.pumpRuntime(turnCompleted(threadId));
+      assert.strictEqual(stateOf(yield* h.board)?.stalledReason, "waiting-retry");
+      // ...but by the retry the thread reads as waiting on its subagents.
+      yield* setShell(h.shells, threadId, "working");
+      yield* retryAfter(h, 4);
+
+      const resumed = stateOf(yield* h.board);
+      assert.strictEqual(resumed?.status, "running");
+      assert.strictEqual(stallNudgesOf(yield* h.commands), 0, "no stall nudge");
+      // The misread stall is refunded, so the ceilings count only real stalls.
+      assert.strictEqual(resumed?.stallCount, 0);
+      assert.strictEqual(resumed?.attempt, 1);
+      assert.strictEqual(resumed?.stageEntryRecoveries, 0);
+
+      // The check-in ladder supervises it from the retry.
+      yield* after(h, 29);
+      assert.strictEqual(checkInsOf(yield* h.commands), 1);
     }),
   ),
 );

@@ -726,6 +726,70 @@ describe("V2 environment commands", () => {
       }).pipe(Effect.provide(layerTestRandom)),
   );
 
+  // T3o: a queued wake run is not the run to stop (T3O-142).
+  it.effect("dispatches Stop for the run before a queued one when background work pends", () =>
+    Effect.gen(function* () {
+      const settledRunId = RunId.make("run-completed");
+      const run = (id: RunId, ordinal: number, status: "completed" | "queued") => ({
+        id,
+        threadId: v2ThreadId,
+        ordinal,
+        providerInstanceId: v2Projection.thread.providerInstanceId,
+        modelSelection: v2Projection.thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make(`message-${ordinal}`),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status,
+        requestedAt: v2Now,
+        startedAt: status === "queued" ? null : v2Now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      });
+      const projection: OrchestrationV2ThreadProjection = {
+        ...v2Projection,
+        runs: [run(settledRunId, 1, "completed"), run(RunId.make("run-queued"), 2, "queued")],
+        turnItems: [
+          {
+            id: TurnItemId.make("background-command"),
+            threadId: v2ThreadId,
+            runId: settledRunId,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "running",
+            title: null,
+            startedAt: v2Now,
+            completedAt: null,
+            updatedAt: v2Now,
+            type: "command_execution",
+            input: "vp run dev",
+          },
+        ],
+      };
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [], projection });
+
+      yield* interruptThreadTurn({ threadId: v2ThreadId }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+
+      expect(commands).toEqual([
+        {
+          type: "run.interrupt",
+          commandId: expect.any(String),
+          threadId: v2ThreadId,
+          runId: settledRunId,
+          holdQueue: true,
+        },
+      ]);
+    }).pipe(Effect.provide(layerTestRandom)),
+  );
+
   it.effect(
     "a native subagent stop targets its owning run rather than holding the parent queue",
     () =>

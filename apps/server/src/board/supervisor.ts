@@ -203,13 +203,14 @@ export function boardRecoveryNudge(input: {
   const decides = input.stepId !== undefined && boardReviewQuestionAnswer(input.stepId) !== null;
   const nudgeLines = [
     `Your previous turn ended without calling board_complete_step, so your work is not finished.`,
+    BOARD_BACKGROUND_WAIT_REMINDER,
     decides
       ? `Continue where you left off and call board_complete_step when done. ${boardBlockedInstruction(input.stepId!)}`
       : `Continue where you left off and call board_complete_step when done; if you are blocked, ${BOARD_ENVELOPE_QUESTION_MECHANISM}.`,
   ];
   if (input.stallCount >= 3) {
     nudgeLines.splice(
-      1,
+      2,
       0,
       `Summarise what is still outstanding before continuing, so nothing is dropped.`,
     );
@@ -226,13 +227,17 @@ export function boardRecoveryNudge(input: {
   return nudgeLines.join(" ");
 }
 
+const BOARD_BACKGROUND_WAIT_REMINDER = `If you ended your turn to wait on a background command or monitor you started, call t3_background_wait with its task ID before ending your turn, so the board knows you are waiting rather than stalled.`;
+
 /**
- * Background-wait check-in offsets from when the wait began: 5, 15, 30 minutes, then every
- * 30. Fixed rather than a multiple of `timeoutMs`: a background job's length says nothing
+ * Background-wait check-in offsets from when the wait began: 30 minutes, then every 60.
+ * Fixed rather than a multiple of `timeoutMs`: a background job's length says nothing
  * about how long a turn should take.
  */
-const BOARD_BACKGROUND_CHECK_IN_OFFSETS_MS = [5 * 60_000, 15 * 60_000, 30 * 60_000] as const;
-const BOARD_BACKGROUND_CHECK_IN_INTERVAL_MS = 30 * 60_000;
+const BOARD_BACKGROUND_CHECK_IN_OFFSETS_MS = [30 * 60_000] as const;
+const BOARD_BACKGROUND_CHECK_IN_INTERVAL_MS = 60 * 60_000;
+/** Check-ins that never spend the recovery budget. */
+const BOARD_BACKGROUND_FREE_CHECK_INS = 2;
 
 /** When the next check-in of a wait is due, in epoch ms. `checkInsSent` is how
     many this wait has already had. */
@@ -260,22 +265,23 @@ export function boardBackgroundWaitResumedSinceMs(input: {
   );
 }
 
-/** Whether a check-in spends the recovery budget. The scheduled ones
-    in the first half hour are free; every one after that is charged like a
-    recovery, so a background job that never finishes reaches a human at the
-    existing ceilings — about three hours at the default `maxAttempts` of 5. */
+/** Whether a check-in spends the recovery budget. The first two are free;
+    every one after that is charged like a recovery, so a background job that
+    never finishes reaches a human at the existing ceilings — about six and a
+    half hours at the default `maxAttempts` of 5. */
 export function boardBackgroundCheckInCharged(checkInsSent: number): boolean {
-  return checkInsSent >= BOARD_BACKGROUND_CHECK_IN_OFFSETS_MS.length;
+  return checkInsSent >= BOARD_BACKGROUND_FREE_CHECK_INS;
 }
 
 /**
  * Not `boardRecoveryNudge`: waiting is not a failure, and failure wording makes the agent
  * apologise and end another turn. It must LOOK: agents report dead work as still running.
  */
-export function boardBackgroundCheckInNudge(): string {
+export function boardBackgroundCheckInNudge(waitedMinutes: number): string {
+  const minutes = waitedMinutes === 1 ? "1 minute" : `${waitedMinutes} minutes`;
   return [
-    `You ended your turn with background work still running (a background command, a monitor, or subagents), and this is a scheduled check-in on it.`,
-    `Actually verify it is still alive (check the process, its output file, or the task status) rather than assuming it is.`,
+    `This is a scheduled check-in on the background work you are waiting on (a background command, a monitor, or subagents); the wait began about ${minutes} ago.`,
+    `Actually check its state (the process, its output file, the task status, or the child thread) rather than assuming it is still running, and give a one-line status update.`,
     `If it has finished or died, deal with the result and carry on toward board_complete_step.`,
     `If it is genuinely still running, end your turn again; you will be woken when it reports.`,
   ].join(" ");
@@ -406,11 +412,9 @@ export interface BoardQueueCandidate {
 }
 
 /**
- * The governor's total order: later stage first (finishing beats starting), then started
- * before unstarted (so a half-done card is never starved by fresh work), then priority (it
- * only decides between cards waiting at the same stage), then drag order.
- * Callers offer candidates to `acquire` in this order; greedy allocation and preemption at a
- * step boundary both fall out of iterating it.
+ * The governor's total order: later stage first, then started before unstarted (so a half-done
+ * card is never starved), then priority within a stage, then drag order. Callers offer
+ * candidates to `acquire` in this order; greedy allocation and preemption fall out of it.
  */
 export function orderBoardQueue(
   candidates: ReadonlyArray<BoardQueueCandidate>,
