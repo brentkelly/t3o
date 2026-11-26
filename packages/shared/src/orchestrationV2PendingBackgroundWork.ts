@@ -36,7 +36,7 @@ const TERMINAL_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
 ]);
 
 // waiting is completed work awaiting checkpoints; exclude rolled_back entirely because provider threads are not run-tied.
-// A queued run has not started (a live run is `hasActiveRun`), so the work the turn before it left still pends.
+// T3o: a queued run has not started (a live run is `hasActiveRun`), so the work before it still pends (T3O-142).
 const SETTLED_FOR_BACKGROUND_WAIT_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
   "cancelled",
   "completed",

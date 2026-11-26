@@ -113,6 +113,7 @@ describe("derivePendingBackgroundWork", () => {
     expect(tasks).toEqual([{ taskId: "cmd-1", description: "npm test", kind: "command" }]);
   });
 
+  // T3o: a queued wake run must not hide pending sibling work (T3O-142).
   it("T3O-142: keeps sibling subagents pending while a wake run waits in the queue", () => {
     // One delegate's wake run ended (waiting on its checkpoint) while a second delegate's wake
     // run queued behind it; the two still running must not drop out of the pending list.

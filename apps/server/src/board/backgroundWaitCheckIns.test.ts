@@ -244,6 +244,8 @@ it.effect("a hold released after charged check-ins resumes one interval out", ()
       assert.strictEqual(checkInsOf(yield* h.commands), 3, "nothing before one interval");
       yield* after(h, 1);
       assert.strictEqual(checkInsOf(yield* h.commands), 4, "one interval after the release");
+      // The wording counts from when the wait really began, hold included.
+      assert.include(turnTexts(yield* h.commands).at(-1), "the wait began about 331 minutes ago");
     }),
   );
 });
@@ -546,6 +548,10 @@ it.effect("a stall retry that finds the thread waiting on background work starts
       const resumed = stateOf(yield* h.board);
       assert.strictEqual(resumed?.status, "running");
       assert.strictEqual(stallNudgesOf(yield* h.commands), 0, "no stall nudge");
+      // The misread stall is refunded, so the ceilings count only real stalls.
+      assert.strictEqual(resumed?.stallCount, 0);
+      assert.strictEqual(resumed?.attempt, 1);
+      assert.strictEqual(resumed?.stageEntryRecoveries, 0);
 
       // The check-in ladder supervises it from the retry.
       yield* after(h, 29);

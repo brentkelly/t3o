@@ -3469,6 +3469,16 @@ const make = Effect.gen(function* () {
         return "no-thread";
       }
       if (yield* threadGone(state.threadId)) return "no-thread";
+      // A stall read at the turn end can be stale by now: a thread that has since ended its turn to
+      // wait on its own background work goes on the check-in schedule, not the stall nudge, and
+      // the misread stall's charge is refunded.
+      const waitingOnBackground =
+        state.stalledReason === "waiting-retry" &&
+        !state.humanInLoop &&
+        (yield* liveThread(state.threadId).pipe(
+          Effect.map((shell) => shell?.waitingOnBackground ?? false),
+          Effect.catchCause(() => Effect.succeed(false)),
+        ));
       const admitted = yield* dispatchOptional({
         type: "board.card.admit-step",
         commandId: yield* commandId("admit-step"),
@@ -3476,19 +3486,11 @@ const make = Effect.gen(function* () {
         stepId: state.stepId,
         admitted: true,
         threadId: state.threadId,
+        ...(waitingOnBackground ? { refundStall: true as const } : {}),
         createdAt: yield* nowIso,
       });
       if (!admitted) return "refused";
-      // A stall read at the turn end can be stale by now: a thread that has since ended its turn to
-      // wait on its own background work goes on the check-in schedule, not the stall nudge.
-      if (
-        state.stalledReason === "waiting-retry" &&
-        !state.humanInLoop &&
-        (yield* liveThread(state.threadId).pipe(
-          Effect.map((shell) => shell?.waitingOnBackground ?? false),
-          Effect.catchCause(() => Effect.succeed(false)),
-        ))
-      ) {
+      if (waitingOnBackground) {
         yield* Effect.logInfo(
           "board supervisor: stall retry found the thread waiting on background work",
           {
@@ -13784,7 +13786,10 @@ const make = Effect.gen(function* () {
   const backgroundWaits = new Map<
     string,
     {
+      /** The schedule's base; a human's hold back-dates it. */
       readonly since: string;
+      /** When the wait really began, for the check-in's wording. */
+      readonly startedAt: string;
       readonly checkInsSent: number;
       readonly checkInOutstanding: boolean;
       readonly progressed: boolean;
@@ -13795,6 +13800,7 @@ const make = Effect.gen(function* () {
   const beginBackgroundWait = (threadId: ThreadId, now: string, progressed = false) =>
     void backgroundWaits.set(String(threadId), {
       since: now,
+      startedAt: now,
       checkInsSent: 0,
       checkInOutstanding: false,
       progressed,
@@ -13909,6 +13915,7 @@ const make = Effect.gen(function* () {
       });
       backgroundWaits.set(key, {
         since: DateTime.formatIso(DateTime.makeUnsafe(resumedSinceMs)),
+        startedAt: wait.startedAt,
         checkInsSent: wait.checkInsSent,
         checkInOutstanding: false,
         progressed: wait.progressed,
@@ -13960,6 +13967,7 @@ const make = Effect.gen(function* () {
     if (!checkedIn) return true;
     backgroundWaits.set(key, {
       since: wait.since,
+      startedAt: wait.startedAt,
       checkInsSent: wait.checkInsSent + 1,
       checkInOutstanding: true,
       progressed: false,
@@ -13967,7 +13975,7 @@ const make = Effect.gen(function* () {
     yield* sendTurn({
       threadId: state.threadId,
       text: boardBackgroundCheckInNudge(
-        Math.max(1, Math.round((input.nowMs - Date.parse(wait.since)) / 60_000)),
+        Math.max(1, Math.round((input.nowMs - Date.parse(wait.startedAt)) / 60_000)),
       ),
       runtimeMode: state.runtimeMode,
     });

@@ -937,7 +937,8 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
         run.status === "waiting",
     )?.id;
     if (runId === undefined) {
-      const latestRun = projection.runs.at(-1);
+      // T3o: a queued run has not started, so the Stop targets the run before it (T3O-142).
+      const latestRun = projection.runs.findLast((run) => run.status !== "queued");
       if (
         derivePendingBackgroundWork({
           latestRun,
