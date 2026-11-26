@@ -6119,7 +6119,8 @@ const decideBoardCommandCore = Effect.fn("decideBoardCommandCore")(function* ({
               startedAt: null,
               updatedAt: command.createdAt,
             };
-      // T3o: undo the charge of a stall the board misread (T3O-142).
+      // T3o: undo the charge of a stall the board misread (T3O-142). Deliberately lenient: a
+      // real stall whose thread began background work during the backoff is refunded too.
       const refunded: BoardCardStepState =
         command.admitted && command.refundStall === true
           ? {
