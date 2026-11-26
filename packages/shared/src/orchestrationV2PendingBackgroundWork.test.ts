@@ -113,6 +113,37 @@ describe("derivePendingBackgroundWork", () => {
     expect(tasks).toEqual([{ taskId: "cmd-1", description: "npm test", kind: "command" }]);
   });
 
+  it("T3O-142: keeps sibling subagents pending while a wake run waits in the queue", () => {
+    // One delegate's wake run ended (waiting on its checkpoint) while a second delegate's wake
+    // run queued behind it; the two still running must not drop out of the pending list.
+    const runs = [
+      { id: "wake-1" as never, ordinal: 1, status: "waiting" as const },
+      { id: "wake-2" as never, ordinal: 2, status: "queued" as const },
+    ];
+    const subagent = (id: string) => ({
+      id,
+      type: "subagent" as const,
+      status: "running" as const,
+      title: null,
+    });
+    const tasks = derivePendingBackgroundWork({
+      latestRun: runs[1],
+      runs,
+      providerThreads: [],
+      turnItems: [subagent("delegate-b"), subagent("delegate-c")],
+    });
+    expect(tasks.map((task) => task.taskId)).toEqual(["delegate-b", "delegate-c"]);
+    // The SQL shell read passes only the presented run's status and whether a run is active.
+    expect(
+      derivePendingBackgroundWork({
+        latestRun: runs[1],
+        hasActiveRun: false,
+        providerThreads: [],
+        turnItems: [subagent("delegate-b")],
+      }),
+    ).toHaveLength(1);
+  });
+
   it("excludes rolled_back items when the latest run is waiting", () => {
     const tasks = derivePendingBackgroundWork({
       latestRun: { id: "run-2" as never, ordinal: 2, status: "waiting" },
