@@ -6,6 +6,7 @@
  */
 import {
   boardPlanReviewCreationDefaults,
+  boardCardStepCompletions,
   boardCardStepState,
   boardProjectStageConfig,
   boardStageWithRole,
@@ -77,7 +78,9 @@ export function planReviewPolicy(input: {
   if (input.state.planReviewStartedAt === undefined || rounds === undefined) return null;
   return {
     targetRounds: rounds,
-    unattended: resolveCardPlanReview(input).unattended === true,
+    // A pending Auto-plan answers for the human, so the review runs unattended (T3O-141).
+    unattended:
+      resolveCardPlanReview(input).unattended === true || isBoardCardAutoPlanPending(input.card),
     splitApprovedAfterReview: input.card.pendingSplitApproval !== undefined,
   };
 }
@@ -141,6 +144,26 @@ export function runningPlanReviewStep(input: {
   if (state.stepId !== planStage.stageId || isBoardTerminalStepStatus(state.status)) return null;
   if (state.planReviewStartedAt === undefined || state.planReviewRounds === undefined) return null;
   return input.card.planReview?.enabled === false ? null : state;
+}
+
+/** The live plan step while a review is still underway on it, or null: as
+    `runningPlanReviewStep`, but not a review the step's recorded success already
+    covers, which a reopen leaves stamped on the step (T3O-141). */
+export function planReviewUnderwayStep(input: {
+  readonly board: BoardState;
+  readonly card: BoardCard;
+  readonly settings: BoardSettings;
+}): BoardCardStepState | null {
+  const state = runningPlanReviewStep(input);
+  if (state === null || state.planReviewStartedAt === undefined) return null;
+  const startedAt = state.planReviewStartedAt;
+  const covered = boardCardStepCompletions(input.board, input.card.id).some(
+    (entry) =>
+      entry.stepId === state.stepId &&
+      entry.outcome === "succeeded" &&
+      startedAt <= entry.completedAt,
+  );
+  return covered ? null : state;
 }
 
 /** The instructions for a started review, worded for the step's stance now:

@@ -48,7 +48,8 @@ With **Unattended** on, the review runs like Auto-plan: the agent asks you nothi
 finding itself and flags contentious or uncertain calls as unclear or important on the decision
 log. Turning it on mid-review
 takes effect at the agent's next round; if the agent is already waiting on a question about a
-finding, the board answers it once, telling it to decide for itself.
+finding, the board answers it once, telling it to decide for itself. Turning Auto-plan on during
+a review, including through **Make hands off** or a group's setting, turns Unattended on too.
 
 The card's **Auto sign-off** applies to any finished review, attended or unattended: with it on, the
 reviewed plan (or split) is approved without you when the review ends; with it off, the plan waits

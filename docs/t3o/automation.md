@@ -15,7 +15,9 @@ User-facing wording lives in `docs/user/board-auto-plan.md`, `board-plan-review.
 2. **Auto plan review** (the plan review's **Unattended** setting). When the plan review starts, the
    agent works through every finding on its own, answering questions and making calls. It flags the
    contentious calls in the card summary (decisions marked Unclear or Important) and does not stop
-   to ask.
+   to ask. Auto-plan includes an unattended review, so turning Auto-plan on (card, group or Make
+   hands off) while a review runs turns that card's Unattended on, never interrupting the review;
+   turning Auto-plan off leaves it on (`T3O-141`).
 3. **Auto sign-off.** When the plan is complete, the card moves to Ready. A proposed split is
    approved too: the card is split first and then the group moves to Ready.
 4. **Auto-build.** A card in Ready moves to Building, including one that has only just arrived in
@@ -56,7 +58,8 @@ included.
 - **A step skip is a human call, not a failure** (`T3O-130`). A pass whose other steps passed is a
   pass, so the gates after CI, Auto-merge included, run as usual. A pass where every step was
   skipped vouches for nothing and is held.
-- **Flake cards are the one place the board turns automation on by itself.** Each flaky test files
+- **Flake cards are the one place the board turns automation on by itself**, apart from Auto-plan
+  turning a running review's Unattended on. Each flaky test files
   a low-priority bug card in the same project, made by the system actor "CI: flaky test", with Auto-plan, Auto
   sign-off and Auto-build on, Auto-merge explicitly off (board-wide Auto-merge still locks it on,
   as for every card), and an unattended plan review. If the toggles are refused it stays in

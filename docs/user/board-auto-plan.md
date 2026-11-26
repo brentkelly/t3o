@@ -49,8 +49,11 @@ You can turn the switches on before the card gets there. A card in Backlog with 
 planned unattended as soon as it reaches Planning.
 
 Turning Auto-plan on mid-interview hands the rest of the interview to the agent in the same thread:
-it is told to stop asking and decide the rest itself, still running any plan review to the end, and a question it is waiting on is answered with that
-instruction. Turning it off mid-run tells the agent you are back. Auto sign-off stays as you set it,
+it is told to stop asking and decide the rest itself, and a question it is waiting on is answered
+with that instruction. Turning it off mid-run tells the agent you are back. During a plan review,
+Auto-plan never interrupts the review: it turns the review's **Unattended** on, and the agent is
+told when its current turn ends. Turning Auto-plan off again leaves Unattended on until you turn it
+off yourself. Auto sign-off stays as you set it,
 and acts when planning finishes whether or not Auto-plan is on.
 
 An unattended planning agent that asks a question anyway is told to decide for itself and log the
@@ -64,9 +67,9 @@ when the stage sets none, and it never edits files in the project root.
 - A switch locks once its stage has passed: Auto-plan and Auto sign-off once the card leaves
   Planning, Auto-build once the card is building. A locked switch that is on can still be turned
   off.
-- Auto-plan can still be turned on after the agent marked planning finished, for example while it
-  runs a plan review you asked for. If its thread is still working, the agent is handed over when
-  its current turn ends, and when it finishes again the plan is approved if Auto sign-off is on. If
+- Auto-plan can still be turned on after the agent marked planning finished. During a plan review
+  you asked for, it makes the review unattended as above. Otherwise, if its thread is still
+  working, the agent is handed over when its current turn ends, and when it finishes again the plan is approved if Auto sign-off is on. If
   the thread has already finished, nothing is sent and the plan waits for your approval.
 - Dragging a card back out of Building turns its Auto-build off, and back into Planning its
   Auto-plan and Auto sign-off off, so a card you pulled back waits for you. Turn them on again to

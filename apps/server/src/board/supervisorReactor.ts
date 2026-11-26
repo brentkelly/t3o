@@ -349,6 +349,7 @@ import {
   planReviewPolicyFingerprint,
   planReviewPolicyMessage,
   resolveCardPlanReview,
+  planReviewUnderwayStep,
   runningPlanReviewStep,
 } from "./planReview.ts";
 // T3o: the automation gate sweep (T3O-115).
@@ -3285,7 +3286,7 @@ const make = Effect.gen(function* () {
   );
 
   /** The review policy owed to a card's planning thread: it changed since it was last
-      delivered. Null when nothing is owed, or no review has started on a live plan step. */
+      delivered. Null when nothing is owed, or no review is underway on a live plan step. */
   const owedPlanReviewPolicy = Effect.fnUntraced(function* (cardId: BoardCardId) {
     const board = yield* readBoard;
     const settings = yield* boardSettings;
@@ -3293,7 +3294,7 @@ const make = Effect.gen(function* () {
     const state = boardCardStepState(board, cardId);
     if (card === undefined || state === null || state.threadId === null) return null;
     if (state.status !== "running" && state.status !== "awaiting-input") return null;
-    if (runningPlanReviewStep({ board, card, settings }) === null) return null;
+    if (planReviewUnderwayStep({ board, card, settings }) === null) return null;
     const policy = planReviewPolicy({ board, card, settings, state });
     if (policy === null) return null;
     const fingerprint = planReviewPolicyFingerprint(policy);
@@ -10845,10 +10846,16 @@ const make = Effect.gen(function* () {
   };
 
   /** Turning Auto-plan on reopened this step, the run is still pending and the agent has not
-      finished again. */
-  const reopenedForAutoPlan = (board: BoardState, card: BoardCard, state: BoardCardStepState) =>
+      finished again. A running review owns the thread: a stale reopen stamp sends nothing. */
+  const reopenedForAutoPlan = (
+    board: BoardState,
+    settings: BoardSettings,
+    card: BoardCard,
+    state: BoardCardStepState,
+  ) =>
     isBoardCardAutoPlanPending(card) &&
-    boardCompletionReopenedByAutoPlan(stepSuccess(board, card.id, state), state);
+    boardCompletionReopenedByAutoPlan(stepSuccess(board, card.id, state), state) &&
+    planReviewUnderwayStep({ board, card, settings }) === null;
 
   /** The reopened step's Auto-plan prompt has not gone out since the latest reopen. Its own
       stamp, since check-ins and human turns move `lastNudgeAt`. */
@@ -10888,7 +10895,10 @@ const make = Effect.gen(function* () {
     const live = boardCardStepState(board, card.id);
     if (current === undefined || live === null || live.threadId === null) return false;
     if (live.stepId !== state.stepId || live.status !== "running") return false;
-    if (!reopenedPromptPending(live) || !reopenedForAutoPlan(board, current, live)) {
+    if (
+      !reopenedPromptPending(live) ||
+      !reopenedForAutoPlan(board, yield* boardSettings, current, live)
+    ) {
       return false;
     }
     // From the timeout sweep the turn may still be live. Not checked at a turn end, where the
@@ -10929,7 +10939,12 @@ const make = Effect.gen(function* () {
     if (state.threadId === null || !reopenedPromptPending(state)) return false;
     const board = yield* readBoard;
     const current = board.cards.find((candidate) => candidate.id === card.id);
-    if (current === undefined || !reopenedForAutoPlan(board, current, state)) return false;
+    if (
+      current === undefined ||
+      !reopenedForAutoPlan(board, yield* boardSettings, current, state)
+    ) {
+      return false;
+    }
     const answered = yield* threads
       .answerPendingInput({
         commandId: yield* commandId("auto-plan-reopened-answer"),
@@ -11546,6 +11561,81 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Auto-plan turned on while a plan review runs: never interrupt or steer, which would stop the
+   * review's subagents. The run is recorded and the review turned unattended; the review-policy
+   * steer tells the agent when it is idle or its turn ends (T3O-141).
+   */
+  const autoPlanDuringReview = Effect.fn("board-supervisor-autoPlanDuringReview")(function* (
+    card: BoardCard,
+  ) {
+    const refusal = yield* dispatchRefusal({
+      type: "board.card.mark-auto-plan",
+      commandId: yield* commandId("auto-plan-review"),
+      cardId: card.id,
+      createdAt: yield* nowIso,
+    });
+    if (refusal !== null) return { outcome: "refused", detail: refusal } as const;
+    const board = yield* readBoard;
+    const live = board.cards.find((candidate) => candidate.id === card.id) ?? card;
+    const state = boardCardStepState(board, card.id);
+    // Retuned before the card updates land, so their stance arm sees no gap and sends no turn.
+    const retuned = state !== null && state.humanInLoop;
+    if (retuned) {
+      yield* dispatchOptional({
+        type: "board.card.retune-step",
+        commandId: yield* commandId("auto-plan-review-retune"),
+        cardId: card.id,
+        stepId: state.stepId,
+        humanInLoop: false,
+        createdAt: yield* nowIso,
+      });
+    }
+    const review = resolveCardPlanReview({ board, card: live, settings: yield* boardSettings });
+    if (review.unattended) {
+      yield* autoPlanNote(
+        card.id,
+        "Auto-plan is on: the plan review carries on, already unattended.",
+      );
+      return { outcome: "steered" } as const;
+    }
+    const updated = yield* dispatchRefusal({
+      type: "board.card.update",
+      commandId: yield* commandId("auto-plan-review-unattended"),
+      cardId: card.id,
+      planReview: {
+        ...review,
+        enabled: true,
+        // Once the review is done a rounds edit is the card's own setting, so the step's is stale.
+        rounds:
+          state?.planReviewDoneAt === undefined
+            ? (state?.planReviewRounds ?? review.rounds)
+            : review.rounds,
+        unattended: true,
+      },
+      createdAt: yield* nowIso,
+    });
+    if (updated === null) {
+      yield* autoPlanNote(card.id, "Auto-plan is on: the plan review carries on, now unattended.");
+      return { outcome: "steered" } as const;
+    }
+    if (retuned) {
+      yield* dispatchOptional({
+        type: "board.card.retune-step",
+        commandId: yield* commandId("auto-plan-review-restore"),
+        cardId: card.id,
+        stepId: state.stepId,
+        humanInLoop: true,
+        createdAt: yield* nowIso,
+      });
+    }
+    yield* endAutoPlan(
+      card.id,
+      `Auto-plan could not make the plan review unattended, so nothing will be planned automatically: ${updated}`,
+    );
+    return { outcome: "refused", detail: updated } as const;
+  });
+
+  /**
    * Auto-plan turned off for a card mid-planning: the step goes back
    * to the stage's own stance, the run record ends, and a running interview is
    * told the user is back. A paused step is not sent anything — a turn would
@@ -11555,10 +11645,39 @@ const make = Effect.gen(function* () {
     card: BoardCard,
   ) {
     const board = yield* readBoard;
+    const settings = yield* boardSettings;
     const state = boardCardStepState(board, card.id);
+    // A running review keeps going as set: no turn, and its Unattended stays on (T3O-141).
+    if (state !== null && planReviewUnderwayStep({ board, card, settings }) !== null) {
+      const exec = resolveBoardStageExecution(
+        settings,
+        card.stage,
+        boardProjectStageConfig(board, card.projectId),
+      );
+      const unattended = reviewRunsUnattended(card, state);
+      // The stance once the run has ended: the run itself still reads as pending here.
+      const desired = unattended ? false : (card.humanInLoop ?? exec.humanInLoop);
+      if (desired !== state.humanInLoop) {
+        yield* dispatchOptional({
+          type: "board.card.retune-step",
+          commandId: yield* commandId("auto-plan-off-retune"),
+          cardId: card.id,
+          stepId: state.stepId,
+          humanInLoop: desired,
+          createdAt: yield* nowIso,
+        });
+      }
+      yield* endAutoPlan(
+        card.id,
+        unattended
+          ? "Auto-plan is off: the plan review carries on as set; Unattended stays on until you turn it off."
+          : "Auto-plan is off: the plan review carries on as set.",
+      );
+      return;
+    }
     if (state !== null && state.stepId === card.stage && !isBoardTerminalStepStatus(state.status)) {
       const desired = resolveBoardStageExecution(
-        yield* boardSettings,
+        settings,
         card.stage,
         boardProjectStageConfig(board, card.projectId),
       ).humanInLoop;
@@ -11610,6 +11729,16 @@ const make = Effect.gen(function* () {
       const role = stage === null ? null : effectiveBoardStageRole(stage);
       const pending = isBoardCardAutoPlanPending(card);
       if (role === "plan") {
+        // A running review is never interrupted, nor told to stop interviewing (T3O-141).
+        if (
+          resolved.autoPlan.value &&
+          !pending &&
+          planReviewUnderwayStep({ board, card, settings: yield* boardSettings }) !== null
+        ) {
+          if (boardCardPendingSplit(board, card.id)) return null;
+          const result = yield* autoPlanDuringReview(card);
+          return result.outcome === "refused" ? null : result.outcome;
+        }
         const finished = boardCardPlanningFinished(board, card);
         // Only the card's own toggle reopens a finished step; a group re-evaluation never does.
         if (changed.autoPlan === true && resolved.autoPlan.value && !pending && finished) {
