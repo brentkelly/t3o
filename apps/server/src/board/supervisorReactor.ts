@@ -11547,14 +11547,14 @@ const make = Effect.gen(function* () {
         createdAt: yield* nowIso,
       });
     }
-    if (live.planReview?.unattended === true) {
+    const review = resolveCardPlanReview({ board, card: live, settings: yield* boardSettings });
+    if (review.unattended) {
       yield* autoPlanNote(
         card.id,
         "Auto-plan is on: the plan review carries on, already unattended.",
       );
       return { outcome: "steered" } as const;
     }
-    const review = resolveCardPlanReview({ board, card: live, settings: yield* boardSettings });
     const updated = yield* dispatchRefusal({
       type: "board.card.update",
       commandId: yield* commandId("auto-plan-review-unattended"),
