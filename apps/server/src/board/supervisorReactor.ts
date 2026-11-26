@@ -345,6 +345,7 @@ import {
   planReviewPolicyFingerprint,
   planReviewPolicyMessage,
   resolveCardPlanReview,
+  planReviewUnderwayStep,
   runningPlanReviewStep,
 } from "./planReview.ts";
 // T3o: the automation gate sweep (T3O-115).
@@ -10811,7 +10812,7 @@ const make = Effect.gen(function* () {
   ) =>
     isBoardCardAutoPlanPending(card) &&
     boardCompletionReopenedByAutoPlan(stepSuccess(board, card.id, state), state) &&
-    runningPlanReviewStep({ board, card, settings }) === null;
+    planReviewUnderwayStep({ board, card, settings }) === null;
 
   /** The reopened step's Auto-plan prompt has not gone out since the latest reopen. Its own
       stamp, since check-ins and human turns move `lastNudgeAt`. */
@@ -11561,7 +11562,11 @@ const make = Effect.gen(function* () {
       planReview: {
         ...review,
         enabled: true,
-        rounds: state?.planReviewRounds ?? review.rounds,
+        // Once the review is done a rounds edit is the card's own setting, so the step's is stale.
+        rounds:
+          state?.planReviewDoneAt === undefined
+            ? (state?.planReviewRounds ?? review.rounds)
+            : review.rounds,
         unattended: true,
       },
       createdAt: yield* nowIso,
@@ -11600,7 +11605,7 @@ const make = Effect.gen(function* () {
     const settings = yield* boardSettings;
     const state = boardCardStepState(board, card.id);
     // A running review keeps going as set: no turn, and its Unattended stays on (T3O-141).
-    if (state !== null && runningPlanReviewStep({ board, card, settings }) !== null) {
+    if (state !== null && planReviewUnderwayStep({ board, card, settings }) !== null) {
       const exec = resolveBoardStageExecution(
         settings,
         card.stage,
@@ -11685,7 +11690,7 @@ const make = Effect.gen(function* () {
         if (
           resolved.autoPlan.value &&
           !pending &&
-          runningPlanReviewStep({ board, card, settings: yield* boardSettings }) !== null
+          planReviewUnderwayStep({ board, card, settings: yield* boardSettings }) !== null
         ) {
           if (boardCardPendingSplit(board, card.id)) return null;
           const result = yield* autoPlanDuringReview(card);

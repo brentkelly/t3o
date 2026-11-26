@@ -2015,7 +2015,8 @@ it.effect(
 it.effect(
   "Auto-plan on while a finished review's agent is still summarising does not interrupt",
   () => {
-    const card = planningCard("summarising", { planReview: attendedReview });
+    // The human raised the rounds after the review finished: that edit is the card's to keep.
+    const card = planningCard("summarising", { planReview: { enabled: true, rounds: 3 } });
     return withGovernor(
       {
         board: {
@@ -2033,7 +2034,66 @@ it.effect(
           yield* setAutomation(h, id, { autoPlan: true }, 3);
           yield* loopBackCardUpdates(h, decided);
           assert.deepStrictEqual(interruptsOrSends(yield* h.commands), []);
-          assert.isTrue(cardOf((yield* h.board).cards, "summarising")?.planReview?.unattended);
+          assert.deepStrictEqual(cardOf((yield* h.board).cards, "summarising")?.planReview, {
+            enabled: true,
+            rounds: 3,
+            unattended: true,
+          });
+        }),
+    );
+  },
+);
+
+it.effect(
+  "Auto-plan on after a reviewed plan was marked finished reopens it with the reopened prompt",
+  () => {
+    const card = planningCard("reviewed", { planReview: attendedReview, autoBuildSetting: true });
+    return withGovernor(
+      {
+        board: { cards: [card], plans: [plan("reviewed", "one", 0)], nextCardNumberByProject: {} },
+        settings,
+      },
+      (h) =>
+        Effect.gen(function* () {
+          const id = BoardCardId.make("reviewed");
+          yield* h.pumpDomain(cardMoved(card, "sprint", "planning", 1));
+          const state = boardCardStepState(yield* h.board, id)!;
+          const threadId = state.threadId!;
+          // The review ran and finished before the agent completed the step.
+          yield* h.pumpDomain({
+            type: "board.plan-review-started",
+            sequence: 2,
+            payload: {
+              cardId: id,
+              state: {
+                ...state,
+                planReviewStartedAt: "1969-12-30T00:00:00.000Z",
+                planReviewDoneAt: "1969-12-30T12:00:00.000Z",
+                planReviewRounds: 2,
+                planReviewPolicySent: ATTENDED_POLICY,
+              },
+            },
+          } as unknown as HarnessEvent);
+          yield* Ref.update(
+            h.shells,
+            (shells) => new Map([...shells, [String(threadId), aliveThread(String(threadId))]]),
+          );
+          yield* h.pumpDomain(planningCompleted(id, 3, FIRST_FINISH));
+          assert.strictEqual(boardCardStepState(yield* h.board, id)?.status, "succeeded");
+
+          const decided = (yield* h.decided).length;
+          yield* setAutomation(h, id, { autoPlan: true, autoSignOff: true }, 4);
+          yield* loopBackCardUpdates(h, decided);
+          assert.isString(boardCardStepState(yield* h.board, id)?.reopenedAt);
+
+          yield* Ref.update(
+            h.shells,
+            (shells) => new Map([...shells, [String(threadId), fakeThreadState(String(threadId))]]),
+          );
+          yield* h.pumpRuntime(turnCompleted(threadId, "turn-live"));
+          const commands = yield* h.commands;
+          assert.lengthOf(sendsOf(commands, reopenedText(true)), 1);
+          assert.lengthOf(sendsContaining(commands, NOW_UNATTENDED), 0);
         }),
     );
   },
