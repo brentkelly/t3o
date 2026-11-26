@@ -2091,6 +2091,8 @@ it.effect(
             (shells) => new Map([...shells, [String(threadId), fakeThreadState(String(threadId))]]),
           );
           yield* h.pumpRuntime(turnCompleted(threadId, "turn-live"));
+          // A later turn end without a completion: the finished review owes no policy message.
+          yield* h.pumpRuntime(turnCompleted(threadId, "turn-later"));
           const commands = yield* h.commands;
           assert.lengthOf(sendsOf(commands, reopenedText(true)), 1);
           assert.lengthOf(sendsContaining(commands, NOW_UNATTENDED), 0);

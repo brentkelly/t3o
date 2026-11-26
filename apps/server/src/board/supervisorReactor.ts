@@ -3243,7 +3243,7 @@ const make = Effect.gen(function* () {
   );
 
   /** The review policy owed to a card's planning thread: it changed since it was last
-      delivered. Null when nothing is owed, or no review has started on a live plan step. */
+      delivered. Null when nothing is owed, or no review is underway on a live plan step. */
   const owedPlanReviewPolicy = Effect.fnUntraced(function* (cardId: BoardCardId) {
     const board = yield* readBoard;
     const settings = yield* boardSettings;
@@ -3251,7 +3251,7 @@ const make = Effect.gen(function* () {
     const state = boardCardStepState(board, cardId);
     if (card === undefined || state === null || state.threadId === null) return null;
     if (state.status !== "running" && state.status !== "awaiting-input") return null;
-    if (runningPlanReviewStep({ board, card, settings }) === null) return null;
+    if (planReviewUnderwayStep({ board, card, settings }) === null) return null;
     const policy = planReviewPolicy({ board, card, settings, state });
     if (policy === null) return null;
     const fingerprint = planReviewPolicyFingerprint(policy);
