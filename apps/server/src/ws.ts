@@ -758,11 +758,15 @@ type SplitWsRpc = Extract<
 >;
 const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
-const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc> =>
-  !isSplitWsRpc(rpc);
+// T3o: the board's RPCs register as a third group, or the rest crosses the limit again (T3O-144).
+type BoardWsRpc = Extract<ServerWsRpc, { readonly _tag: `board.${string}` }>;
+const isBoardWsRpc = (rpc: ServerWsRpc): rpc is BoardWsRpc => rpc._tag.startsWith("board.");
+const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc | BoardWsRpc> =>
+  !isSplitWsRpc(rpc) && !isBoardWsRpc(rpc);
 const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
+const BoardWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isBoardWsRpc));
 function toAuthAccessStreamEvent(
   change: Exclude<
     PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
@@ -3818,11 +3822,17 @@ export const layerWsRpc = (
         })),
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
-      const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
-        handlers;
+      const otherHandlers: Pick<
+        typeof handlers,
+        Exclude<ServerWsRpc, SplitWsRpc | BoardWsRpc>["_tag"]
+      > = handlers;
+      const boardHandlers: Pick<typeof handlers, BoardWsRpc["_tag"]> = handlers;
       return Context.merge(
-        yield* SplitWsRpcGroup.toHandlers(splitHandlers),
-        yield* OtherWsRpcGroup.toHandlers(otherHandlers),
+        Context.merge(
+          yield* SplitWsRpcGroup.toHandlers(splitHandlers),
+          yield* OtherWsRpcGroup.toHandlers(otherHandlers),
+        ),
+        yield* BoardWsRpcGroup.toHandlers(boardHandlers),
       );
     }),
   );

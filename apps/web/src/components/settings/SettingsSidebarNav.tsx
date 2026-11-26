@@ -164,8 +164,6 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const preloadSection = useSettingsSectionPrefetch();
   const currentHash = useLocation({ select: (location) => location.hash });
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
-  // T3o: the longest matching entry wins, so Workers does not also light Board (T3O-84).
-  const navPaths = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   // Below md the nav is an icon rail; searching expands it over the page.
@@ -173,6 +171,8 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const searchableItems = useAvailableSettingsSearchItems();
   const navGroups = settingsNavGroups(useHasSecretProvidersEnvironment());
+  // T3o: the longest matching entry wins, so Workers does not also light Board (T3O-84).
+  const navPaths = navGroups.flatMap((group) => group.paths);
   const results = searchSettings(query, searchableItems, m);
   const isSearching = query.trim().length > 0;
   const hasResults = results.length > 0;
