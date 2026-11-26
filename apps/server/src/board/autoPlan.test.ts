@@ -1316,7 +1316,7 @@ it.effect("a reopen during a background wait gets its prompt after the check-ins
 
         // The turn ends waiting on its subagents and a check-in goes out: the prompt still waits.
         yield* h.pumpRuntime(turnCompleted(ThreadId.make(threadId), "turn-bg"));
-        yield* TestClock.adjust(Duration.minutes(5));
+        yield* TestClock.adjust(Duration.minutes(30));
         yield* h.reactor.sweep;
         yield* h.reactor.drain;
         const checkedIn = yield* h.commands;
