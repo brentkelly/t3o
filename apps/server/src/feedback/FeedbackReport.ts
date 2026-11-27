@@ -205,6 +205,15 @@ export const T3_CLI_COMMANDS: ReadonlyArray<string> = [
   "t3 connect publish",
   "t3 connect status",
   "t3 connect unlink",
+  // T3o: the fork's own commands (T3O-71, T3O-84).
+  "t3 import-threads",
+  "t3 worker",
+  "t3 worker join",
+  "t3 worker leave",
+  "t3 worker boards",
+  "t3 worker boards remove",
+  "t3 worker status",
+  "t3 worker config",
 ];
 
 export type FeedbackInput = typeof FeedbackInput.Type;

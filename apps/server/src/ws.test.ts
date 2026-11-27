@@ -1985,7 +1985,9 @@ it.effect(
           // T3o: the board's retirement wraps the removal (T3O-23); here it only runs it.
           Layer.mock(WorktreeRetirer)({
             retire: (input) =>
-              input.remove.pipe(Effect.as({ outcome: "removed", hookWarning: null } as const)),
+              (input.remove ?? Effect.void).pipe(
+                Effect.as({ outcome: "removed", hookWarning: null } as const),
+              ),
           }),
           Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
             refreshStatus: () => Effect.die("unused"),
