@@ -582,7 +582,7 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
             retirer,
             { cwd: dirs.projectCwd, path: dirs.worktreePath, force: false },
             stockRemove(events),
-            Effect.void,
+            () => Effect.void,
           ).pipe(Effect.flip),
       );
       assert.instanceOf(result, GitCommandError);
@@ -600,7 +600,7 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
             retirer,
             { cwd: dirs.projectCwd, path: dirs.worktreePath, force: false },
             stockRemove(events),
-            Effect.void,
+            () => Effect.void,
           ).pipe(Effect.flip);
           yield* first.release;
           yield* Fiber.join(first.fiber);
@@ -625,7 +625,7 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
               retirer,
               { cwd: dirs.projectCwd, path: dirs.worktreePath, force: true },
               stockRemove(events),
-              Effect.void,
+              () => Effect.void,
             ).pipe(Effect.flip);
             yield* first.release;
             yield* Fiber.join(first.fiber);
@@ -641,6 +641,7 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
   it.effect("force:true kills what is left, then makes the stock removal", () =>
     Effect.gen(function* () {
       const survivor = { pid: 4412, name: "cargo" };
+      const flags: Array<boolean> = [];
       const { events } = yield* withRetirer(
         { survivors: [[survivor], []] },
         (retirer, dirs, events) =>
@@ -648,9 +649,11 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
             retirer,
             { cwd: dirs.projectCwd, path: dirs.worktreePath, force: true },
             stockRemove(events),
-            Effect.void,
+            (inBackground) => Effect.sync(() => void flags.push(inBackground)),
           ),
       );
+      // In the foreground: the client's own refresh already sees the removal.
+      assert.deepStrictEqual(flags, [false]);
       assert.deepStrictEqual(events, [
         "check-processes",
         "SIGTERM:4412",
@@ -663,7 +666,7 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
   // Live: the remove script is a real process the test lets finish.
   it.live("returns once remove scripts start, and finishes the removal in the background", () =>
     Effect.gen(function* () {
-      const removed = yield* Deferred.make<void>();
+      const removed = yield* Deferred.make<boolean>();
       const { result, events, read } = yield* withRetirer(
         {
           scripts: [
@@ -678,12 +681,12 @@ describe("retireRemovedThreadWorktree (the stock vcsRemoveWorktree)", () => {
               retirer,
               { cwd: dirs.projectCwd, path: dirs.worktreePath, force: true },
               stockRemove(events),
-              Deferred.succeed(removed, undefined).pipe(Effect.asVoid),
+              (inBackground) => Deferred.succeed(removed, inBackground).pipe(Effect.asVoid),
             );
             // Back while the script still waits: nothing removed yet.
             const early = [...events];
             NodeFS.writeFileSync(NodePath.join(dirs.root, "go"), "");
-            yield* Deferred.await(removed);
+            assert.isTrue(yield* Deferred.await(removed));
             return early;
           }),
       );

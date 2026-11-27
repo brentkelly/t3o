@@ -29,6 +29,10 @@ import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequest
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as DocumentText from "../../../provider/DocumentText.ts";
+import { FeedbackStore } from "../../../feedback/FeedbackStore.ts";
+import * as TaskFolders from "../../../workspace/TaskFolders.ts";
+import * as Workflows from "../../../workflows/Workflows.ts";
+import * as MilestoneHub from "../../../milestones/MilestoneHub.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -68,6 +72,10 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(AssetSigner)({}),
   Layer.mock(McpProviderSessions.McpProviderSessions)({}),
   Layer.mock(DocumentText.DocumentText)({}),
+  Layer.mock(FeedbackStore)({}),
+  Layer.mock(TaskFolders.TaskFolders)({}),
+  Workflows.layerDisabled,
+  Layer.mock(MilestoneHub.MilestoneHub)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(null) }),
   Layer.mock(DeviceService.DeviceService)({}),

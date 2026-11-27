@@ -514,11 +514,11 @@ export const makeWorktreeRetirer = Effect.fn("worktreeRetire.makeWorktreeRetirer
     if (!(yield* stillWanted)) return null;
     yield* (
       input.remove ??
-        git.removeWorktree({
-          cwd: input.projectCwd,
-          path: input.worktreePath,
-          ...(input.kind === "forced" ? { force: true } : {}),
-        })
+      git.removeWorktree({
+        cwd: input.projectCwd,
+        path: input.worktreePath,
+        ...(input.kind === "forced" ? { force: true } : {}),
+      })
     );
     return { outcome: "removed", hookWarning } as const;
   });
@@ -596,15 +596,15 @@ export const makeWorktreeRetirer = Effect.fn("worktreeRetire.makeWorktreeRetirer
 /**
  * The stock thread-delete removal, retired first. `force` picks the kind; a busy path fails
  * it either way, so the client's VCS queue never waits on a board cleanup. With remove
- * scripts it returns once they start and finishes in the background; later failures reach
- * only the server log, and `afterRemoval` refreshes git status.
+ * scripts it returns once they start and removes in the background (failures reach only the
+ * log); `afterRemoval` learns which, since the client's own refresh then ran too early.
  */
 export const retireRemovedThreadWorktree = Effect.fn("worktreeRetire.retireRemovedThreadWorktree")(
   function* (
     retirer: WorktreeRetirer["Service"],
     input: { readonly cwd: string; readonly path: string; readonly force?: boolean | undefined },
     remove: Effect.Effect<void, GitCommandError>,
-    afterRemoval: Effect.Effect<void>,
+    afterRemoval: (inBackground: boolean) => Effect.Effect<void>,
   ) {
     const scriptsStarted = yield* Deferred.make<void>();
     const retirement = yield* retirer
@@ -643,7 +643,7 @@ export const retireRemovedThreadWorktree = Effect.fn("worktreeRetire.retireRemov
             ),
           ),
         ),
-        Effect.ensuring(afterRemoval),
+        Effect.ensuring(Deferred.isDone(scriptsStarted).pipe(Effect.flatMap(afterRemoval))),
         Effect.forkDetach,
       );
     yield* Effect.raceFirst(Fiber.join(retirement), Deferred.await(scriptsStarted));
