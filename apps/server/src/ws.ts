@@ -3445,12 +3445,18 @@ export const layerWsRpc = (
                   removed ? Effect.void : gitWorkflow.removeWorktree(input),
                 ),
               ),
-            // No project-root refresh here: the client awaits vcs.refreshStatus right after, and a
-            // second refresh would queue behind this one and reread an unchanged repository.
+            // No project-root refresh unless the removal ran in the background: the client awaits
+            // vcs.refreshStatus right after, which then ran before the removal finished.
             // Subscribers of the removed checkout learn it is no longer a repository.
-            vcsStatusBroadcaster
-              .refreshLocalStatus(input.path)
-              .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid),
+            (inBackground) =>
+              vcsStatusBroadcaster
+                .refreshLocalStatus(input.path)
+                .pipe(
+                  Effect.ignoreCause({ log: true }),
+                  Effect.forkDetach,
+                  Effect.andThen(inBackground ? refreshGitStatus(input.cwd) : Effect.void),
+                  Effect.asVoid,
+                ),
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           (input.switchRef

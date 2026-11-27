@@ -913,10 +913,13 @@ Parity again: nothing new upstream offers is adopted.
   (`TS2589`), so `ws.ts` registers every `board.*` RPC as a third group (one marked seam).
 - **Worktree removal.** Upstream's `vcsRemoveWorktree` now removes a task folder's repositories
   first and no longer refreshes the project root. The `T3O-23` retirement wraps upstream's whole
-  removal, and its after-removal step is upstream's subscriber refresh.
+  removal, and its after-removal step is upstream's subscriber refresh, plus a project-root
+  refresh when remove scripts pushed the removal into the background.
 - **Settle scripts.** Upstream now logs a warning when a settle script is skipped because the
-  worktree is gone. The board-kept check still runs after the existence check, so a card's
-  worktree is still skipped silently and the board runs the script at retirement.
+  worktree is gone. The board-kept check runs after the existence check, so a card's live
+  worktree is skipped silently and the board runs the script at retirement. A card thread that
+  settles after retirement logs upstream's warning even though the board already ran the script:
+  retirement clears the card's path, so no cheap check can tell it apart. Log noise only.
 - **Settle and wake.** Upstream renamed the settlement candidate's `latestUserAuthoredMessageAt`
   to `latestResumingMessageAt` (an MCP agent send now reopens a settled thread) and consults
   `terminals.hasActiveSubprocess`. The board's gateway sends as `createdBy: "user"`, which counted
